@@ -20,15 +20,16 @@ KEY = bytes.fromhex("5a" * 16)
 PROXY_ID = bytes.fromhex("348518fffe000001")
 PROXY_B = bytes.fromhex("348518fffe000002")
 BOOT = 0x01020304
+OLD_BOOT = 0x0BADB007
 
 
 PORT = 47999
 
 
-def start_server() -> subprocess.Popen:
+def start_server(*extra: str) -> subprocess.Popen:
     srv = subprocess.Popen(
         [sys.executable, "-I", os.path.join(ROOT, "devtools", "cs_testserver.py"), "--port", str(PORT),
-         "--key", KEY.hex(), "--ack"],
+         "--key", KEY.hex(), "--ack", *extra],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     time.sleep(1.0)
     return srv
@@ -39,17 +40,41 @@ def stop_server(srv: subprocess.Popen) -> str:
     return srv.communicate(timeout=5)[0]
 
 
-class SeqGuard:
-    """The proxy's check on server messages (05 section 3.2, ServerSeqGuard)."""
+def now_ms() -> int:
+    return int(time.monotonic() * 1000)
 
-    def __init__(self, boot_id: int):
-        self.boot_id, self.last = boot_id, 0
 
-    def accept(self, m) -> bool:
-        if m["boot_id"] != self.boot_id or m["seq"] <= self.last:
-            return False
-        self.last = m["seq"]
-        return True
+class SimProxy:
+    """One proxy boot: its seq, and its checks on server messages (05 section 3.2)."""
+
+    def __init__(self, sock, dest, proxy_id: bytes, boot_id: int):
+        self.sock, self.dest, self.proxy_id, self.boot_id = sock, dest, proxy_id, boot_id
+        self.seq = 0
+        self.link = cs.ProxyLink(boot_id)
+
+    def send(self, msg_type: int, body: bytes) -> bytes:
+        self.seq += 1
+        msg = cs.envelope(KEY, msg_type, self.proxy_id, self.boot_id, self.seq, body)
+        self.link.sent(cs.open_envelope(KEY, msg), now_ms())
+        self.sock.sendto(msg, self.dest)
+        return msg
+
+    def recv(self):
+        m = cs.open_envelope(KEY, self.sock.recv(2048))
+        return m, self.link.receive(m, now_ms())["result"]
+
+
+def hello(nonce: int = 0) -> bytes:
+    return cs.hello_body(cs.CAP_DOWNLINK, "US915", 918_500_000, 9, 500, 5, [1, 1, 0, 0, 0, 0, 0], 3,
+                         "cs_proxy test", nonce)
+
+
+def nonce_of(m) -> int:
+    return struct.unpack(">I", bytes.fromhex(m["body"]))[0]
+
+
+def hello_seq_of(m) -> int:
+    return cs.parse_server_status(bytes.fromhex(m["body"]))["hello_seq"]
 
 
 def main() -> int:
@@ -69,20 +94,26 @@ def main() -> int:
             print(("ok   " if cond else "FAIL ") + what)
             failures += not cond
 
-        hello = cs.hello_body(cs.CAP_DOWNLINK, "US915", 918_500_000, 9, 500, 5, [1, 1, 0, 0, 0, 0, 0], 3,
-                              "cs_proxy test")
-        s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_ID, BOOT, 1, hello), dest)
-        m = cs.open_envelope(KEY, s.recv(2048))
-        guard = SeqGuard(BOOT)
-        check(m["type"] == cs.M_SERVER_STATUS and guard.accept(m),
-              "HELLO answered with SERVER_STATUS for this boot")
-        check(0 < m["seq"] <= 0xFFFFFFFF, "server seq is a uint32")
+        proxy = SimProxy(s, dest, PROXY_ID, BOOT)
+
+        def join(px: SimProxy, what: str) -> None:
+            """Boot handshake: HELLO, HELLO_REQUEST, HELLO echoing the nonce, SERVER_STATUS."""
+            px.send(cs.M_HELLO, hello())
+            m, res = px.recv()
+            check(m["type"] == cs.M_HELLO_REQUEST and m["boot_id"] == px.boot_id and res == "hello",
+                  f"{what}: first HELLO draws a HELLO_REQUEST")
+            px.send(cs.M_HELLO, hello(nonce_of(m)))
+            m, res = px.recv()
+            check(m["type"] == cs.M_SERVER_STATUS and res == "accepted" and hello_seq_of(m) == px.seq,
+                  f"{what}: HELLO echoing the nonce answered with SERVER_STATUS for this boot")
+
+        join(proxy, "proxy A")
 
         rx_time = 5_000_000
         up = cs.uplink_body(rx_time, -90.0, 7.5, 0, frames["data_confirmed"])
-        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 2, up), dest)
-        m = cs.open_envelope(KEY, s.recv(2048))
-        check(m["type"] == cs.M_DOWNLINK and guard.accept(m), "confirmed uplink answered with DOWNLINK")
+        proxy.send(cs.M_UPLINK, up)
+        m, res = proxy.recv()
+        check(m["type"] == cs.M_DOWNLINK and res == "accepted", "confirmed uplink answered with DOWNLINK")
         dl_seq = m["seq"]
         body = bytes.fromhex(m["body"])
         ref, offset, flen = struct.unpack(">QIB", body[:13])
@@ -96,9 +127,9 @@ def main() -> int:
         fcnt_down = h.fcnt
 
         # The same frame from a second proxy right away is a copy of that transmission: no answer.
-        s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_B, BOOT, 1, hello), dest)
-        s.recv(2048)
-        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_B, BOOT, 2, up), dest)
+        proxy_b = SimProxy(s, dest, PROXY_B, BOOT)
+        join(proxy_b, "proxy B")
+        proxy_b.send(cs.M_UPLINK, up)
         try:
             s.recv(2048)
             check(False, "copy from a second proxy not answered again")
@@ -107,9 +138,9 @@ def main() -> int:
 
         # The sensor's retry, 4 s or more later, is answered again with a new downlink (07 section 6.4).
         time.sleep(max(0.0, sent_at + 4.5 - time.monotonic()))
-        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 3, up), dest)
-        m = cs.open_envelope(KEY, s.recv(2048))
-        check(m["type"] == cs.M_DOWNLINK, "retransmission 4.5 s later answered again")
+        last_uplink = proxy.send(cs.M_UPLINK, up)
+        m, res = proxy.recv()
+        check(m["type"] == cs.M_DOWNLINK and res == "accepted", "retransmission 4.5 s later answered again")
         body = bytes.fromhex(m["body"])
         flen = body[12]
         h, pt = cs.open_frame(device_keys, body[13:13 + flen])
@@ -117,7 +148,7 @@ def main() -> int:
               "answer to the retry is a new downlink for fcnt 3")
 
         # A replayed message (same seq) is ignored: no answer.
-        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 3, up), dest)
+        s.sendto(last_uplink, dest)
         try:
             s.recv(2048)
             check(False, "replayed message ignored")
@@ -125,29 +156,63 @@ def main() -> int:
             check(True, "replayed message ignored")
 
         # A message with the wrong key is rejected.
-        s.sendto(cs.envelope(bytes(16), cs.M_HELLO, PROXY_ID, BOOT, 4, hello), dest)
+        s.sendto(cs.envelope(bytes(16), cs.M_HELLO, PROXY_ID, BOOT, 99, hello()), dest)
         try:
             s.recv(2048)
             check(False, "wrong key rejected")
         except socket.timeout:
             check(True, "wrong key rejected")
 
-        s.sendto(cs.envelope(KEY, cs.M_TX_RESULT, PROXY_ID, BOOT, 5, cs.tx_result_body(dl_seq, 0, 1500)), dest)
+        proxy.send(cs.M_TX_RESULT, cs.tx_result_body(dl_seq, 0, 1500))
+        recorded_hello = proxy.send(cs.M_HELLO, hello())
+        m, res = proxy.recv()
+        check(m["type"] == cs.M_SERVER_STATUS and res == "accepted" and hello_seq_of(m) == proxy.seq,
+              "periodic HELLO answered with SERVER_STATUS echoing it")
         time.sleep(0.5)
         out = stop_server(srv)
 
-        # Restart the server (#5). The proxy keeps its boot and its guard; the new
-        # instance learns the boot from the next periodic HELLO.
+        # Restart the server (#4, #5) with no clock seeding: its seq starts again at 1,
+        # far below the proxy's floor. The proxy keeps its boot and its checks.
         time.sleep(1.0)
-        srv = start_server()
-        s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_ID, BOOT, 6, hello), dest)
-        m = cs.open_envelope(KEY, s.recv(2048))
-        check(m["type"] == cs.M_SERVER_STATUS and guard.accept(m),
-              "restarted server's SERVER_STATUS accepted by the running proxy")
-        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 7, up), dest)
-        m = cs.open_envelope(KEY, s.recv(2048))
-        check(m["type"] == cs.M_DOWNLINK and guard.accept(m),
+        srv = start_server("--no-seq-seed")
+        proxy.send(cs.M_UPLINK, up)
+        sent_at = time.monotonic()
+        m, res = proxy.recv()
+        check(m["type"] == cs.M_HELLO_REQUEST and res == "hello",
+              "restarted server answers the first UPLINK with HELLO_REQUEST")
+        check(time.monotonic() - sent_at < 1.0, "HELLO_REQUEST arrives within a second, not at the next HELLO")
+        proxy.send(cs.M_HELLO, hello(nonce_of(m)))
+        m, res = proxy.recv()
+        check(m["type"] == cs.M_SERVER_STATUS and m["seq"] == 1 and res == "resync",
+              "restarted server's SERVER_STATUS seq 1 accepted by the running proxy through the echo")
+        proxy.send(cs.M_UPLINK, up)
+        m, res = proxy.recv()
+        check(m["type"] == cs.M_DOWNLINK and res == "accepted",
               "restarted server's DOWNLINK accepted by the running proxy")
+
+        # A HELLO from an earlier boot, replayed, does not move the session.
+        s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_ID, OLD_BOOT, 1, hello()), dest)
+        m = cs.open_envelope(KEY, s.recv(2048))
+        check(m["type"] == cs.M_HELLO_REQUEST and m["boot_id"] == OLD_BOOT,
+              "replayed HELLO from an earlier boot draws only a HELLO_REQUEST for that boot")
+        # Even echoing a nonce the server once used, the old boot does not take over.
+        s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_ID, OLD_BOOT, 2, hello(0x5EED0001)), dest)
+        try:
+            m = cs.open_envelope(KEY, s.recv(2048))
+            check(m["type"] == cs.M_HELLO_REQUEST, "old boot echoing a wrong nonce draws at most a HELLO_REQUEST")
+        except socket.timeout:
+            check(True, "old boot echoing a wrong nonce draws at most a HELLO_REQUEST")
+        # This proxy's HELLO recorded before the restart is stale in the new session too.
+        s.sendto(recorded_hello, dest)
+        try:
+            m = cs.open_envelope(KEY, s.recv(2048))
+            check(False, "HELLO recorded before the restart ignored")
+        except socket.timeout:
+            check(True, "HELLO recorded before the restart ignored")
+        proxy.send(cs.M_HELLO, hello())
+        m, res = proxy.recv()
+        check(m["type"] == cs.M_SERVER_STATUS and m["boot_id"] == BOOT and res == "accepted",
+              "the session still belongs to the running proxy's boot")
     finally:
         out2 = stop_server(srv)
     check(f"TX_RESULT seq {dl_seq}: SENT, 1.5 ms after target" in out, "TX_RESULT reported")

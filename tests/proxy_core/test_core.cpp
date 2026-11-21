@@ -169,12 +169,20 @@ static void test_envelope() {
   h.max_loop_gap_ms = 7;
   h.firmware = "cs_proxy 0.1.0";
   CHECK(hex(hello_body(h)) == env("hello").body);
+  auto hr = unhex(env("hello_request").body);
+  uint32_t nonce = 0;
+  CHECK(parse_hello_request(hr.data(), hr.size(), nonce) && nonce == 0x5EED1234u);
+  CHECK(!parse_hello_request(hr.data(), hr.size() - 1, nonce));
+  const uint8_t zero[4] = {0, 0, 0, 0};
+  CHECK(!parse_hello_request(zero, 4, nonce));
+  h.request_nonce = 0x5EED1234u;
+  CHECK(hex(hello_body(h)) == env("hello_answer").body);
   CHECK(hex(tx_result_body(2, TX_SENT, 1800)) == env("tx_result").body);
 
   auto ss = unhex(env("server_status").body);
   ServerStatus st{};
   CHECK(parse_server_status(ss.data(), ss.size(), st));
-  CHECK(st.server_time == 1795226400u && st.tags.size() == 3 && st.tags[1] == 0x61d306d3u);
+  CHECK(st.server_time == 1795226400u && st.hello_seq == 2 && st.tags.size() == 3 && st.tags[1] == 0x61d306d3u);
   CHECK(!parse_server_status(ss.data(), ss.size() - 1, st));
 
   auto dl = unhex(env("downlink").body);
@@ -194,6 +202,33 @@ static void test_seq_guard() {
   CHECK(g.accept(0x1A2B3C4D, 5));
   CHECK(!g.accept(0x1A2B3C4D, 4));
   CHECK(!g.accept(0x11111111, 6));
+}
+
+static void test_hello_echoes() {
+  HelloEchoes h;
+  const uint64_t t = 1000000000;
+  h.sent(1, t);
+  h.sent(2, t);
+  CHECK(!h.take(0, t));
+  CHECK(!h.take(3, t));  // never sent
+  CHECK(h.take(2, t));
+  CHECK(!h.take(2, t));  // used up
+  // Only the last three are kept.
+  h.sent(3, t);
+  h.sent(4, t);
+  h.sent(5, t);
+  CHECK(!h.take(1, t));
+  CHECK(h.take(3, t) && h.take(5, t));
+  // And only for two HELLO intervals.
+  CHECK(!h.take(4, t + HELLO_ECHO_MAX_AGE_US + 1));
+  h.sent(6, t);
+  CHECK(h.take(6, t + HELLO_ECHO_MAX_AGE_US));
+
+  ServerSeqGuard g(0x1A2B3C4D);
+  CHECK(g.accept(0x1A2B3C4D, 10));
+  g.resync(1);
+  CHECK(g.accept(0x1A2B3C4D, 2) && !g.accept(0x1A2B3C4D, 2));
+  CHECK(g.current_boot(0x1A2B3C4D) && !g.current_boot(0x1A2B3C4E));
 }
 
 static void test_dedupe() {
@@ -418,6 +453,18 @@ struct FakeIo : ProxyIo {
   void request_loop() override { loop_requests++; }
   void on_connected(bool c) override { connected_events.push_back(c); }
   void on_hello(uint16_t gap_ms) override { hello_gaps.push_back(gap_ms); }
+  std::vector<std::string> logs;
+  void vlog(LogLevel, const char *fmt, va_list args) override {
+    char line[256];
+    std::vsnprintf(line, sizeof(line), fmt, args);
+    logs.emplace_back(line);
+  }
+  size_t logged(const char *needle) const {
+    size_t n = 0;
+    for (const auto &l : logs)
+      n += l.find(needle) != std::string::npos;
+    return n;
+  }
 };
 
 struct Sent {
@@ -474,12 +521,19 @@ struct Rig {
   std::vector<uint8_t> msg(uint8_t type, const std::vector<uint8_t> &body, uint32_t boot = BOOT) {
     return server->build(type, boot, ++server_seq, body);
   }
-  std::vector<uint8_t> status() {
+  static std::vector<uint8_t> status_body(uint32_t hello_seq = 0) {
     ByteWriter w;
     w.u32(1795226400);
+    w.u32(hello_seq);
     w.u8(1);
     w.u32(0x61d306d3);
-    return msg(MSG_SERVER_STATUS, w.buf);
+    return w.buf;
+  }
+  std::vector<uint8_t> status(uint32_t hello_seq = 0) { return msg(MSG_SERVER_STATUS, status_body(hello_seq)); }
+  std::vector<uint8_t> hello_request(uint32_t nonce, uint32_t boot = BOOT) {
+    ByteWriter w;
+    w.u32(nonce);
+    return server->build(MSG_HELLO_REQUEST, boot, 0, w.buf);
   }
   static std::vector<uint8_t> downlink_body(uint64_t ref, uint32_t offset, const std::vector<uint8_t> &f) {
     ByteWriter w;
@@ -937,11 +991,119 @@ static void test_engine_in_flight_and_errors() {
   CHECK(out.size() == 1 && tx_res(out[0]).result == TX_SENT);
 }
 
+static uint32_t hello_nonce(const Sent &m) {
+  const size_t at = 2 + m.body[1] + 41;  // after region and the fixed fields up to max_loop_gap_ms
+  return at + 4 <= m.body.size() ? rd32(m.body.data() + at) : 0xFFFFFFFFu;
+}
+
+static std::vector<uint8_t> two_tag_status(uint32_t hello_seq) {
+  ByteWriter w;
+  w.u32(1795226400);
+  w.u32(hello_seq);
+  w.u8(2);
+  w.u32(0x11111111);
+  w.u32(0x22222222);
+  return w.buf;
+}
+
+// Conformance item 10: a restarted server is followed through the SERVER_STATUS echo.
+static void test_engine_server_restart() {
+  Rig r;
+  r.loop();
+  auto hellos = r.take(MSG_HELLO);
+  CHECK(hellos.size() == 1);
+  const uint32_t h1 = hellos.empty() ? 0 : hellos[0].seq;
+  r.loop({r.status(h1)});
+  CHECK(r.engine->connected());
+  for (int i = 0; i < 5; i++)
+    r.loop({r.status()});
+  const size_t stale = r.io.logged("Ignored stale or replayed SERVER_STATUS");
+
+  // The server restarts and counts from 1 again, with no clock seeding.
+  r.server_seq = 0;
+  r.loop({r.msg(MSG_DOWNLINK, {1, 2, 3})});
+  CHECK(r.take(MSG_TX_RESULT).empty());
+  // Unsolicited, echoing a HELLO already echoed, or one never sent: all held to the floor.
+  r.loop({r.msg(MSG_SERVER_STATUS, two_tag_status(0)), r.msg(MSG_SERVER_STATUS, two_tag_status(h1)),
+          r.msg(MSG_SERVER_STATUS, two_tag_status(h1 + 100))});
+  CHECK(r.engine->server_tags().size() == 1);
+  CHECK(r.io.logged("Ignored stale or replayed SERVER_STATUS") == stale + 3);
+
+  // Its HELLO_REQUEST draws a HELLO at once, and its answer resyncs the floor.
+  r.loop({r.hello_request(0xABCD0001)});
+  hellos = r.take(MSG_HELLO);
+  CHECK(hellos.size() == 1 && hello_nonce(hellos[0]) == 0xABCD0001u);
+  const uint32_t h2 = hellos.empty() ? 0 : hellos[0].seq;
+  r.server_seq = 0;
+  auto st = r.msg(MSG_SERVER_STATUS, two_tag_status(h2));
+  r.loop({st});
+  CHECK(r.engine->server_tags().size() == 2 && r.engine->connected());
+  CHECK(r.io.logged("Server restarted") == 1);
+  // A replay of it finds its echo used up.
+  r.loop({st});
+  CHECK(r.io.logged("Ignored stale or replayed SERVER_STATUS") == stale + 4);
+  CHECK(r.io.logged("Server restarted") == 1);
+  // The restarted server's next messages pass the strict rule, with no reboot.
+  r.loop({r.msg(MSG_DOWNLINK, {1, 2, 3})});
+  auto out = r.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_INVALID && tx_res(out[0]).seq == 2);
+  r.loop({r.status()});
+  CHECK(r.engine->server_tags().size() == 1);
+}
+
+// Conformance item 11.
+static void test_engine_hello_request() {
+  Rig r;
+  r.loop();
+  r.take();
+  r.loop({r.status(1)});
+  for (int i = 0; i < 3; i++)
+    r.loop({r.status()});
+
+  auto bad_mac = r.hello_request(7);
+  bad_mac.back() ^= 1;
+  r.loop({r.hello_request(7, Rig::BOOT ^ 1), r.hello_request(0),
+          r.server->build(MSG_HELLO_REQUEST, Rig::BOOT, 0, {1, 2, 3}), bad_mac});
+  CHECK(r.take(MSG_HELLO).empty());
+
+  // Answered at once although its seq (0) is below the floor, which it leaves alone.
+  const uint64_t t1 = r.io.t;
+  r.loop({r.hello_request(0x11)});
+  auto h = r.take(MSG_HELLO);
+  CHECK(h.size() == 1 && hello_nonce(h[0]) == 0x11u);
+  r.loop({r.msg(MSG_DOWNLINK, {1, 2, 3})});
+  CHECK(r.take(MSG_TX_RESULT).size() == 1);
+
+  // More within 5 s: one HELLO 5 s after the first, echoing the latest nonce.
+  r.io.t += 1000000;
+  r.loop({r.hello_request(0x22), r.hello_request(0x33)});
+  CHECK(r.take(MSG_HELLO).empty());
+  r.run_until(t1 + HELLO_REQUEST_GAP_US - 1);
+  CHECK(r.take(MSG_HELLO).empty());
+  r.run_until(t1 + HELLO_REQUEST_GAP_US);
+  h = r.take(MSG_HELLO);
+  CHECK(h.size() == 1 && hello_nonce(h[0]) == 0x33u);
+
+  // That HELLO counts as the periodic one, and the next carries no nonce.
+  const uint64_t t2 = r.io.t;
+  r.run_until(t2 + HELLO_INTERVAL_US - 1);
+  CHECK(r.take(MSG_HELLO).empty());
+  r.run_until(t2 + HELLO_INTERVAL_US);
+  h = r.take(MSG_HELLO);
+  CHECK(h.size() == 1 && hello_nonce(h[0]) == 0);
+
+  // Once 5 s have passed since the last requested HELLO, a request is answered at once.
+  r.loop({r.hello_request(0x44)});
+  h = r.take(MSG_HELLO);
+  CHECK(h.size() == 1 && hello_nonce(h[0]) == 0x44u);
+}
+
 int main() {
   test_sha256();
   test_frames();
   test_envelope();
   test_seq_guard();
+  test_hello_echoes();
   test_dedupe();
   test_dedupe_lets_retries_through();
   test_rate_limits();
@@ -956,6 +1118,8 @@ int main() {
   test_engine_hello_and_capability();
   test_engine_connection();
   test_engine_envelope_checks();
+  test_engine_server_restart();
+  test_engine_hello_request();
   test_engine_rx1_offset();
   test_engine_duty_cycle();
   test_engine_busy_retry();

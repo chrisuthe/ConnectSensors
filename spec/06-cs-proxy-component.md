@@ -1,7 +1,7 @@
 # 06 - `cs_proxy` ESPHome Component
 
 Status: Draft
-Version: 1.0-draft.3
+Version: 1.0-draft.4
 
 This document specifies `cs_proxy`, the ESPHome external component that turns a
 node with a LoRa radio into a ConnectSensors proxy. It covers configuration,
@@ -121,7 +121,8 @@ A standalone proxy has no server and donates coverage to its neighbors.
    MAC (05 section 4.1).
 2. Pick `boot_id` from the hardware random number generator. It MUST NOT be 0.
 3. Register as a listener on the radio and as its transmit listener.
-4. Once the network is up, send `HELLO` (05 section 5.2), then every 60 seconds.
+4. Once the network is up, send `HELLO` (05 section 5.2), then every 60 seconds
+   and whenever the server asks with `HELLO_REQUEST` (05 section 5.6).
 
 Frames received before the network is up are counted as heard and dropped
 (section 5, step 4).
@@ -238,6 +239,9 @@ messages. It never originates or modifies frames.
   keeps accepting `DOWNLINK` messages that pass the envelope checks.
 - With mDNS discovery, a proxy that has been disconnected for 5 minutes repeats
   discovery.
+- A server restart needs nothing from the proxy beyond 05 section 3.2: it answers
+  the restarted server's `HELLO_REQUEST` and follows its `seq` through the
+  `SERVER_STATUS` echo. It never reboots to reconnect.
 - A proxy SHOULD NOT reboot because no API client (Home Assistant) is connected.
   Its work doesn't depend on one, and a reboot drops scheduled downlinks, dedupe and
   rate-limit state and leaves it deaf for several seconds. On ESPHome this means
@@ -410,6 +414,15 @@ be run against a test server built from the reference tool:
 9. A frame heard while the network is down or no server address is known is not
    forwarded; the same frame heard again once connected, within `dedupe_window`,
    is forwarded.
+10. After a server restart whose `seq` starts again at 1, a `SERVER_STATUS`
+    echoing one of the proxy's recent `HELLO`s is accepted, and so are the
+    restarted server's messages after it, with no reboot. A replay of that
+    `SERVER_STATUS`, or one echoing a `HELLO` the proxy did not send recently, is
+    discarded. The `session` steps of `vectors/proxy-envelope-v1.json` addressed
+    to the proxy give the expected result of each.
+11. A `HELLO_REQUEST` for the proxy's `boot_id` draws a `HELLO` echoing its nonce
+    at once; another within 5 seconds draws one 5 seconds after the first; one for
+    another `boot_id`, with a nonce of 0, or with a bad MAC draws nothing.
 
 ## 15. Upstream improvements (informative)
 

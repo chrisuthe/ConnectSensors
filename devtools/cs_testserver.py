@@ -10,6 +10,7 @@ transmission are answered once; a sensor's retry is answered again (07 section 4
     python3 devtools/cs_testserver.py                 # prints a fresh key
     python3 devtools/cs_testserver.py --key 5a5a...   # use a key you already set
     python3 devtools/cs_testserver.py --ack           # also exercise downlinks
+    python3 devtools/cs_testserver.py --no-seq-seed   # server seq from 1, as after a real restart
 
 Requires: cryptography (pip install cryptography)
 """
@@ -75,13 +76,13 @@ class TestDevice:
 
 
 def seq_seed() -> int:
-    """First server seq for a proxy boot, minus one.
+    """First server seq for a proxy session, minus one.
 
-    Workaround for #4: the proxy keeps the last server seq per boot_id, so a restarted
-    server counting from 1 again is ignored until the proxy reboots. Seeding from the
-    clock keeps a restart above the old instance's values, as long as that instance
-    sent fewer messages to the proxy than seconds have passed since it started. This
-    departs from "starting at 1" in spec 05 section 3; the proxy only needs it to grow.
+    The proxy follows a restarted server through the SERVER_STATUS echo (05 section
+    3.2), so this isn't needed. It stays as extra protection: starting above the old
+    instance's values closes the window in which the old instance's messages pass the
+    proxy's check again (05 section 7), as long as that instance sent fewer messages
+    to the proxy than seconds have passed since it started.
     """
     return int(time.time()) & 0xFFFFFFFF
 
@@ -89,9 +90,7 @@ def seq_seed() -> int:
 class Proxy:
     def __init__(self, proxy_id: bytes):
         self.proxy_id = proxy_id
-        self.boot_id = None
-        self.last_seq = 0
-        self.server_seq = seq_seed()
+        self.link = cs.ServerLink(lambda: int.from_bytes(secrets.token_bytes(4), "big") or 1)
         self.addr = None
 
 
@@ -114,6 +113,8 @@ def main() -> int:
     ap.add_argument("--key", help="proxy key, 32 hex digits (default: generate one)")
     ap.add_argument("--ack", action="store_true", help="answer confirmed uplinks from the test device")
     ap.add_argument("--window", choices=("rx1", "rx2"), default="rx1")
+    ap.add_argument("--no-seq-seed", action="store_true",
+                    help="count the server seq from 1 in each session instead of seeding it from the clock")
     args = ap.parse_args()
 
     key = bytes.fromhex(args.key) if args.key else secrets.token_bytes(16)
@@ -131,8 +132,8 @@ def main() -> int:
     log(f"Listening on UDP {args.port}; downlinks {'on (' + args.window + ')' if args.ack else 'off'}")
 
     def send(p: Proxy, msg_type: int, body: bytes) -> None:
-        p.server_seq = (p.server_seq + 1) & 0xFFFFFFFF
-        sock.sendto(cs.envelope(key, msg_type, p.proxy_id, p.boot_id, p.server_seq, body), p.addr)
+        seq = p.link.next_seq() & 0xFFFFFFFF
+        sock.sendto(cs.envelope(key, msg_type, p.proxy_id, p.link.boot_id, seq, body), p.addr)
 
     while True:
         data, addr = sock.recvfrom(2048)
@@ -143,28 +144,33 @@ def main() -> int:
             continue
         pid = bytes.fromhex(m["proxy_id"])
         p = proxies.setdefault(pid, Proxy(pid))
-        if m["type"] == cs.M_HELLO:
-            if p.boot_id != m["boot_id"]:
-                p.boot_id, p.last_seq, p.server_seq = m["boot_id"], 0, seq_seed()
-        if m["boot_id"] != p.boot_id or m["seq"] <= p.last_seq:
-            log(f"{pid.hex()}: ignored stale message seq {m['seq']}")
+        got = p.link.receive(m, int(time.monotonic() * 1000))
+        if got["result"] == "hello_request":
+            # Not our session's boot: ask for a HELLO echoing a nonce, at the source of
+            # this message, without touching the session (05 section 3.2).
+            sock.sendto(cs.envelope(key, cs.M_HELLO_REQUEST, pid, m["boot_id"], 0,
+                                    cs.hello_request_body(got["nonce"])), addr)
+            log(f"{pid.hex()}: message type 0x{m['type']:02x} from boot {m['boot_id']:08x}, "
+                f"not this session's; sent HELLO_REQUEST")
             continue
-        p.last_seq = m["seq"]
+        if got["result"] == "ignored":
+            log(f"{pid.hex()}: ignored message type 0x{m['type']:02x} boot {m['boot_id']:08x} seq {m['seq']}")
+            continue
+        if got["result"] == "switched":
+            if not args.no_seq_seed:
+                p.link.seq = seq_seed()
+            log(f"{pid.hex()}: session with boot {m['boot_id']:08x}, server seq from {p.link.seq + 1}")
         p.addr = addr
         body = bytes.fromhex(m["body"])
         now = int(time.time())
 
         if m["type"] == cs.M_HELLO:
-            caps, rlen = body[0], body[1]
-            region = body[2:2 + rlen].decode()
-            freq, sf, bw, uptime = struct.unpack(">IBHI", body[2 + rlen:13 + rlen])
-            counters = struct.unpack(">7I", body[13 + rlen:41 + rlen])
-            (gap,) = struct.unpack(">H", body[41 + rlen:43 + rlen])
-            fw = body[44 + rlen:].decode()
-            log(f"{pid.hex()} HELLO {fw}, {region} {freq / 1e6:g} MHz SF{sf} {bw} kHz, up {uptime}s, "
-                f"downlink {'yes' if caps & 1 else 'no'}, loop gap {gap} ms, "
-                f"heard/fwd/dup/invalid/rl/tx_ok/tx_fail = {'/'.join(map(str, counters))}")
-            send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, device.net_tags(now)))
+            h = cs.parse_hello(body)
+            log(f"{pid.hex()} HELLO {h['fw']}, {h['region']} {h['frequency_hz'] / 1e6:g} MHz SF{h['sf']} "
+                f"{h['bw_khz']} kHz, up {h['uptime_s']}s, downlink {'yes' if h['caps'] & 1 else 'no'}, "
+                f"loop gap {h['max_loop_gap_ms']} ms, "
+                f"heard/fwd/dup/invalid/rl/tx_ok/tx_fail = {'/'.join(map(str, h['counters']))}")
+            send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, device.net_tags(now), m["seq"]))
 
         elif m["type"] == cs.M_UPLINK:
             rx_time, rssi, snr, flags, flen = struct.unpack(">QhhBB", body[:14])
@@ -189,7 +195,7 @@ def main() -> int:
                 dl = cs.seal(keys, cs.T_DOWNLINK, h.net_tag, h.dev_tag, device.fcnt_down, dl_pt)
                 offset = 1_000_000 if args.window == "rx1" else 3_000_000
                 send(p, cs.M_DOWNLINK, cs.downlink_msg_body(rx_time, offset, dl))
-                log(f"{pid.hex()} -> DOWNLINK seq {p.server_seq} answering fcnt {h.fcnt} in {args.window}")
+                log(f"{pid.hex()} -> DOWNLINK seq {p.link.seq} answering fcnt {h.fcnt} in {args.window}")
 
         elif m["type"] == cs.M_TX_RESULT:
             seq, result, offset = struct.unpack(">IBi", body)
