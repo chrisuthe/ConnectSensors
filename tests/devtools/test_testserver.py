@@ -119,7 +119,6 @@ def main() -> int:
         m = cs.open_envelope(KEY, s.recv(2048))
         check(m["type"] == cs.M_SERVER_STATUS and guard.accept(m),
               "restarted server's SERVER_STATUS accepted by the running proxy")
-        up = cs.uplink_body(rx_time, -90.0, 7.5, 0, frames["data_confirmed"])
         s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 6, up), dest)
         m = cs.open_envelope(KEY, s.recv(2048))
         check(m["type"] == cs.M_DOWNLINK and guard.accept(m),
