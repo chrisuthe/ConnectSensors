@@ -40,7 +40,7 @@ ota:
 
 external_components:
   - source: github://chrisuthe/ConnectSensors@main
-    components: [cs_proxy]
+    components: [cs_proxy, ssd1306_paced]
 
 spi:
   clk_pin: GPIO9
@@ -149,8 +149,7 @@ i2c:
   id: oled_bus
   sda: GPIO17
   scl: GPIO18
-  # A full-frame push blocks the main loop; at 400 kHz it alone breaks the
-  # 36 ms TS_UNCERTAIN budget (spec 06 section 7).
+  # Shorter page pushes, so less time per loop pass goes to the screen.
   frequency: 800kHz
 
 font:
@@ -170,8 +169,8 @@ script:
       - delay: 5min
       - lambda: id(oled).turn_off();
 
-# Every redraw blocks the main loop for a full-frame I2C push, so the screen
-# redraws only while it is on and only when the text on it changes.
+# Rendering still runs in the main loop, so the screen redraws only while it is on
+# and only when the text on it changes.
 globals:
   - id: screen_lines
     type: std::vector<std::string>
@@ -202,7 +201,9 @@ interval:
           }
 
 display:
-  - platform: ssd1306_i2c
+  # Sends one changed page per loop pass instead of the whole frame at once, so the
+  # radio and network never wait behind a ~22 ms screen push.
+  - platform: ssd1306_paced
     id: oled
     i2c_id: oled_bus
     model: SSD1306_128X64
