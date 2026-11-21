@@ -3,6 +3,9 @@
 # Needs secrets: wifi_ssid, wifi_password, cs_proxy_key (32 hex digits, from the
 # server; for testing with devtools/cs_testserver.py use the key it prints).
 # Pins are from the board's published pinout; check them against your revision.
+#
+# The board's OLED shows server state, Wi-Fi, frame counters and the last frame's
+# signal. It sleeps after 5 minutes; PRG wakes it, and so does losing the server.
 
 substitutions:
   name: lora-proxy
@@ -10,6 +13,10 @@ substitutions:
 
 esphome:
   name: ${name}
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: screen_wake
 
 esp32:
   board: heltec_wifi_lora_32_V3
@@ -22,6 +29,9 @@ wifi:
 
 logger:
   level: DEBUG
+  # The S3 defaults to its native USB, but this board's USB socket is wired to
+  # UART0 through a CP2102.
+  hardware_uart: UART0
 
 api:
 
@@ -69,23 +79,143 @@ cs_proxy:
 sensor:
   - platform: cs_proxy
     frames_heard:
+      id: frames_heard
       name: "LoRa frames heard"
     frames_forwarded:
+      id: frames_forwarded
       name: "LoRa frames forwarded"
     invalid:
+      id: frames_invalid
       name: "LoRa packets ignored"
     downlinks_sent:
+      id: downlinks_sent
       name: "LoRa downlinks sent"
     last_rssi:
+      id: last_rssi
       name: "LoRa last RSSI"
     last_snr:
+      id: last_snr
       name: "LoRa last SNR"
     max_loop_gap:
       name: "Main loop max gap"
     airtime_used:
       name: "LoRa airtime used"
+  - platform: wifi_signal
+    id: wifi_rssi
+    name: "WiFi signal"
+    update_interval: 30s
+  - platform: uptime
+    id: uptime_s
+    name: "Uptime"
+    update_interval: 10s
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: ip_addr
 
 binary_sensor:
   - platform: cs_proxy
     server_connected:
+      id: server_connected
       name: "ConnectSensors server connected"
+      on_release:
+        - script.execute: screen_wake
+  - platform: gpio
+    name: "PRG button"
+    pin:
+      number: GPIO0
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_press:
+      - script.execute: screen_wake
+
+# --- Status screen: SSD1306 128x64 on the board ---
+
+# Vext (active low) powers the OLED and its I2C pull-ups, so it must come up
+# before the I2C bus (priority 1000) or the bus scan sees SCL held low.
+switch:
+  - platform: gpio
+    id: vext
+    pin: GPIO36
+    inverted: true
+    restore_mode: ALWAYS_ON
+    internal: true
+    setup_priority: 1100
+
+i2c:
+  id: oled_bus
+  sda: GPIO17
+  scl: GPIO18
+  # A full-frame push blocks the main loop; at 400 kHz it alone breaks the
+  # 36 ms TS_UNCERTAIN budget (spec 06 section 7).
+  frequency: 800kHz
+
+font:
+  - file: "gfonts://Roboto Mono"
+    id: small
+    size: 10
+
+# OLEDs burn in on an always-on proxy, so the screen sleeps; PRG wakes it, and so
+# does losing the server.
+script:
+  - id: screen_wake
+    mode: restart
+    then:
+      - lambda: |-
+          id(oled).turn_on();
+          id(screen_lines).clear();  // force a redraw on the next check
+      - delay: 5min
+      - lambda: id(oled).turn_off();
+
+# Every redraw blocks the main loop for a full-frame I2C push, so the screen
+# redraws only while it is on and only when the text on it changes.
+globals:
+  - id: screen_lines
+    type: std::vector<std::string>
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (!id(oled).is_on())
+            return;
+          auto n = [](esphome::sensor::Sensor *s) { return s->has_state() ? (int) s->state : 0; };
+          uint32_t up = n(id(uptime_s));
+          std::vector<std::string> lines{
+              str_sprintf("up %ud %02u:%02u", up / 86400, up / 3600 % 24, up / 60 % 60),
+              id(server_connected).state ? "SRV OK" : "NO SRV",
+              id(wifi_rssi).has_state()
+                  ? str_sprintf("%s %.0fdB", id(ip_addr).state.c_str(), id(wifi_rssi).state)
+                  : "WiFi connecting",
+              str_sprintf("heard %d fwd %d", n(id(frames_heard)), n(id(frames_forwarded))),
+              str_sprintf("inv %d dl %d", n(id(frames_invalid)), n(id(downlinks_sent))),
+              id(last_rssi).has_state()
+                  ? str_sprintf("rssi %.0f snr %.1f", id(last_rssi).state, id(last_snr).state)
+                  : "no frames yet",
+          };
+          if (lines != id(screen_lines)) {
+            id(screen_lines) = std::move(lines);
+            id(oled).update();
+          }
+
+display:
+  - platform: ssd1306_i2c
+    id: oled
+    i2c_id: oled_bus
+    model: SSD1306_128X64
+    address: 0x3C
+    reset_pin: GPIO21
+    update_interval: never
+    lambda: |-
+      const auto &l = id(screen_lines);
+      if (l.size() != 6)
+        return;
+      // Font is 13 px tall: five 13 px rows fill the 64 px screen.
+      it.print(0, 0, id(small), l[0].c_str());
+      it.print(127, 0, id(small), TextAlign::TOP_RIGHT, l[1].c_str());
+      static const int row_y[] = {13, 26, 39, 51};
+      for (int i = 0; i < 4; i++)
+        it.print(0, row_y[i], id(small), l[i + 2].c_str());
