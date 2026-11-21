@@ -96,7 +96,8 @@ short handshake instead.
 - It MUST switch to another `boot_id` only on a `HELLO` from that boot whose
   `request_nonce` equals the nonce of a `HELLO_REQUEST` it sent for that boot
   within the last 30 seconds. The `HELLO`'s `seq` becomes the highest received,
-  and the server's own `seq` for the proxy starts again at 1.
+  and the server's own `seq` for the proxy starts again, at 1 or at any higher
+  value (section 7).
 - Any other message from a `boot_id` that is not current (the proxy rebooted, the
   server restarted, or the message is a replay) changes no state, not even the
   proxy's address. The server answers it with a `HELLO_REQUEST` for that
