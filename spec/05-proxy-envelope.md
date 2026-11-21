@@ -245,6 +245,10 @@ air, so it is not an on-air time. Because the window check (06 section 8.2) runs
 before the radio is loaded, a `SENT` close to the window's end can report slightly
 more than 100 000.
 
+For scale (informative): a Heltec WiFi LoRa 32 V3 (SX1262 with TCXO) on a healthy
+main loop reports a steady `offset_us` of about 1 800, most of it the frame load and
+the radio's transmit command.
+
 | `result` | Name | Meaning |
 |---|---|---|
 | 0 | `SENT` | Transmission started within the window |
