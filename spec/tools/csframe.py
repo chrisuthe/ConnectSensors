@@ -2,7 +2,7 @@
 """Reference implementation of the ConnectSensors v1 encodings.
 
 Covers spec 02 (frame format), 03 (payload), 04 (pairing codes and key
-exchange) and 05 (proxy envelope). This module is informative. Where it disagrees with the spec, the spec
+exchange), 05 (proxy envelope) and the testable rules of 07 (network server). This module is informative. Where it disagrees with the spec, the spec
 wins and this file has a bug.
 
 Usage:
@@ -334,6 +334,40 @@ def tx_result_body(downlink_seq: int, result: int, offset_us: int) -> bytes:
     return struct.pack(">IBi", downlink_seq, result, offset_us)
 
 
+# ======================================================================== 07
+
+REORDER_WINDOW = 16
+
+
+class UplinkCounter:
+    """Server-side uplink counter acceptance (02 section 8.5, 07 section 5)."""
+
+    def __init__(self, first: int):
+        self.last = first
+        self.seen = set()
+
+    def offer(self, fcnt: int) -> str:
+        if fcnt > self.last:
+            self.seen = {x for x in self.seen | {self.last} if x > fcnt - REORDER_WINDOW}
+            self.last = fcnt
+            return "accept"
+        if fcnt == self.last or fcnt in self.seen:
+            return "duplicate"
+        if fcnt > self.last - REORDER_WINDOW:
+            self.seen.add(fcnt)
+            return "accept_late"
+        return "too_old"
+
+
+def unwrap(prev_raw: int, prev_total: int, raw: int, modulus: int) -> tuple[int, str]:
+    """Counter unwrapping (03 section 6). Returns (new_total, how)."""
+    if raw >= prev_raw:
+        return prev_total + raw - prev_raw, "increase"
+    if prev_raw >= modulus * 3 // 4:
+        return prev_total + raw + modulus - prev_raw, "wrap"
+    return prev_total + raw, "reset"
+
+
 # ======================================================================== airtime
 
 
@@ -479,8 +513,24 @@ def envelope_vectors() -> dict:
     }
 
 
+def server_vectors() -> dict:
+    ctr = UplinkCounter(10)
+    seq = [11, 13, 12, 12, 11, 30, 14, 15, 15, 29, 100000, 99990, 99984]
+    fcnt_cases = [{"fcnt": f, "result": ctr.offer(f)} for f in seq]
+    raws = [60000, 65000, 120, 50, 50, 900]
+    total, prev = raws[0], raws[0]
+    unwrap_cases = [{"raw": raws[0], "total": total, "how": "first"}]
+    for r in raws[1:]:
+        total, how = unwrap(prev, total, r, 65536)
+        prev = r
+        unwrap_cases.append({"raw": r, "total": total, "how": how})
+    return {"spec": "ConnectSensors network server rules (07)",
+            "uplink_counter": {"first_accepted": 10, "window": REORDER_WINDOW, "sequence": fcnt_cases},
+            "counter16_unwrap": {"modulus": 65536, "sequence": unwrap_cases}}
+
+
 def write_vectors(d: str) -> None:
-    for fname, data in (("frame-v1.json", frame_vectors()), ("payload-v1.json", payload_vectors()),
+    for fname, data in (("server-v1.json", server_vectors()), ("frame-v1.json", frame_vectors()), ("payload-v1.json", payload_vectors()),
                         ("pairing-v1.json", pairing_vectors()), ("proxy-envelope-v1.json", envelope_vectors())):
         with open(os.path.join(d, fname), "w") as f:
             json.dump(data, f, indent=2)
@@ -545,6 +595,21 @@ def verify(d: str) -> int:
         except ValueError:
             pass
         print(f"{'ok  ' if ok else 'FAIL'} envelope {c['name']}")
+        bad += not ok
+    with open(os.path.join(d, "server-v1.json")) as f:
+        sv = json.load(f)
+    ctr = UplinkCounter(sv["uplink_counter"]["first_accepted"])
+    for c in sv["uplink_counter"]["sequence"]:
+        got = ctr.offer(c["fcnt"])
+        print(f"{'ok  ' if got == c['result'] else 'FAIL'} counter fcnt {c['fcnt']} -> {c['result']}")
+        bad += got != c["result"]
+    u = sv["counter16_unwrap"]
+    prev, total = u["sequence"][0]["raw"], u["sequence"][0]["total"]
+    for c in u["sequence"][1:]:
+        total, how = unwrap(prev, total, c["raw"], u["modulus"])
+        prev = c["raw"]
+        ok = total == c["total"] and how == c["how"]
+        print(f"{'ok  ' if ok else 'FAIL'} unwrap {c['raw']} -> {c['total']} ({c['how']})")
         bad += not ok
     print("all vectors pass" if bad == 0 else f"{bad} failures")
     return 1 if bad else 0

@@ -155,49 +155,30 @@ interface. `cs_proxy` would then become a thin filter on top of it.
 
 ## 7. Home Assistant integration: `connect_sensors`
 
-### 7.1 Responsibilities
+The normative definitions are
+[spec/07-network-server.md](../spec/07-network-server.md) (server behavior and
+the Home Assistant integration) and
+[spec/08-sensor-behavior.md](../spec/08-sensor-behavior.md) (what sensors do).
+Pairing is in [spec/04-pairing.md](../spec/04-pairing.md) and readings in
+[spec/03-payload-v1.md](../spec/03-payload-v1.md). Summary:
 
-- UDP/MQTT listener for proxies; proxy registry and per-proxy keys.
-- Frame pipeline: tag lookup -> candidate devices -> MIC check -> replay check
-  (`fcnt` must exceed the last accepted; small reorder window of 4) -> decrypt
-  -> decode via device profile -> update entities.
-- Dedupe across proxies: first valid copy wins; later copies within 2 s only add
-  `(proxy, rssi, snr)` to the reception record.
-- Downlink scheduler: picks the proxy with the best recent SNR for that device
-  that has `downlink: true` and can make RX1; falls back to RX2 or the next uplink.
-- Supervision: each device declares a heartbeat interval. Missing 3 in a row
-  raises a `problem` binary sensor ("unreachable"). Silence from a security
-  sensor is treated as a fault, never as "closed" or "dry".
-- Coverage: per-device list of proxies that hear it, with RSSI history. A
-  "weakest link" repair view suggests where to add a proxy.
-- Federation client (Section 8): outbound WebSocket subscriptions for its own
-  `net_tag`s.
-
-### 7.2 Pairing
-
-The normative definition is [spec/04-pairing.md](../spec/04-pairing.md).
-Summary:
-
-- Each sensor ships with a pairing code, normally a QR code inside the battery
-  compartment:
-  `CS:1:<DEV_EUI>:<K_ROOT base32>:<REGION>:<PROFILE>:<CHECK>`.
-- The user scans it, then presses the sensor's button. `JOIN` and
-  `KEY_EXCHANGE` carry an X25519 exchange authenticated by `k_root`, which
-  produces a fresh `k_session` for every pairing. `SYNC` and `SET_NETWORK` then
-  deliver the network routing key under the session keys.
-- A previous owner who kept the pairing code cannot read the device's traffic
-  after it is paired again.
-- Removal sends `LEAVE`; a factory reset keeps `k_root` and the frame counter.
-  Network keys can be rotated without re-pairing.
-
-Readings inside payloads, the default Home Assistant entity mapping and device
-profiles are defined in [spec/03-payload-v1.md](../spec/03-payload-v1.md).
-
-### 7.3 Storage
-
-Keys in Home Assistant's `.storage` (included in HA backups, which are encrypted).
-Last `fcnt` per device persisted at least every 16 frames, with a jump-ahead
-on restart.
+- **Uplinks:** every copy from every proxy is collected for 150 ms, the device is
+  identified by tag lookup (or trial decryption for bootstrap frames), counters
+  are checked, readings applied once.
+- **Answers:** confirmed uplinks, queued commands and clock corrections get a
+  downlink. RX1 goes through the proxy with the best SNR among those with good
+  timing; failures fall back to RX2 through another proxy.
+- **Commands** are queued per device and resent until the sensor's next uplink
+  acknowledges them.
+- **Supervision:** a device silent for three heartbeat intervals is unreachable
+  and its state entities become unavailable. Silence is never shown as "closed"
+  or "dry". Devices heard by only one proxy are flagged.
+- **Home Assistant:** config flow for the network, proxies (with a generated key
+  and YAML snippet) and devices (pairing code); profile-driven entities; proxies
+  merge with their ESPHome devices; actions, events and repair issues.
+- **Sensors:** debounced state changes, heartbeats with full state and jitter, a
+  confirmed uplink at least daily, up to three retries, automatic `SYNC` after
+  repeated failures, never giving up. A contact sensor uses about 80 mAh a year.
 
 ---
 

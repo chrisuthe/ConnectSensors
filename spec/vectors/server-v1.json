@@ -1,0 +1,96 @@
+{
+  "spec": "ConnectSensors network server rules (07)",
+  "uplink_counter": {
+    "first_accepted": 10,
+    "window": 16,
+    "sequence": [
+      {
+        "fcnt": 11,
+        "result": "accept"
+      },
+      {
+        "fcnt": 13,
+        "result": "accept"
+      },
+      {
+        "fcnt": 12,
+        "result": "accept_late"
+      },
+      {
+        "fcnt": 12,
+        "result": "duplicate"
+      },
+      {
+        "fcnt": 11,
+        "result": "duplicate"
+      },
+      {
+        "fcnt": 30,
+        "result": "accept"
+      },
+      {
+        "fcnt": 14,
+        "result": "too_old"
+      },
+      {
+        "fcnt": 15,
+        "result": "accept_late"
+      },
+      {
+        "fcnt": 15,
+        "result": "duplicate"
+      },
+      {
+        "fcnt": 29,
+        "result": "accept_late"
+      },
+      {
+        "fcnt": 100000,
+        "result": "accept"
+      },
+      {
+        "fcnt": 99990,
+        "result": "accept_late"
+      },
+      {
+        "fcnt": 99984,
+        "result": "too_old"
+      }
+    ]
+  },
+  "counter16_unwrap": {
+    "modulus": 65536,
+    "sequence": [
+      {
+        "raw": 60000,
+        "total": 60000,
+        "how": "first"
+      },
+      {
+        "raw": 65000,
+        "total": 65000,
+        "how": "increase"
+      },
+      {
+        "raw": 120,
+        "total": 65656,
+        "how": "wrap"
+      },
+      {
+        "raw": 50,
+        "total": 65706,
+        "how": "reset"
+      },
+      {
+        "raw": 50,
+        "total": 65706,
+        "how": "increase"
+      },
+      {
+        "raw": 900,
+        "total": 66556,
+        "how": "increase"
+      }
+    ]
+  }
+}
