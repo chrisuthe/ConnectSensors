@@ -386,7 +386,7 @@ uint8_t TxScheduler::admit(uint32_t seq, uint64_t tx_at_us, const uint8_t *frame
 ScheduledTx *TxScheduler::due(uint64_t now_us) {
   ScheduledTx *best = nullptr;
   for (auto &s : this->slots_) {
-    if (s.active && s.tx_at_us <= now_us && (best == nullptr || s.tx_at_us < best->tx_at_us))
+    if (s.active && !s.in_flight && s.tx_at_us <= now_us && (best == nullptr || s.tx_at_us < best->tx_at_us))
       best = &s;
   }
   return best;
@@ -395,7 +395,7 @@ ScheduledTx *TxScheduler::due(uint64_t now_us) {
 uint64_t TxScheduler::next_tx_at() const {
   uint64_t best = 0;
   for (const auto &s : this->slots_) {
-    if (s.active && (best == 0 || s.tx_at_us < best))
+    if (s.active && !s.in_flight && (best == 0 || s.tx_at_us < best))
       best = s.tx_at_us;
   }
   return best;

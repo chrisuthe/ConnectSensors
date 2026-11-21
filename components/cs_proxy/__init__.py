@@ -151,6 +151,8 @@ CONFIG_SCHEMA = cv.All(
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
+    # Asynchronous radio transmit (start_transmit_async) arrived in 2026.12.
+    cv.require_esphome_version(2026, 12, 0),
     socket.consume_sockets(1, "cs_proxy", socket.SocketType.UDP),
 )
 

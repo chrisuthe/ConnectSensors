@@ -11,13 +11,15 @@ Specification: [spec/06-cs-proxy-component.md](../../spec/06-cs-proxy-component.
 
 ## Status
 
-Version 0.1.0, early development. Implemented:
+Version 0.2.0, early development. Implemented:
 
 - Region profile `US915`, with compile-time checks that the radio settings match
 - `sx126x` and `sx127x` radios
 - UDP transport with per-proxy keys, `HELLO`, `SERVER_STATUS`, `UPLINK`,
   `DOWNLINK`, `TX_RESULT`, replay protection
 - Keyless frame checks, dedupe, rate limits, airtime budget, transmit scheduling
+- Asynchronous downlink transmit, so a downlink does not hold the main loop for
+  its airtime
 - Timestamp-uncertainty flag and downlink withdrawal when the main loop stalls
 - Server hostname or IP address (resolved without blocking)
 - Diagnostic sensors and the `server_connected` binary sensor
@@ -28,11 +30,11 @@ Not yet implemented (rejected at compile time where configurable):
 - MQTT transport
 - mDNS discovery of the server (`server.host` is required)
 - Standalone federation (spec 09 section 5.2)
-- Asynchronous transmit; downlinks use the radio's blocking `transmit_packet`
 
 ## Requirements
 
-- ESPHome 2026.11.0 or later
+- ESPHome 2026.12 or later; until it is released, ESPHome's `dev` branch
+  (`pip install "esphome @ git+https://github.com/esphome/esphome@dev"`)
 - ESP32 family
 - An `sx126x` or `sx127x` component in LoRa mode with the region's settings
 
