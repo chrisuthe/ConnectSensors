@@ -306,7 +306,9 @@ static void test_scheduler() {
   // In flight: no longer due or next, but still occupies the schedule and the budget.
   ScheduledTx *f4 = s.due(now + 3000000);
   CHECK(f4 != nullptr && f4->seq == 4);
-  s.start(f4);
+  // The offset is taken when the radio was commanded, not when the slot came due.
+  s.start(f4, now + 3000000 + 850);
+  CHECK(f4->in_flight && f4->offset_us == 850);
   CHECK(s.due(now + 3000000) == nullptr);
   CHECK(s.next_tx_at() == 0);
   CHECK(s.admit(5, now + 3050000, f.data(), f.size(), air, now, true, budget) == TX_BUSY);
@@ -314,7 +316,7 @@ static void test_scheduler() {
   one_frame.spend(3600000 - air - air / 2, now);
   CHECK(s.admit(6, now + 4500000, f.data(), f.size(), air, now, true, one_frame) == TX_DUTY_CYCLE);
   s.release(f4);
-  CHECK(!f4->in_flight && !f4->saw_busy);
+  CHECK(!f4->in_flight && !f4->saw_busy && f4->offset_us == 0);
   CHECK(s.admit(6, now + 4500000, f.data(), f.size(), air, now, true, one_frame) == TX_SENT);
 
   ScheduledTx expired;

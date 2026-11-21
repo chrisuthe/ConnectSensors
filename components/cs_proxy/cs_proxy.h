@@ -169,7 +169,6 @@ class CSProxy : public Component
   esp_timer_handle_t tx_timer_{nullptr};
   uint64_t tx_timer_at_{0};
   ScheduledTx *tx_in_flight_{nullptr};
-  int32_t tx_offset_us_{0};
 
   std::unique_ptr<socket::UDPSocket> socket_;
   socket::Ipv4Resolve resolver_;
