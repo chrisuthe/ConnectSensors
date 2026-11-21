@@ -391,6 +391,7 @@ class UplinkCollector:
             f = self.frames[key] = [rx, rx, MAX_ANSWERS_AGAIN if counter == "duplicate" else 0]
         else:
             f[1] = rx
+        # Whether an answer can still make RX2 is not modelled; every answer counts toward the cap.
         answer = False
         if h.ftype in (T_DATA_CONFIRMED, T_HEARTBEAT_CONFIRMED, T_JOIN, T_SYNC):
             if counter in ("accept", "accept_late"):

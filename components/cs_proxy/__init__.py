@@ -133,6 +133,7 @@ CONFIG_SCHEMA = cv.All(
                 }
             ),
             # Below the sensor's earliest retry (4 s), so retransmissions get through (06 section 6).
+            # Keep the maximum in step with DEDUPE_WINDOW_MAX_US in proxy_core.h.
             cv.Optional(CONF_DEDUPE_WINDOW, default="2s"): cv.All(
                 cv.positive_time_period_milliseconds,
                 cv.Range(min=cv.TimePeriod(seconds=1), max=cv.TimePeriod(seconds=3)),

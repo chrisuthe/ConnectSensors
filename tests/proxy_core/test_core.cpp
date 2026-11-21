@@ -210,7 +210,6 @@ static void test_dedupe() {
 // A sensor's retry is the same bytes 4 s or more later (08 section 5); the
 // default window must merge near-simultaneous copies but forward the retry.
 static void test_dedupe_lets_retries_through() {
-  DedupeCache c(64);
   const uint64_t t0 = 10000000;
   for (uint64_t w : {DEDUPE_WINDOW_DEFAULT_US, DEDUPE_WINDOW_MAX_US}) {
     DedupeCache d(64);
@@ -219,6 +218,7 @@ static void test_dedupe_lets_retries_through() {
     CHECK(!d.contains(7, t0 + SENSOR_FIRST_RETRY_US, w));  // retry 1 at its earliest
   }
   // Walk the whole retry schedule as the pipeline does: look up, then insert if forwarded.
+  DedupeCache c(64);
   const uint64_t retries[] = {0, 4000000, 12000000, 30000000};
   int forwarded = 0;
   for (uint64_t at : retries) {

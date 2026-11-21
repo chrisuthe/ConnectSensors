@@ -193,7 +193,7 @@ can transmit:
 3. It picks the reception with the best SNR and sends a downlink request to that
    publisher, on the relays where it received the uplink.
 4. It never requests RX1 through federation.
-5. It sends at most one request per uplink.
+5. It sends at most one request per transmission (07 section 4, step 3).
 
 ## 7. Publisher handling of downlink requests
 

@@ -205,8 +205,9 @@ bytes: same `fcnt`, same tags, same ciphertext. It is not a new frame and does n
 use a new counter value, but it is a new transmission: the first retry comes at
 least 4 seconds after the original (08 section 5). Proxies and the server
 therefore tell transmissions apart by time, not by bytes: copies received within
-2 seconds of each other are one transmission, and a later copy is a
-retransmission that MUST reach the server and be answered again (section 8.5).
+2 seconds of a transmission's first copy are that transmission, and a later copy
+is a retransmission that MUST reach the server and be answered again (section
+8.5).
 
 ### 8.4 Downlink counter
 
@@ -228,8 +229,8 @@ counter, and a record of which of the 16 counter values below it were received.
   arrival).
 - Otherwise: treat as a duplicate or replay. Do not deliver it again. If it is a
   retransmission (section 8.3) of a confirmed type, the server MUST answer it
-  again so a sensor that missed the first answer stops retrying (07 section 4,
-  step 5).
+  again, within the limits of 07 section 4, step 5, so a sensor that missed the
+  first answer stops retrying.
 
 A frame is accepted only after its MIC verifies.
 
