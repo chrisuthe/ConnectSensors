@@ -210,9 +210,12 @@ Rejections are reported immediately with `TX_RESULT`.
   answer of `BUSY` (a received packet is waiting) is retried on the next loop
   pass until `tx_at + 100 ms`, then reported as `BUSY`.
 - If the window has passed, it reports `TOO_LATE` and does not transmit.
-- On transmit completion it reports `SENT` with `offset_us` = actual start time
-  minus `tx_at`, and adds the airtime to the budget. On a radio error it reports
-  `RADIO_ERROR`.
+- It samples `offset_us` as soon as `start_transmit_async` accepts the frame: the
+  frame is in the radio's FIFO and the transmit command has been issued.
+  `offset_us` is that time minus `tx_at`, as defined in 05 section 5.5; it excludes
+  the radio's own ramp-up to the preamble.
+- On transmit completion it reports `SENT` with that `offset_us`, and adds the
+  airtime to the budget. On a radio error it reports `RADIO_ERROR`.
 - The radio cannot receive while it transmits. Frames sent by sensors during that
   time are lost to this proxy; other proxies and sensor retransmissions cover
   that.
@@ -386,8 +389,8 @@ be run against a test server built from the reference tool:
    their layout matches `vectors/proxy-envelope-v1.json`.
 5. A `DOWNLINK` with a bad MAC, a stale server `seq`, a different `boot_id`, or an
    uplink-type frame is not transmitted.
-6. A `DOWNLINK` for RX1 is transmitted with `offset_us` between 0 and 100 000 when
-   the main loop is healthy.
+6. A `DOWNLINK` for RX1 is transmitted with `offset_us` (05 section 5.5) between
+   0 and 100 000 when the main loop is healthy.
 7. Downlinks that would exceed the airtime budget are rejected with `DUTY_CYCLE`.
 8. A configuration whose radio settings differ from the region profile fails to
    compile.

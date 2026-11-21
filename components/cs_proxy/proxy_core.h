@@ -246,6 +246,7 @@ struct ScheduledTx {
   bool active{false};
   bool in_flight{false};  // handed to the radio, awaiting completion
   bool saw_busy{false};   // the radio refused it at least once with a received packet waiting
+  int32_t offset_us{0};   // TX commanded minus tx_at, set by start() (05 section 5.5)
   uint32_t seq{0};
   uint64_t tx_at_us{0};
   uint32_t airtime_us{0};
@@ -267,11 +268,17 @@ class TxScheduler {
   ScheduledTx *due(uint64_t now_us);
   // Earliest waiting tx_at, or 0 if none.
   uint64_t next_tx_at() const;
-  void start(ScheduledTx *slot) { slot->in_flight = true; }
+  // Call once the radio has the frame and has been told to transmit, so the offset
+  // covers the radio start and not just the wait for tx_at.
+  void start(ScheduledTx *slot, uint64_t commanded_us) {
+    slot->in_flight = true;
+    slot->offset_us = int32_t(commanded_us - slot->tx_at_us);
+  }
   void release(ScheduledTx *slot) {
     slot->active = false;
     slot->in_flight = false;
     slot->saw_busy = false;
+    slot->offset_us = 0;
   }
 
  private:

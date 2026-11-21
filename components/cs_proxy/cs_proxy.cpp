@@ -372,12 +372,10 @@ void CSProxy::run_due_transmissions_() {
       this->scheduler_.release(slot);
       continue;
     }
-    const int32_t offset = int32_t(now - slot->tx_at_us);
     const uint8_t started = this->radio_start_transmit_(*slot);
     if (started == TX_SENT) {
-      this->scheduler_.start(slot);
+      this->scheduler_.start(slot, now_us_());
       this->tx_in_flight_ = slot;
-      this->tx_offset_us_ = offset;
       this->tx_timer_at_ = 0;
       return;  // tx_complete_() reports the result and re-arms the timer
     }
@@ -434,8 +432,9 @@ void CSProxy::tx_complete_(bool ok) {
   if (ok) {
     this->budget_->spend(slot->airtime_us, now_us_());
     this->tx_ok_++;
-    ESP_LOGD(TAG, "Downlink seq %" PRIu32 " sent, %.1f ms after target", slot->seq, this->tx_offset_us_ / 1000.0f);
-    this->send_tx_result_(slot->seq, TX_SENT, this->tx_offset_us_);
+    ESP_LOGD(TAG, "Downlink seq %" PRIu32 " sent, TX commanded %.2f ms after target", slot->seq,
+             slot->offset_us / 1000.0f);
+    this->send_tx_result_(slot->seq, TX_SENT, slot->offset_us);
   } else {
     this->tx_failed_++;
     ESP_LOGW(TAG, "Radio error sending downlink seq %" PRIu32, slot->seq);

@@ -233,9 +233,21 @@ Sent once for every `DOWNLINK` the proxy accepted or rejected.
 ```
 downlink_seq  uint32  seq of the DOWNLINK message
 result        uint8
-offset_us     int32   actual transmit start minus tx_at, for result SENT;
-                      0 otherwise
+offset_us     int32   time the radio was commanded to transmit minus tx_at,
+                      for result SENT; 0 otherwise
 ```
+
+`offset_us` is taken on the proxy's clock once the frame is in the radio and the
+transmit command has been issued. It covers the wait for `tx_at`, any lateness of
+the proxy's main loop, and the time to load the frame and command the radio. It
+excludes the radio's own ramp-up from that command to the first preamble symbol on
+air, so it is not an on-air time. Because the window check (06 section 8.2) runs
+before the radio is loaded, a `SENT` close to the window's end can report slightly
+more than 100 000.
+
+For scale (informative): a Heltec WiFi LoRa 32 V3 (SX1262 with TCXO) on a healthy
+main loop reports a steady `offset_us` of about 1 800, most of it the frame load and
+the radio's transmit command.
 
 | `result` | Name | Meaning |
 |---|---|---|
