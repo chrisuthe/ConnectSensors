@@ -31,7 +31,7 @@ proxy* (09 section 5.2, and section 3.4 below).
 | Framework | ESP-IDF or Arduino, as supported by the radio component |
 | Network | Wi-Fi or Ethernet, on the same LAN as the server for UDP |
 | Radio | Exactly one `sx126x` or `sx127x` component in LoRa mode |
-| ESPHome | 2026.11.0 or later: the radio components provide `register_listener` and a blocking `transmit_packet`. ESPHome's development branch adds `start_transmit_async`, which a later version of the component can use. |
+| ESPHome | 2026.11.0 or later: the radio components provide `register_listener` and a blocking `transmit_packet`. From 2026.12 they also provide `start_transmit_async`, which the component uses when available (section 8.2). |
 
 The radio MUST be configured with `rx_start: true` (the default), so it returns
 to receive after every transmission.
@@ -200,12 +200,13 @@ Rejections are reported immediately with `TX_RESULT`.
   callback only wakes the main loop (`enable_loop_soon_any_context()`); the main
   loop waits out the last 2 ms and starts the transmission itself.
 - The component transmits if the current time is in `[tx_at, tx_at + 100 ms]`.
-  With ESPHome releases up to 2026.11 this uses the radio's blocking
-  `transmit_packet`, which holds the main loop for the frame's airtime (about 60
-  to 125 ms on US915), as ESPHome's own `packet_transport` does. With
-  `start_transmit_async`, a radio answer of `BUSY` (a received packet is
-  waiting) is retried on the next loop pass until `tx_at + 100 ms`, then
-  reported as `BUSY`.
+  From ESPHome 2026.12 this uses the radio's `start_transmit_async`, which
+  returns once the frame is in the radio and reports completion from a later
+  loop pass. A radio answer of `BUSY` (a received packet is waiting) is retried
+  on the next loop pass until `tx_at + 100 ms`, then reported as `BUSY`. With
+  ESPHome 2026.11 it uses the radio's blocking `transmit_packet`, which holds the
+  main loop for the frame's airtime (about 60 to 125 ms on US915), as ESPHome's
+  own `packet_transport` does.
 - If the window has passed, it reports `TOO_LATE` and does not transmit.
 - On transmit completion it reports `SENT` with `offset_us` = actual start time
   minus `tx_at`, and adds the airtime to the budget. On a radio error it reports

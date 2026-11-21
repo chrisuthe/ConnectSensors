@@ -342,6 +342,12 @@ void CSProxy::arm_tx_timer_() {
 }
 
 void CSProxy::run_due_transmissions_() {
+#ifdef CS_PROXY_ASYNC_TX
+  // The radio is ours until the in-flight frame completes; the schedule keeps frames
+  // at least an airtime plus the window apart, so the next one is not due yet.
+  if (this->tx_in_flight_ != nullptr)
+    return;
+#endif
   for (;;) {
     uint64_t now = now_us_();
     // Busy-wait the last couple of milliseconds so the transmission starts on time.
@@ -355,14 +361,35 @@ void CSProxy::run_due_transmissions_() {
     if (slot == nullptr)
       break;
     if (now > slot->tx_at_us + TX_WINDOW_US) {
+      const uint8_t result = expired_result(*slot);
       this->tx_failed_++;
-      ESP_LOGW(TAG, "Downlink seq %" PRIu32 " missed its window by %" PRIu32 " ms", slot->seq,
-               uint32_t((now - slot->tx_at_us) / 1000));
-      this->send_tx_result_(slot->seq, TX_TOO_LATE, 0);
+      ESP_LOGW(TAG, "Downlink seq %" PRIu32 " missed its window by %" PRIu32 " ms (result %u)", slot->seq,
+               uint32_t((now - slot->tx_at_us) / 1000), result);
+      this->send_tx_result_(slot->seq, result, 0);
       this->scheduler_.release(slot);
       continue;
     }
     const int32_t offset = int32_t(now - slot->tx_at_us);
+#ifdef CS_PROXY_ASYNC_TX
+    const uint8_t started = this->radio_start_transmit_(*slot);
+    if (started == TX_SENT) {
+      this->scheduler_.start(slot);
+      this->tx_in_flight_ = slot;
+      this->tx_offset_us_ = offset;
+      this->tx_timer_at_ = 0;
+      return;  // tx_complete_() reports the result and re-arms the timer
+    }
+    if (started == TX_BUSY) {
+      // A received packet is waiting; the radio delivers it in its own loop() and the
+      // next pass retries until the window closes.
+      slot->saw_busy = true;
+      break;
+    }
+    this->tx_failed_++;
+    ESP_LOGW(TAG, "Radio refused downlink seq %" PRIu32, slot->seq);
+    this->send_tx_result_(slot->seq, TX_RADIO_ERROR, 0);
+    this->scheduler_.release(slot);
+#else
     const bool ok = this->radio_transmit_(slot->frame, slot->len);
     if (ok) {
       this->budget_->spend(slot->airtime_us, now);
@@ -375,11 +402,65 @@ void CSProxy::run_due_transmissions_() {
       this->send_tx_result_(slot->seq, TX_RADIO_ERROR, 0);
     }
     this->scheduler_.release(slot);
+#endif
   }
   this->tx_timer_at_ = 0;
   this->arm_tx_timer_();
 }
 
+#ifdef CS_PROXY_ASYNC_TX
+uint8_t CSProxy::radio_start_transmit_(const ScheduledTx &slot) {
+  // The radio fails the operation if it has not completed well after the airtime.
+  const uint32_t timeout_ms = slot.airtime_us / 1000 + 100;
+#ifdef USE_CS_PROXY_SX126X
+  if (this->sx126x_ != nullptr) {
+    switch (this->sx126x_->start_transmit_async(this, slot.frame, slot.len, timeout_ms)) {
+      case sx126x::SX126xError::SX126X_ERROR_NONE:
+        return TX_SENT;
+      case sx126x::SX126xError::SX126X_ERROR_BUSY:
+        return TX_BUSY;
+      default:
+        return TX_RADIO_ERROR;
+    }
+  }
+#endif
+#ifdef USE_CS_PROXY_SX127X
+  if (this->sx127x_ != nullptr) {
+    switch (this->sx127x_->start_transmit_async(this, slot.frame, slot.len, timeout_ms)) {
+      case sx127x::SX127xError::SX127X_ERROR_NONE:
+        return TX_SENT;
+      case sx127x::SX127xError::SX127X_ERROR_BUSY:
+        return TX_BUSY;
+      default:
+        return TX_RADIO_ERROR;
+    }
+  }
+#endif
+  return TX_RADIO_ERROR;
+}
+
+void CSProxy::tx_complete_(bool ok) {
+  ScheduledTx *slot = this->tx_in_flight_;
+  if (slot == nullptr)
+    return;
+  this->tx_in_flight_ = nullptr;
+  if (ok) {
+    this->budget_->spend(slot->airtime_us, now_us_());
+    this->tx_ok_++;
+    ESP_LOGD(TAG, "Downlink seq %" PRIu32 " sent, %.1f ms after target", slot->seq, this->tx_offset_us_ / 1000.0f);
+    this->send_tx_result_(slot->seq, TX_SENT, this->tx_offset_us_);
+  } else {
+    this->tx_failed_++;
+    ESP_LOGW(TAG, "Radio error sending downlink seq %" PRIu32, slot->seq);
+    this->send_tx_result_(slot->seq, TX_RADIO_ERROR, 0);
+  }
+  this->scheduler_.release(slot);
+  this->tx_timer_at_ = 0;
+  this->arm_tx_timer_();
+  // Anything that came due while the radio was busy goes out now, not at the next wake.
+  this->enable_loop_soon_any_context();
+}
+#else
 bool CSProxy::radio_transmit_(const uint8_t *data, size_t len) {
   // Release radio components block until the packet is sent. Error code 0 means success
   // in every version, whatever the enum's name.
@@ -393,6 +474,7 @@ bool CSProxy::radio_transmit_(const uint8_t *data, size_t len) {
 #endif
   return false;
 }
+#endif
 
 // ------------------------------------------------------------------------ entities
 

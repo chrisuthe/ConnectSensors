@@ -47,18 +47,28 @@ jobs:
       - run: python3 -I tests/devtools/test_testserver.py
 
   esphome:
-    name: ESPHome ${{ matrix.example }}
+    name: ESPHome ${{ matrix.esphome }} ${{ matrix.example }}
     runs-on: ubuntu-latest
+    # dev is the target (asynchronous transmit); 2026.11.0 is a best-effort fallback
+    # and must not block merges.
+    continue-on-error: ${{ matrix.esphome != 'dev' }}
     strategy:
       fail-fast: false
       matrix:
         example: [proxy-heltec-v3, test-transmitter-heltec-v3]
+        esphome: [dev, "2026.11.0"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install esphome==2026.11.0
+      - name: Install ESPHome
+        run: |
+          if [ "${{ matrix.esphome }}" = dev ]; then
+            pip install "esphome @ git+https://github.com/esphome/esphome@dev"
+          else
+            pip install "esphome==${{ matrix.esphome }}"
+          fi
       - name: Prepare config using this checkout
         run: |
           mkdir -p build

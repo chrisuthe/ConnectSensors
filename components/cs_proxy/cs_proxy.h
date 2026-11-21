@@ -5,6 +5,7 @@
 
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
+#include "esphome/core/version.h"
 #include "esphome/components/socket/socket.h"
 #include "esphome/components/socket/ipv4_resolve.h"
 
@@ -23,6 +24,11 @@
 
 #include "proxy_core.h"
 
+// ESPHome 2026.12 radios can transmit without holding the main loop for the airtime.
+#if ESPHOME_VERSION_CODE >= VERSION_CODE(2026, 12, 0)
+#define CS_PROXY_ASYNC_TX
+#endif
+
 #include <esp_timer.h>
 #include <memory>
 #include <string>
@@ -30,16 +36,24 @@
 
 namespace esphome::cs_proxy {
 
-static constexpr const char *CS_PROXY_VERSION = "0.1.0";
+static constexpr const char *CS_PROXY_VERSION = "0.2.0";
 
 class CSProxy : public Component
 #ifdef USE_CS_PROXY_SX126X
     ,
                 public sx126x::SX126xListener
+#ifdef CS_PROXY_ASYNC_TX
+    ,
+                public sx126x::SX126xTransmitListener
+#endif
 #endif
 #ifdef USE_CS_PROXY_SX127X
     ,
                 public sx127x::SX127xListener
+#ifdef CS_PROXY_ASYNC_TX
+    ,
+                public sx127x::SX127xTransmitListener
+#endif
 #endif
 {
  public:
@@ -50,6 +64,18 @@ class CSProxy : public Component
 
   // Radio listener (both radio components use this signature).
   void on_packet(const std::vector<uint8_t> &packet, float rssi, float snr) override;
+#ifdef CS_PROXY_ASYNC_TX
+#ifdef USE_CS_PROXY_SX126X
+  void on_transmit_complete(sx126x::SX126xError result) override {
+    this->tx_complete_(result == sx126x::SX126xError::SX126X_ERROR_NONE);
+  }
+#endif
+#ifdef USE_CS_PROXY_SX127X
+  void on_transmit_complete(sx127x::SX127xError result) override {
+    this->tx_complete_(result == sx127x::SX127xError::SX127X_ERROR_NONE);
+  }
+#endif
+#endif
 
 #ifdef USE_CS_PROXY_SX126X
   void set_sx126x(sx126x::SX126x *radio) { this->sx126x_ = radio; }
@@ -104,7 +130,14 @@ class CSProxy : public Component
   static uint64_t now_us_() { return uint64_t(esp_timer_get_time()); }
   static void tx_timer_cb_(void *arg);
 
+#ifdef CS_PROXY_ASYNC_TX
+  // TX_SENT when the radio accepted the frame, TX_BUSY when a received packet is waiting,
+  // TX_RADIO_ERROR otherwise.
+  uint8_t radio_start_transmit_(const ScheduledTx &slot);
+  void tx_complete_(bool ok);
+#else
   bool radio_transmit_(const uint8_t *data, size_t len);
+#endif
   void handle_message_(const uint8_t *data, size_t len, uint64_t now);
   void handle_downlink_(const Envelope &e, uint64_t now);
   void run_due_transmissions_();
@@ -153,6 +186,10 @@ class CSProxy : public Component
   TxScheduler scheduler_;
   esp_timer_handle_t tx_timer_{nullptr};
   uint64_t tx_timer_at_{0};
+#ifdef CS_PROXY_ASYNC_TX
+  ScheduledTx *tx_in_flight_{nullptr};
+  int32_t tx_offset_us_{0};
+#endif
 
   std::unique_ptr<socket::UDPSocket> socket_;
   socket::Ipv4Resolve resolver_;

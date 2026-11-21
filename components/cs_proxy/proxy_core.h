@@ -234,6 +234,8 @@ constexpr size_t TX_SLOTS = 4;
 
 struct ScheduledTx {
   bool active{false};
+  bool in_flight{false};  // handed to the radio, awaiting completion
+  bool saw_busy{false};   // the radio refused it at least once with a received packet waiting
   uint32_t seq{0};
   uint64_t tx_at_us{0};
   uint32_t airtime_us{0};
@@ -241,16 +243,26 @@ struct ScheduledTx {
   uint8_t frame[FRAME_MAX]{};
 };
 
+// Result for a slot whose transmit window passed without a transmission: BUSY if the
+// radio kept refusing it, TOO_LATE otherwise (06 section 8.2).
+inline uint8_t expired_result(const ScheduledTx &slot) { return slot.saw_busy ? TX_BUSY : TX_TOO_LATE; }
+
 class TxScheduler {
  public:
   // Returns TX_SENT when the downlink was scheduled, or the rejection result.
   uint8_t admit(uint32_t seq, uint64_t tx_at_us, const uint8_t *frame, size_t len, uint32_t airtime_us,
                 uint64_t now_us, bool capable, AirtimeBudget &budget);
-  // The earliest active slot whose tx_at has passed, or nullptr.
+  // The earliest waiting slot whose tx_at has passed, or nullptr. In-flight slots are
+  // not returned but still occupy the schedule and the budget reservation.
   ScheduledTx *due(uint64_t now_us);
-  // Earliest pending tx_at, or 0 if none.
+  // Earliest waiting tx_at, or 0 if none.
   uint64_t next_tx_at() const;
-  void release(ScheduledTx *slot) { slot->active = false; }
+  void start(ScheduledTx *slot) { slot->in_flight = true; }
+  void release(ScheduledTx *slot) {
+    slot->active = false;
+    slot->in_flight = false;
+    slot->saw_busy = false;
+  }
 
  private:
   uint64_t reserved_us_() const;
