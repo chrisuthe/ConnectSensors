@@ -77,143 +77,43 @@ Components:
 
 ## 4. Radio layer
 
-### 4.1 Regional profiles
+The normative definition is
+[spec/01-radio-profiles.md](../spec/01-radio-profiles.md). Summary:
 
-The whole network shares one channel and one spreading factor per region profile.
-Values below are proposals and must be checked against current regulations
-before release (this is not legal advice).
-
-| Profile | Frequency | Bandwidth | SF | Notes |
-|---|---|---|---|---|
-| `US915` | 904.6 MHz (TBD) | 500 kHz | SF9 | 500 kHz LoRa qualifies as digital modulation (DTS) under FCC 15.247, so a fixed channel is allowed without hopping. Subject to the 8 dBm/3 kHz PSD limit. Costs about 6 dB of sensitivity versus 125 kHz. |
-| `US915_LP` | configurable | 125 kHz | SF7-SF9 | Low-power mode under 15.249 field-strength limits, for dense indoor installs. |
-| `EU868` | 869.525 MHz | 125 kHz | SF9 | 869.4-869.65 MHz sub-band: 10% duty cycle, 500 mW ERP. Good for downlinks too. |
-| `AU915` | TBD | 500 kHz | SF9 | Mirror US approach, verify locally. |
-
-Other parameters:
-
-- Explicit header, CRC on, preamble 8.
-- Private sync word (sx126x `sync_value: [0x14, 0x24]`). This is shared with many
-  private LoRa networks, so the magic byte (5.1) does the real filtering.
-- Do not sit on frequencies used by other common LoRa networks (for example
-  Meshtastic defaults).
-
-### 4.2 Airtime budget
-
-A 40-byte frame at SF9/500 kHz is about 50 ms; at SF9/125 kHz about 200 ms.
-Sensors send a heartbeat every 10-30 minutes and events as they happen.
-A home with 50 sensors uses well under 1% of channel time.
+- One channel and one spreading factor per region profile, for uplinks and
+  downlinks, because ESPHome proxies are single-channel receivers.
+- `US915`: 918.5 MHz (provisional), 500 kHz, SF9, intended to operate as a
+  digital transmission system under FCC 15.247 without hopping. The channel sits
+  between the LoRaWAN US915 uplink and downlink ranges and away from Z-Wave.
+- `EU868`: 125 kHz, SF9, frequency still open; untested.
+- Private sync word; the frame magic byte does the real filtering.
+- Sensors limited to 1% airtime per hour, proxies to 2% for downlinks. A
+  minimum-size uplink is about 52 ms on US915.
 
 ---
 
 ## 5. Frame format (v1)
 
-All multi-byte integers big-endian.
+The normative definition is [spec/02-frame-v1.md](../spec/02-frame-v1.md), with
+radio parameters in [spec/01-radio-profiles.md](../spec/01-radio-profiles.md).
+Summary:
 
-### 5.1 Uplink frame
-
-```
-Offset Size Field
-0      1    magic = 0xC5
-1      1    ver (high nibble, = 1) | type (low nibble)
-2      4    net_tag   - rotating network tag (5.3)
-6      4    dev_tag   - rotating device tag (5.3)
-10     4    fcnt      - frame counter, monotonic per device
-14     N    payload   - AES-128-CCM ciphertext
-14+N   8    mic       - CCM tag (64-bit)
-```
-
-Header overhead: 22 bytes. Header bytes 0-13 are the CCM additional data, so they
-are authenticated but not encrypted.
-
-Types:
-
-| Type | Name | Direction |
-|---|---|---|
-| 0x1 | `DATA` | uplink, no ack requested |
-| 0x2 | `DATA_CONFIRMED` | uplink, ack requested |
-| 0x3 | `HEARTBEAT` | uplink, battery + supervision |
-| 0x4 | `JOIN_HELLO` | uplink, first frame after pairing |
-| 0x8 | `ACK` | downlink |
-| 0x9 | `COMMAND` | downlink (config change, actuator) |
-
-### 5.2 Nonce
-
-```
-nonce (13 bytes) = dev_eui (8) | fcnt (4) | dir (1)
-```
-
-`dev_eui` is the device's permanent 64-bit ID, never sent in the clear.
-`dir` is 0x00 uplink, 0x01 downlink. Nonces never repeat as long as `fcnt` never
-repeats.
-
-Frame counter persistence: the sensor writes `fcnt` to flash every 64 frames and on
-boot jumps ahead by 64, so a reset can never reuse a counter.
-
-Retransmissions resend the identical bytes (same fcnt, same ciphertext). This is
-safe and lets dedupe work.
-
-### 5.3 Rotating tags (privacy)
-
-Fixed IDs on the air would let anyone track a device's presence and activity.
-Tags rotate every hour (`epoch = floor(unix_time / 3600)`):
-
-```
-net_tag = trunc32(HMAC-SHA256(K_net_route, "net" | epoch))
-dev_tag = trunc32(HMAC-SHA256(K_dev_tag,   "dev" | epoch))
-```
-
-- Sensors need a rough clock. They learn the epoch from the first `ACK` after
-  boot and keep it with the RTC. Drift of minutes is fine: the server accepts
-  `epoch - 1`, `epoch` and `epoch + 1`.
-- The server precomputes the tag table for those three epochs for every device it
-  owns, so a lookup is a hash-table hit.
-- A 32-bit tag can collide. A collision only costs a failed MIC check on the
-  wrong candidate; the server tries every candidate with that tag.
-- `fcnt` stays in the clear. It reveals how many frames a device has sent, but
-  not which device across epochs. A per-epoch random offset could hide it in a
-  later version.
-
-### 5.4 Keys
-
-Each device has a 128-bit root key `K_root` and a permanent `dev_eui`, both in its
-pairing QR code. Derived with HKDF-SHA256:
-
-| Key | Info string | Use |
-|---|---|---|
-| `K_enc` | `"cs1 enc"` | AES-CCM payload and MIC |
-| `K_dev_tag` | `"cs1 tag"` | dev_tag derivation |
-
-Each Home Assistant install has one network key `K_net` (random, 128-bit), from
-which `K_net_route = HKDF(K_net, "cs1 route")`. It is given to the sensor during
-pairing (in the first `COMMAND` frame after `JOIN_HELLO`, encrypted with
-`K_enc`).
-
-Proxies hold no keys.
-
-### 5.5 Payload
-
-Plaintext payload is a list of readings:
-
-```
-reading = channel (1) | kind (1) | value (1, 2 or 4 bytes, by kind)
-```
-
-`kind` values (initial set): contact, motion, leak, temperature (int16, 0.01 C),
-humidity (uint16, 0.01 %), battery (uint8 %), battery_mv (uint16), button event,
-vibration, tamper, illuminance, distance, raw (length-prefixed).
-
-A device profile (Section 9.3) maps `channel` numbers to Home Assistant entities.
-
-### 5.6 Downlink
-
-- `ACK` echoes the acknowledged `fcnt` and carries the current epoch and any
-  pending-command flag.
-- Receive windows (LoRaWAN Class A style): RX1 opens 1.0 s after uplink end,
-  RX2 opens 3.0 s after (for downlinks routed through a relay).
-- Commands that miss both windows wait in the server queue and go out after the
-  device's next uplink.
-- `DATA_CONFIRMED` retries: up to 3, at 2 s, 6 s and 15 s plus random jitter.
+- 14-byte cleartext header (magic `0xC5`, version/type, `net_tag`, `dev_tag`,
+  `fcnt`), 1-64 bytes of AES-128-CCM ciphertext, 8-byte MIC. Frames are 23-86
+  bytes.
+- Uplink types `0x1`-`0x7` (`DATA`, `DATA_CONFIRMED`, `HEARTBEAT`,
+  `HEARTBEAT_CONFIRMED`, `JOIN`, `SYNC`); downlink types `0x8`-`0xF` (`DOWNLINK`).
+  Proxies forward uplink types and drop downlink types.
+- Per-device `k_root` and `dev_eui` from the pairing QR code; `k_enc` and
+  `k_dev_tag` derived with HKDF. A per-network `k_net_route` is given to sensors
+  with `SET_NETWORK`.
+- Hourly rotating tags from HMAC-SHA256. `JOIN` and `SYNC` use all-zero bootstrap
+  tags and are identified by the server by trial decryption.
+- Uplink counters persist by block reservation and never repeat, even across a
+  factory reset. Retransmissions are identical bytes.
+- Every downlink carries `reply_to` (the uplink it answers), `server_time` and
+  TLV commands, which prevents downlink replay and keeps sensor clocks set.
+- Receive windows RX1 at 1 s and RX2 at 3 s, same channel and spreading factor.
 
 ---
 
@@ -240,7 +140,7 @@ sx126x:
   rf_switch: true
   tcxo_voltage: 1_8V
   modulation: LORA
-  frequency: 904.6MHz
+  frequency: 918.5MHz
   bandwidth: 500_0kHz
   spreading_factor: 9
   coding_rate: CR_4_5
@@ -273,13 +173,13 @@ duplicates dropped, foreign frames relayed, last RSSI, downlinks sent.
 ### 6.2 Receive path
 
 1. Radio delivers `(bytes, rssi, snr)`.
-2. Drop if `len < 22` or `bytes[0] != 0xC5` or version unknown.
-3. Dedupe on `(net_tag, dev_tag, fcnt, type)` within `dedupe_window`.
+2. Apply the keyless checks in spec/02 section 12: length 23-86, magic, version,
+   uplink type only.
+3. Dedupe on the exact frame bytes within `dedupe_window`.
 4. Rate-limit per `dev_tag` and globally.
-5. If `net_tag` is in the local tag set (pushed by the server, 6.4), send to the
-   local server.
-6. Otherwise, if federation is enabled, publish to relays (Section 8).
-   If not, drop.
+5. Send every frame to the local server, which ignores frames it does not own.
+6. If federation is enabled and `net_tag` is not in the local tag set (pushed by
+   the server, 6.4), also publish to relays (Section 8).
 
 ### 6.3 Proxy-to-server envelope (UDP)
 
@@ -525,7 +425,7 @@ support is worth evaluating so sensors can also be configured in YAML.
 4. Ephemeral event kind number and NIP process.
 5. Whether to hide `fcnt` per epoch to reduce traffic analysis.
 6. Battery-sensor firmware: Zephyr vs. ESPHome nRF52.
-7. Licensing: MIT for code, CC BY 4.0 for the spec?
+7. License for code outside `spec/` (the spec is CC BY 4.0, its tools and vectors MIT).
 
 ---
 
@@ -534,7 +434,8 @@ support is worth evaluating so sensors can also be configured in YAML.
 ```
 ConnectSensors/
   docs/DESIGN.md                    this document
-  spec/frame-v1.md                  normative wire format + test vectors
+  spec/                             protocol specification (self-contained,
+                                    may move to its own repository)
   components/cs_proxy/              ESPHome external component
   custom_components/connect_sensors/ Home Assistant integration
   firmware/sensor/                  reference sensor firmware

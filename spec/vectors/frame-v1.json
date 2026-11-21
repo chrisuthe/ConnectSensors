@@ -1,0 +1,87 @@
+{
+  "spec": "ConnectSensors frame v1",
+  "inputs": {
+    "k_root": "000102030405060708090a0b0c0d0e0f",
+    "dev_eui": "c5c5000000000001",
+    "k_net": "f0e1d2c3b4a5968778695a4b3c2d1e0f",
+    "time": 1795226400,
+    "epoch": 498674
+  },
+  "derived": {
+    "k_enc": "ae0dafd25a2e89208090739d6df12e82",
+    "k_dev_tag": "1889264ff8f0c57bfc77cc01a5aef167",
+    "k_net_route": "53e27722471cdf29ebcb23aabc120cfe",
+    "net_tag": {
+      "498673": "f3b45e76",
+      "498674": "61d306d3",
+      "498675": "a3793a8a"
+    },
+    "dev_tag": {
+      "498673": "4dabc78a",
+      "498674": "25b64fa5",
+      "498675": "a1f9ab9a"
+    }
+  },
+  "frames": [
+    {
+      "name": "join",
+      "note": "first frame after factory reset; bootstrap tags",
+      "type": 5,
+      "fcnt": 1,
+      "net_tag": "00000000",
+      "dev_tag": "00000000",
+      "plaintext": "00",
+      "frame": "c515000000000000000000000001ffc87e0fa0d624916f"
+    },
+    {
+      "name": "downlink_set_network",
+      "note": "server answers JOIN (reply_to = 1) with SET_NETWORK carrying k_net_route",
+      "type": 8,
+      "fcnt": 1,
+      "net_tag": "00000000",
+      "dev_tag": "00000000",
+      "plaintext": "000000016b00fb2000011053e27722471cdf29ebcb23aabc120cfe",
+      "frame": "c518000000000000000000000001ba29bab57b903e695dd9bffba8e0d2b6185572a509d6866449ed9a3aa998b5c19840a2"
+    },
+    {
+      "name": "data_confirmed",
+      "note": "door opened; also acknowledges the SET_NETWORK downlink",
+      "type": 2,
+      "fcnt": 2,
+      "net_tag": "61d306d3",
+      "dev_tag": "25b64fa5",
+      "plaintext": "01000101",
+      "frame": "c51261d306d325b64fa500000002469d35ed3730e6c25ebfe54e"
+    },
+    {
+      "name": "downlink_ack",
+      "note": "plain acknowledgement of fcnt 2 (reply_to = 2)",
+      "type": 8,
+      "fcnt": 2,
+      "net_tag": "61d306d3",
+      "dev_tag": "25b64fa5",
+      "plaintext": "000000026b00fb2100",
+      "frame": "c51861d306d325b64fa50000000211975956d4ddd08d2e97a9818ef5d358ad"
+    },
+    {
+      "name": "heartbeat",
+      "note": "unconfirmed heartbeat, battery 95%",
+      "type": 3,
+      "fcnt": 3,
+      "net_tag": "61d306d3",
+      "dev_tag": "25b64fa5",
+      "plaintext": "0000105f",
+      "frame": "c51361d306d325b64fa500000003c771fec03af6423817550e60"
+    },
+    {
+      "name": "sync",
+      "note": "after a reboot that lost the clock; fcnt jumped ahead by 64",
+      "type": 6,
+      "fcnt": 65,
+      "net_tag": "00000000",
+      "dev_tag": "00000000",
+      "plaintext": "02",
+      "frame": "c5160000000000000000000000418b8f80f946524cf061"
+    }
+  ]
+}
