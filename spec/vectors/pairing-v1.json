@@ -111,11 +111,11 @@
       },
       {
         "event": "downlink",
-        "frame": "c518000000000000000000000001ba29ba387b9289e95ddc8fb1ce7204a404ae110389f28f0365f97a3e832f994f89f1d050c8ce971a412890b7c3e2f7db5c16a8",
+        "frame": "c518000000000000000000000001ba29ba387b9289e95ddc8fef6010fb45b49a34d421259868875c31d5b0df90cfb7c8b90b850a1e7dee99fa487a1066ba203038",
         "note": "KEY_EXCHANGE, root fcnt_down 1 from the new owner's server: accepted",
         "result": "accept",
         "root_floor": 1,
-        "k_session": "91184b6a031562d1b50e53d77ab1bbb0"
+        "k_session": "b22c89e62323ad6463472891d6412f60"
       }
     ]
   }

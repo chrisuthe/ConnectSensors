@@ -850,7 +850,7 @@ def pairing_vectors() -> dict:
 
 
 SENSOR_PRIVS = [bytes.fromhex(b * 32) for b in ("a2", "a3", "a4")]
-SERVER_PRIVS = [bytes.fromhex(b * 32) for b in ("b2", "b3")]
+SERVER_PRIVS = [bytes.fromhex(b * 32) for b in ("b2", "b3", "b4")]
 
 
 def root_floor_vectors() -> dict:
@@ -888,7 +888,7 @@ def root_floor_vectors() -> dict:
     downlink(second, "replayed KEY_EXCHANGE answering an older JOIN")
     other("factory_reset", "factory reset: root floor back to 0")
     j = join(140, SENSOR_PRIVS[2], "new owner pairs after the reset")
-    downlink(new_owner.join(j, SERVER_PRIVS[1], T0 + 86400)["frame"],
+    downlink(new_owner.join(j, SERVER_PRIVS[2], T0 + 86400)["frame"],
              "KEY_EXCHANGE, root fcnt_down 1 from the new owner's server: accepted")
     return {"note": "inputs from frame-v1.json; a sensor in JOINING checks each downlink (02 section 10.2)",
             "sequence": seq}
