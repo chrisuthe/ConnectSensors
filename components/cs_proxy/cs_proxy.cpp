@@ -104,9 +104,6 @@ void CSProxy::on_packet(const std::vector<uint8_t> &packet, float rssi, float sn
   }
   const FrameHeader h = parse_header(packet.data());
   switch (verdict) {
-    case RxVerdict::OFFLINE:
-      ESP_LOGD(TAG, "No server address or network; frame fcnt %" PRIu32 " dropped", h.fcnt);
-      return;
     case RxVerdict::DUPLICATE:
       this->duplicates_++;
       ESP_LOGV(TAG, "Duplicate frame fcnt %" PRIu32, h.fcnt);
@@ -118,6 +115,8 @@ void CSProxy::on_packet(const std::vector<uint8_t> &packet, float rssi, float sn
     default:
       break;
   }
+  // Offline frames still update RSSI/SNR: those sensors help debug coverage while
+  // the server is unreachable.
   this->last_rssi_ = rssi;
   this->last_snr_ = snr;
 
@@ -131,6 +130,10 @@ void CSProxy::on_packet(const std::vector<uint8_t> &packet, float rssi, float sn
   }
 #endif
 
+  if (verdict == RxVerdict::OFFLINE) {
+    ESP_LOGD(TAG, "No server address or network; frame fcnt %" PRIu32 " dropped", h.fcnt);
+    return;
+  }
   const uint64_t loop_interval_us = uint64_t(App.get_loop_interval()) * 1000;
   const uint8_t flags = gap > loop_interval_us + TS_UNCERTAIN_EXTRA_US ? UPLINK_TS_UNCERTAIN : 0;
   this->send_(MSG_UPLINK, uplink_body(now, rssi, snr, flags, packet.data(), packet.size()));

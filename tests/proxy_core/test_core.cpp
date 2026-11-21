@@ -254,7 +254,7 @@ static void test_receive_pipeline() {
   CHECK(classify_uplink(f.data(), f.size(), true, dedupe, rate, 2000, W) == RxVerdict::FORWARD);
   CHECK(classify_uplink(f.data(), f.size(), true, dedupe, rate, 3000, W) == RxVerdict::DUPLICATE);
 
-  // Global bucket is now empty; a rate-limited frame is not inserted, so it
+  // The buckets are now empty; a rate-limited frame is not inserted, so it
   // gets through once the token returns.
   CHECK(classify_uplink(g.data(), g.size(), true, dedupe, rate, 3000, W) == RxVerdict::RATE_LIMITED);
   CHECK(classify_uplink(g.data(), g.size(), true, dedupe, rate, 2003000, W) == RxVerdict::FORWARD);
