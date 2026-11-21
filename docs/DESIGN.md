@@ -6,36 +6,14 @@ ConnectSensors is an open, freely distributed sensor network for Home Assistant.
 Battery sensors talk LoRa. Any ESPHome node with a LoRa radio forwards every
 ConnectSensors frame it hears, without being able to read it. The owner's Home
 Assistant deduplicates, verifies and decrypts. Neighbors' proxies can optionally
-carry each other's traffic through community relays, which is the open version of
-YoLink's "every hub forwards every device's packets" behavior.
+carry each other's traffic through community relays, so every proxy extends
+coverage for everyone.
 
 ---
 
 ## 1. Background
 
-### 1.1 What YoLink does, and why we cannot simply join it
-
-- YoLink sensors use LoRa in the US 902-928 MHz band. A 2021 capture showed
-  SF7 at 910.3 MHz, with what looks like a cleartext header (likely device ID
-  and a frame counter) followed by about 32 bytes of ciphertext
-  (anthonykirby/lora-packet#74).
-- Cloud-mode YoLink hubs forward any YoLink packet they hear to the YoLink cloud,
-  which routes it to the device's owner. Hubs do not decrypt. Users report that a
-  neighbor's hub extends their range for this reason.
-- The YoLink Local Hub (YS1606) offers a local HTTP + MQTT API and Matter, but
-  devices paired to it are keyed to that single hub. Local and cloud cannot be
-  mixed, and multiple local hubs give no redundancy. Going local loses the
-  "any hub forwards" behavior.
-- Per-device keys live in the YoLink cloud or the Local Hub. There is no public
-  way to obtain them and no API that accepts forwarded packets. Bishop Fox's 2025
-  review of hub firmware 0382 (CVE-2025-59448..59452) found issues YoLink has since
-  fixed; key extraction is not a foundation for an open project.
-
-Conclusion: ConnectSensors copies YoLink's architecture (dumb forwarders,
-end-to-end encryption, server-side dedupe), not its protocol. YoLink interop is
-limited to an optional passive observer (Section 10).
-
-### 1.2 ESPHome today (2026.11.0)
+### 1.1 ESPHome today (2026.11.0)
 
 - Native radio drivers: `sx126x`, `sx127x`, `cc1101`, with an `on_packet` trigger
   (raw bytes, RSSI, SNR) and a `send_packet` action.
@@ -64,9 +42,9 @@ limited to an optional passive observer (Section 10).
 
 ### Non-goals
 
-- Decrypting, injecting or retransmitting YoLink (or any other vendor's) traffic.
+- Decrypting, injecting or retransmitting any other vendor's proprietary traffic.
 - Replacing LoRaWAN for commercial deployments. A LoRaWAN compatibility mode may
-  come later (Section 13).
+  come later (Section 12).
 - Certified life-safety alarming. ConnectSensors is a home-automation network.
 
 ---
@@ -117,7 +95,8 @@ Other parameters:
 - Explicit header, CRC on, preamble 8.
 - Private sync word (sx126x `sync_value: [0x14, 0x24]`). This is shared with many
   private LoRa networks, so the magic byte (5.1) does the real filtering.
-- Do not sit on frequencies known to be used by YoLink or Meshtastic defaults.
+- Do not sit on frequencies used by other common LoRa networks (for example
+  Meshtastic defaults).
 
 ### 4.2 Airtime budget
 
@@ -482,22 +461,7 @@ prefers it; the integration should treat the control plane as pluggable.
 
 ---
 
-## 10. YoLink observer mode (optional, receive-only)
-
-For people with YoLink devices who want to know where their coverage is weak:
-
-- `cs_proxy` option `yolink_observer: true` with its own frequency/SF settings
-  (it needs a second radio or time-slicing, since the radio has one channel).
-- Logs the cleartext header prefix and RSSI of frames that look like YoLink.
-  It does not decrypt, store payloads, retransmit or transmit anything on YoLink
-  frequencies.
-- Reported to Home Assistant as "YoLink frames heard per proxy" diagnostics only.
-- The header layout is inferred from a handful of public captures and may be
-  wrong; treat the output as a heuristic.
-
----
-
-## 11. Threat model
+## 10. Threat model
 
 | Threat | Mitigation |
 |---|---|
@@ -514,7 +478,7 @@ For people with YoLink devices who want to know where their coverage is weak:
 
 ---
 
-## 12. Reference hardware
+## 11. Reference hardware
 
 Proxies (ESPHome):
 
@@ -536,7 +500,7 @@ support is worth evaluating so sensors can also be configured in YAML.
 
 ---
 
-## 13. Roadmap
+## 12. Roadmap
 
 | Phase | Deliverable | Done when |
 |---|---|---|
@@ -547,11 +511,11 @@ support is worth evaluating so sensors can also be configured in YAML.
 | 4 | `cs-relay` + federation client + federated downlinks | Sensor in home A delivered via a proxy in home B only |
 | 5 | Control plane: device profiles, coverage map, DIDs | New sensor type works from a published profile alone |
 | 6 | Upstream `lora_proxy` proposal to ESPHome | PR opened |
-| Later | LoRaWAN compatibility mode (multi-channel gateways), cover traffic, YoLink observer | - |
+| Later | LoRaWAN compatibility mode (multi-channel gateways), cover traffic | - |
 
 ---
 
-## 14. Open questions
+## 13. Open questions
 
 1. US channel choice and whether 500 kHz SF9 gives enough range indoors, or a
    125 kHz hopping plan is worth the complexity.
@@ -565,7 +529,7 @@ support is worth evaluating so sensors can also be configured in YAML.
 
 ---
 
-## 15. Repository layout (proposed)
+## 14. Repository layout (proposed)
 
 ```
 ConnectSensors/
