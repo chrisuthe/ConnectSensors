@@ -3,6 +3,10 @@ name: Tests
 on:
   push:
   pull_request:
+  # ESPHome dev is unpinned: build weekly so upstream breakage shows up.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,6 +27,8 @@ jobs:
         run: |
           python3 -I spec/tools/csframe.py vectors spec/vectors
           git diff --exit-code spec/vectors
+      - name: Test transmitter frames match the vectors
+        run: python3 -I tests/esphome/check_transmitter_frames.py
 
   proxy-core:
     name: Proxy core unit tests
@@ -46,28 +52,67 @@ jobs:
       - run: pip install cryptography
       - run: python3 -I tests/devtools/test_testserver.py
 
-  esphome:
-    name: ESPHome dev ${{ matrix.example }}
+  esphome-config:
+    name: ESPHome dev config
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        example: [proxy-heltec-v3, test-transmitter-heltec-v3]
+    outputs:
+      commit: ${{ steps.resolve.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       # The component needs 2026.12 (asynchronous radio transmit); until it is
-      # released, build against dev.
-      - run: pip install "esphome @ git+https://github.com/esphome/esphome@dev"
-      - name: Prepare config using this checkout
+      # released, build against dev. Resolve it once so every job builds the
+      # same commit.
+      - name: Resolve ESPHome dev
+        id: resolve
         run: |
-          mkdir -p build
-          sed "s#source: github://chrisuthe/ConnectSensors@main#source:\n      type: local\n      path: $GITHUB_WORKSPACE/components#" \
-            examples/${{ matrix.example }}.yaml > build/test.yaml
-          printf 'wifi_ssid: "ci"\nwifi_password: "ci-password"\ncs_proxy_key: "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"\n' > build/secrets.yaml
+          commit=$(git ls-remote https://github.com/esphome/esphome refs/heads/dev | cut -f1)
+          test -n "$commit"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - run: pip install "esphome @ git+https://github.com/esphome/esphome@${{ steps.resolve.outputs.commit }}"
+      - name: ESPHome version
+        run: |
+          esphome version
+          python -c "import importlib.metadata as m, json; print('esphome commit:', json.loads(m.distribution('esphome').read_text('direct_url.json'))['vcs_info']['commit_id'])"
       - name: Validate
-        run: esphome config build/test.yaml
+        run: |
+          tests/esphome/prepare.sh build examples/*.yaml tests/esphome/proxy-sx127x.yaml
+          for config in build/*.yaml; do
+            [ "$(basename "$config")" = secrets.yaml ] && continue
+            echo "::group::$config"
+            esphome config "$config"
+            echo "::endgroup::"
+          done
+      - name: Radio settings off the region profile are rejected
+        run: tests/esphome/check_region_mismatch.sh
+
+  esphome:
+    name: ESPHome dev ${{ matrix.name }}
+    needs: esphome-config
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: proxy-heltec-v3
+            config: examples/proxy-heltec-v3.yaml
+          - name: test-transmitter-heltec-v3
+            config: examples/test-transmitter-heltec-v3.yaml
+          - name: proxy-sx127x
+            config: tests/esphome/proxy-sx127x.yaml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "esphome @ git+https://github.com/esphome/esphome@${{ needs.esphome-config.outputs.commit }}"
+      - name: ESPHome version
+        run: |
+          esphome version
+          python -c "import importlib.metadata as m, json; print('esphome commit:', json.loads(m.distribution('esphome').read_text('direct_url.json'))['vcs_info']['commit_id'])"
       - name: Compile
-        run: esphome compile build/test.yaml
+        run: |
+          tests/esphome/prepare.sh build ${{ matrix.config }}
+          esphome compile build/$(basename ${{ matrix.config }})
