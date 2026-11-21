@@ -18,9 +18,8 @@ Version 0.2.0, early development. Implemented:
 - UDP transport with per-proxy keys, `HELLO`, `SERVER_STATUS`, `UPLINK`,
   `DOWNLINK`, `TX_RESULT`, replay protection
 - Keyless frame checks, dedupe, rate limits, airtime budget, transmit scheduling
-- Asynchronous downlink transmit with ESPHome 2026.12 or later, so a downlink does
-  not hold the main loop for its airtime; on 2026.11 downlinks use the radio's
-  blocking `transmit_packet`
+- Asynchronous downlink transmit, so a downlink does not hold the main loop for
+  its airtime
 - Timestamp-uncertainty flag and downlink withdrawal when the main loop stalls
 - Server hostname or IP address (resolved without blocking)
 - Diagnostic sensors and the `server_connected` binary sensor
@@ -34,8 +33,8 @@ Not yet implemented (rejected at compile time where configurable):
 
 ## Requirements
 
-- ESPHome 2026.12 or later (until it is released, ESPHome's `dev` branch). 2026.11.0
-  still builds, with blocking downlinks, on a best-effort basis
+- ESPHome 2026.12 or later; until it is released, ESPHome's `dev` branch
+  (`pip install "esphome @ git+https://github.com/esphome/esphome@dev"`)
 - ESP32 family
 - An `sx126x` or `sx127x` component in LoRa mode with the region's settings
 

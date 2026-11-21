@@ -342,12 +342,10 @@ void CSProxy::arm_tx_timer_() {
 }
 
 void CSProxy::run_due_transmissions_() {
-#ifdef CS_PROXY_ASYNC_TX
   // The radio is ours until the in-flight frame completes; the schedule keeps frames
   // at least an airtime plus the window apart, so the next one is not due yet.
   if (this->tx_in_flight_ != nullptr)
     return;
-#endif
   for (;;) {
     uint64_t now = now_us_();
     // Busy-wait the last couple of milliseconds so the transmission starts on time.
@@ -370,7 +368,6 @@ void CSProxy::run_due_transmissions_() {
       continue;
     }
     const int32_t offset = int32_t(now - slot->tx_at_us);
-#ifdef CS_PROXY_ASYNC_TX
     const uint8_t started = this->radio_start_transmit_(*slot);
     if (started == TX_SENT) {
       this->scheduler_.start(slot);
@@ -389,26 +386,11 @@ void CSProxy::run_due_transmissions_() {
     ESP_LOGW(TAG, "Radio refused downlink seq %" PRIu32, slot->seq);
     this->send_tx_result_(slot->seq, TX_RADIO_ERROR, 0);
     this->scheduler_.release(slot);
-#else
-    const bool ok = this->radio_transmit_(slot->frame, slot->len);
-    if (ok) {
-      this->budget_->spend(slot->airtime_us, now);
-      this->tx_ok_++;
-      ESP_LOGD(TAG, "Downlink seq %" PRIu32 " sent, %.1f ms after target", slot->seq, offset / 1000.0f);
-      this->send_tx_result_(slot->seq, TX_SENT, offset);
-    } else {
-      this->tx_failed_++;
-      ESP_LOGW(TAG, "Radio error sending downlink seq %" PRIu32, slot->seq);
-      this->send_tx_result_(slot->seq, TX_RADIO_ERROR, 0);
-    }
-    this->scheduler_.release(slot);
-#endif
   }
   this->tx_timer_at_ = 0;
   this->arm_tx_timer_();
 }
 
-#ifdef CS_PROXY_ASYNC_TX
 uint8_t CSProxy::radio_start_transmit_(const ScheduledTx &slot) {
   // The radio fails the operation if it has not completed well after the airtime.
   const uint32_t timeout_ms = slot.airtime_us / 1000 + 100;
@@ -460,21 +442,6 @@ void CSProxy::tx_complete_(bool ok) {
   // Anything that came due while the radio was busy goes out now, not at the next wake.
   this->enable_loop_soon_any_context();
 }
-#else
-bool CSProxy::radio_transmit_(const uint8_t *data, size_t len) {
-  // Release radio components block until the packet is sent. Error code 0 means success
-  // in every version, whatever the enum's name.
-#ifdef USE_CS_PROXY_SX126X
-  if (this->sx126x_ != nullptr)
-    return static_cast<int>(this->sx126x_->transmit_packet(data, len)) == 0;
-#endif
-#ifdef USE_CS_PROXY_SX127X
-  if (this->sx127x_ != nullptr)
-    return static_cast<int>(this->sx127x_->transmit_packet(data, len)) == 0;
-#endif
-  return false;
-}
-#endif
 
 // ------------------------------------------------------------------------ entities
 
