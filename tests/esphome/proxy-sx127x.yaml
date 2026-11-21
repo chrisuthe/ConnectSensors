@@ -1,0 +1,57 @@
+# CI-only build of cs_proxy on an SX1276 (Heltec WiFi LoRa 32 V2 pinout), so the
+# sx127x radio path compiles. Not tested on hardware; use the examples for real
+# boards.
+
+esphome:
+  name: cs-proxy-sx127x
+
+esp32:
+  board: heltec_wifi_lora_32_V2
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+
+external_components:
+  - source: github://chrisuthe/ConnectSensors@main
+    components: [cs_proxy]
+
+spi:
+  clk_pin: GPIO5
+  mosi_pin: GPIO27
+  miso_pin: GPIO19
+
+sx127x:
+  id: lora
+  cs_pin: GPIO18
+  rst_pin: GPIO14
+  dio0_pin: GPIO26
+  modulation: LORA
+  frequency: 918.5MHz
+  bandwidth: 500_0kHz
+  spreading_factor: 9
+  coding_rate: CR_4_5
+  preamble_size: 8
+  sync_value: [0x12]
+  crc_enable: true
+  pa_power: 17
+  rx_start: true
+
+cs_proxy:
+  id: proxy
+  radio_id: lora
+  region: US915
+  server:
+    host: 192.168.1.10
+    key: !secret cs_proxy_key
+
+sensor:
+  - platform: cs_proxy
+    frames_heard:
+      name: "LoRa frames heard"
+    downlinks_sent:
+      name: "LoRa downlinks sent"
