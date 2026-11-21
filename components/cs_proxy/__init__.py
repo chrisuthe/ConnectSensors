@@ -1,5 +1,6 @@
 """ConnectSensors proxy (spec/06-cs-proxy-component.md)."""
 
+import logging
 import re
 
 import esphome.codegen as cg
@@ -30,6 +31,8 @@ CONF_GLOBAL = "global"
 CONF_PER_DEVICE = "per_device"
 CONF_BOOTSTRAP = "bootstrap"
 CONF_FEDERATION = "federation"
+
+_LOGGER = logging.getLogger(__name__)
 
 cs_proxy_ns = cg.esphome_ns.namespace("cs_proxy")
 CSProxy = cs_proxy_ns.class_("CSProxy", cg.Component)
@@ -207,7 +210,21 @@ def _final_validate(config):
             "The radio does not match the ConnectSensors region profile "
             "(spec/01-radio-profiles.md):\n  " + "\n  ".join(problems)
         )
+    _warn_api_reboot_timeout(full)
     return config
+
+
+def _warn_api_reboot_timeout(full):
+    # Fine for a proxy Home Assistant keeps connected; otherwise each reboot drops
+    # scheduled downlinks and leaves the proxy deaf for several seconds (06 section 9).
+    timeout = full.get("api", {}).get("reboot_timeout")
+    if timeout is not None and timeout.total_milliseconds:
+        _LOGGER.warning(
+            "api: reboot_timeout is %s: this proxy reboots whenever no API client has been "
+            "connected that long. Set it to 0s unless Home Assistant stays connected "
+            "(spec/06-cs-proxy-component.md section 9).",
+            timeout,
+        )
 
 
 FINAL_VALIDATE_SCHEMA = _final_validate

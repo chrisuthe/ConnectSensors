@@ -238,6 +238,11 @@ messages. It never originates or modifies frames.
   keeps accepting `DOWNLINK` messages that pass the envelope checks.
 - With mDNS discovery, a proxy that has been disconnected for 5 minutes repeats
   discovery.
+- A proxy SHOULD NOT reboot because no API client (Home Assistant) is connected.
+  Its work doesn't depend on one, and a reboot drops scheduled downlinks, dedupe and
+  rate-limit state and leaves it deaf for several seconds. On ESPHome this means
+  `api: reboot_timeout: 0s` unless Home Assistant stays connected; the component
+  warns at config time otherwise.
 
 ## 10. Entities
 
