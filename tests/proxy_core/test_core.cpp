@@ -234,6 +234,33 @@ static void test_rate_limits() {
   CHECK(ok == 20);
 }
 
+static void test_receive_pipeline() {
+  const uint64_t W = 30000000;
+  DedupeCache dedupe(8);
+  RateLimiter rate(1, 1, 1, 5);  // one token each, global and per device, 1/s refill
+  auto f = frame("data_confirmed");
+  auto g = frame("heartbeat");
+  auto bad = f;
+  bad[0] ^= 0xff;
+
+  // Offline: nothing touches the dedupe cache or the buckets (issue #15).
+  for (int i = 0; i < 3; i++) {
+    CHECK(classify_uplink(f.data(), f.size(), false, dedupe, rate, 1000, W) == RxVerdict::OFFLINE);
+    CHECK(classify_uplink(g.data(), g.size(), false, dedupe, rate, 1000, W) == RxVerdict::OFFLINE);
+  }
+  CHECK(classify_uplink(bad.data(), bad.size(), false, dedupe, rate, 1000, W) == RxVerdict::INVALID);
+
+  // The same frame heard once connected is forwarded, then deduped.
+  CHECK(classify_uplink(f.data(), f.size(), true, dedupe, rate, 2000, W) == RxVerdict::FORWARD);
+  CHECK(classify_uplink(f.data(), f.size(), true, dedupe, rate, 3000, W) == RxVerdict::DUPLICATE);
+
+  // The buckets are now empty; a rate-limited frame is not inserted, so it
+  // gets through once the token returns.
+  CHECK(classify_uplink(g.data(), g.size(), true, dedupe, rate, 3000, W) == RxVerdict::RATE_LIMITED);
+  CHECK(classify_uplink(g.data(), g.size(), true, dedupe, rate, 2003000, W) == RxVerdict::FORWARD);
+  CHECK(classify_uplink(bad.data(), bad.size(), true, dedupe, rate, 2003000, W) == RxVerdict::INVALID);
+}
+
 static void test_airtime() {
   for (const auto &v : AIRTIME_VECTORS) {
     uint32_t got = lora_airtime_us(v.len, uint8_t(v.sf), uint32_t(v.bw));
@@ -315,6 +342,7 @@ int main() {
   test_seq_guard();
   test_dedupe();
   test_rate_limits();
+  test_receive_pipeline();
   test_airtime();
   test_budget();
   test_scheduler();

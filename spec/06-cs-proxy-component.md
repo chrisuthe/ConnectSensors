@@ -123,7 +123,8 @@ A standalone proxy has no server and donates coverage to its neighbors.
 3. Register as a listener on the radio and as its transmit listener.
 4. Once the network is up, send `HELLO` (05 section 5.2), then every 60 seconds.
 
-Frames received before the network is up are counted as heard and dropped.
+Frames received before the network is up are counted as heard and dropped
+(section 5, step 4).
 
 ## 5. Receive pipeline
 
@@ -133,13 +134,16 @@ For each packet the radio delivers, in this order:
 2. Increment `heard`.
 3. Apply the keyless checks of 02 section 12 (length, magic, version, uplink type).
    On failure increment `invalid` and stop.
-4. Look up the frame in the dedupe cache (section 6). If present and younger than
+4. If the network is down or no server address is known yet, stop. The frame is
+   only counted as heard: it MUST NOT be inserted into the dedupe cache or spend
+   rate-limit tokens, so a retransmission heard once connected is forwarded.
+5. Look up the frame in the dedupe cache (section 6). If present and younger than
    `dedupe_window`, increment `duplicates` and stop.
-5. Apply the rate limits (section 6). If a bucket is empty, increment
+6. Apply the rate limits (section 6). If a bucket is empty, increment
    `rate_limited` and stop.
-6. Insert the frame into the dedupe cache.
-7. Build and send `UPLINK` (05 section 5.1). Increment `forwarded`.
-8. In standalone mode, publish to relays as in 09 section 5.2 instead of step 7.
+7. Insert the frame into the dedupe cache.
+8. Build and send `UPLINK` (05 section 5.1). Increment `forwarded`.
+9. In standalone mode, publish to relays as in 09 section 5.2 instead of step 8.
 
 The packet buffer belongs to the radio component and is only valid during the
 callback; the component MUST copy what it keeps. The whole pipeline MUST NOT
@@ -387,6 +391,9 @@ be run against a test server built from the reference tool:
 7. Downlinks that would exceed the airtime budget are rejected with `DUTY_CYCLE`.
 8. A configuration whose radio settings differ from the region profile fails to
    compile.
+9. A frame heard while the network is down or no server address is known is not
+   forwarded; the same frame heard again once connected, within `dedupe_window`,
+   is forwarded.
 
 ## 15. Upstream improvements (informative)
 
