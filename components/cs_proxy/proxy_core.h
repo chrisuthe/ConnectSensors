@@ -93,6 +93,16 @@ class RateLimiter {
   std::array<Slot, DEVICE_SLOTS> slots_{};
 };
 
+// ---------------------------------------------------------------- receive pipeline (06 section 5)
+
+enum class RxVerdict : uint8_t { INVALID, OFFLINE, DUPLICATE, RATE_LIMITED, FORWARD };
+
+// Steps 3-7 of the receive pipeline, in that order. online: a server address is
+// known and the network is up. Only a FORWARD frame is inserted into the dedupe
+// cache, and an INVALID or OFFLINE frame spends no rate-limit tokens.
+RxVerdict classify_uplink(const uint8_t *data, size_t len, bool online, DedupeCache &dedupe, RateLimiter &rate,
+                          uint64_t now_us, uint64_t window_us);
+
 // ---------------------------------------------------------------- airtime (01 section 5)
 
 // Semtech LoRa time-on-air. cr is 1..4 for 4/5..4/8. Explicit header.

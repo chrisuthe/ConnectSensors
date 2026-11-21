@@ -156,6 +156,25 @@ bool RateLimiter::allow(const FrameHeader &h, uint64_t now_us) {
   return this->global_.take(now_us);
 }
 
+// ---------------------------------------------------------------- receive pipeline
+
+RxVerdict classify_uplink(const uint8_t *data, size_t len, bool online, DedupeCache &dedupe, RateLimiter &rate,
+                          uint64_t now_us, uint64_t window_us) {
+  if (check_uplink(data, len) != FrameCheck::OK)
+    return RxVerdict::INVALID;
+  // Before dedupe and rate limits, so a frame heard offline cannot block its own
+  // retransmission once connected.
+  if (!online)
+    return RxVerdict::OFFLINE;
+  const uint64_t key = frame_key(data, len);
+  if (dedupe.contains(key, now_us, window_us))
+    return RxVerdict::DUPLICATE;
+  if (!rate.allow(parse_header(data), now_us))
+    return RxVerdict::RATE_LIMITED;
+  dedupe.insert(key, now_us);
+  return RxVerdict::FORWARD;
+}
+
 // ---------------------------------------------------------------- airtime
 
 uint32_t lora_airtime_us(size_t payload_len, uint8_t sf, uint32_t bw_hz, uint8_t cr, uint16_t preamble, bool crc) {

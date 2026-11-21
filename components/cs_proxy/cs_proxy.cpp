@@ -94,24 +94,30 @@ void CSProxy::on_packet(const std::vector<uint8_t> &packet, float rssi, float sn
   const uint64_t gap = this->last_loop_us_ == 0 ? 0 : now - this->last_loop_us_;
   this->heard_++;
 
-  if (check_uplink(packet.data(), packet.size()) != FrameCheck::OK) {
+  const bool online = this->server_addr_len_ != 0 && network::is_connected();
+  const RxVerdict verdict =
+      classify_uplink(packet.data(), packet.size(), online, *this->dedupe_, *this->rate_, now, this->dedupe_window_us_);
+  if (verdict == RxVerdict::INVALID) {
     this->invalid_++;
     ESP_LOGV(TAG, "Ignored packet of %u bytes (not a ConnectSensors uplink)", unsigned(packet.size()));
     return;
   }
   const FrameHeader h = parse_header(packet.data());
-  const uint64_t key = frame_key(packet.data(), packet.size());
-  if (this->dedupe_->contains(key, now, this->dedupe_window_us_)) {
-    this->duplicates_++;
-    ESP_LOGV(TAG, "Duplicate frame fcnt %" PRIu32, h.fcnt);
-    return;
+  switch (verdict) {
+    case RxVerdict::OFFLINE:
+      ESP_LOGD(TAG, "No server address or network; frame fcnt %" PRIu32 " dropped", h.fcnt);
+      return;
+    case RxVerdict::DUPLICATE:
+      this->duplicates_++;
+      ESP_LOGV(TAG, "Duplicate frame fcnt %" PRIu32, h.fcnt);
+      return;
+    case RxVerdict::RATE_LIMITED:
+      this->rate_limited_++;
+      ESP_LOGD(TAG, "Rate limited frame from dev_tag %08" PRIx32, h.dev_tag);
+      return;
+    default:
+      break;
   }
-  if (!this->rate_->allow(h, now)) {
-    this->rate_limited_++;
-    ESP_LOGD(TAG, "Rate limited frame from dev_tag %08" PRIx32, h.dev_tag);
-    return;
-  }
-  this->dedupe_->insert(key, now);
   this->last_rssi_ = rssi;
   this->last_snr_ = snr;
 
@@ -125,10 +131,6 @@ void CSProxy::on_packet(const std::vector<uint8_t> &packet, float rssi, float sn
   }
 #endif
 
-  if (this->server_addr_len_ == 0 || !network::is_connected()) {
-    ESP_LOGD(TAG, "No server address yet; frame fcnt %" PRIu32 " dropped", h.fcnt);
-    return;
-  }
   const uint64_t loop_interval_us = uint64_t(App.get_loop_interval()) * 1000;
   const uint8_t flags = gap > loop_interval_us + TS_UNCERTAIN_EXTRA_US ? UPLINK_TS_UNCERTAIN : 0;
   this->send_(MSG_UPLINK, uplink_body(now, rssi, snr, flags, packet.data(), packet.size()));
