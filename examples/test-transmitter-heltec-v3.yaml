@@ -4,12 +4,20 @@
 # spec/vectors/frame-v1.json, so a proxy can be tested before sensor firmware
 # exists. The frames are fixed, so a real server would treat repeats as
 # replays; devtools/cs_testserver.py accepts them for testing.
+#
+# The buttons are API buttons (Home Assistant or the ESPHome dashboard). The
+# board's OLED shows the last frame sent and the last one heard, so a proxy's
+# downlink shows up on the board without a serial console.
 
 substitutions:
   name: lora-test-tx
 
 esphome:
   name: ${name}
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: screen_wake
 
 esp32:
   board: heltec_wifi_lora_32_V3
@@ -21,6 +29,9 @@ wifi:
   password: !secret wifi_password
 
 logger:
+  # The S3 defaults to its native USB, but this board's USB socket is wired to
+  # UART0 through a CP2102.
+  hardware_uart: UART0
 
 api:
 
@@ -58,6 +69,14 @@ sx126x:
           char hex[2 * 255 + 1];
           ESP_LOGI("test_tx", "heard %u bytes rssi %.1f snr %.1f: %s", (unsigned) x.size(), rssi, snr,
                    format_hex_to(hex, x));
+          static const char *const types[16] = {"?", "DATA", "DATA_CONF", "HEARTBEAT", "HB_CONF", "JOIN",
+                                                "SYNC", "?", "DOWNLINK"};
+          const char *t = x.size() >= 2 && x[0] == 0xC5 ? types[x[1] & 0x0F] : nullptr;
+          id(rx_count) += 1;
+          id(rx_last) = t != nullptr && t[0] != '?' ? t : "non-CS";
+          id(rx_rssi) = rssi;
+          id(rx_snr) = snr;
+      - script.execute: screen_wake
 
 button:
   - platform: template
@@ -65,23 +84,155 @@ button:
     on_press:
       - sx126x.send_packet:
           data: [0xC5, 0x12, 0x61, 0xD3, 0x06, 0xD3, 0x45, 0x22, 0x68, 0xF4, 0x00, 0x00, 0x00, 0x03, 0x78, 0x74, 0x21, 0xE7, 0x51, 0xD0, 0xF9, 0xC8, 0xEE, 0x50, 0xDA, 0x1E]
+      - script.execute:
+          id: note_sent
+          what: "DATA_CONF"
   - platform: template
     name: "Send HEARTBEAT"
     on_press:
       - sx126x.send_packet:
           data: [0xC5, 0x13, 0x61, 0xD3, 0x06, 0xD3, 0x45, 0x22, 0x68, 0xF4, 0x00, 0x00, 0x00, 0x04, 0xBB, 0xA7, 0x00, 0x2D, 0x94, 0xC1, 0xC3, 0x91, 0x40, 0x83, 0x57, 0xC8, 0x3B, 0xF8, 0xE7]
+      - script.execute:
+          id: note_sent
+          what: "HEARTBEAT"
   - platform: template
     name: "Send JOIN"
     on_press:
       - sx126x.send_packet:
           data: [0xC5, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFD, 0xA8, 0xF8, 0x87, 0xC8, 0x9E, 0xCA, 0xF1, 0x06, 0x86, 0xA8, 0x41, 0xD3, 0xC6, 0x06, 0xAE, 0xD6, 0x33, 0x9A, 0x16, 0x9C, 0xE0, 0x7F, 0xA7, 0x45, 0x01, 0xE9, 0xC6, 0xEA, 0xB0, 0x12, 0xCB, 0xFC, 0x35, 0xD4, 0x35, 0xB8, 0x26, 0x8B, 0xDA, 0x9A]
+      - script.execute:
+          id: note_sent
+          what: "JOIN"
   - platform: template
     name: "Send a downlink frame (proxy must ignore)"
     on_press:
       - sx126x.send_packet:
           data: [0xC5, 0x18, 0x61, 0xD3, 0x06, 0xD3, 0x45, 0x22, 0x68, 0xF4, 0x00, 0x00, 0x00, 0x03, 0x93, 0xA3, 0x14, 0x84, 0x22, 0x35, 0x43, 0x07, 0x15, 0x37, 0x98, 0x7E, 0xBB, 0x0D, 0x76, 0x1C, 0x59]
+      - script.execute:
+          id: note_sent
+          what: "DOWNLINK"
   - platform: template
     name: "Send a non-ConnectSensors packet (proxy must ignore)"
     on_press:
       - sx126x.send_packet:
           data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
+      - script.execute:
+          id: note_sent
+          what: "non-CS"
+
+# --- Status screen: SSD1306 128x64 on the board, as on the proxy ---
+
+binary_sensor:
+  - platform: gpio
+    name: "PRG button"
+    pin:
+      number: GPIO0
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    on_press:
+      - script.execute: screen_wake
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: ip_addr
+
+# Vext (active low) powers the OLED and its I2C pull-ups, so it must come up
+# before the I2C bus (priority 1000) or the bus scan sees SCL held low.
+switch:
+  - platform: gpio
+    id: vext
+    pin: GPIO36
+    inverted: true
+    restore_mode: ALWAYS_ON
+    internal: true
+    setup_priority: 1100
+
+i2c:
+  id: oled_bus
+  sda: GPIO17
+  scl: GPIO18
+  frequency: 800kHz
+
+font:
+  - file: "gfonts://Roboto Mono"
+    id: small
+    size: 10
+
+globals:
+  - id: tx_count
+    type: int
+  - id: tx_last
+    type: std::string
+    initial_value: '"nothing yet"'
+  - id: rx_count
+    type: int
+  - id: rx_last
+    type: std::string
+    initial_value: '"nothing yet"'
+  - id: rx_rssi
+    type: float
+  - id: rx_snr
+    type: float
+  - id: screen_lines
+    type: std::vector<std::string>
+
+script:
+  - id: note_sent
+    parameters:
+      what: string
+    then:
+      - lambda: |-
+          id(tx_count) += 1;
+          id(tx_last) = what;
+      - script.execute: screen_wake
+  # Sleeps after 10 minutes so a forgotten bench board does not burn in; any
+  # send, any packet heard, or PRG wakes it.
+  - id: screen_wake
+    mode: restart
+    then:
+      - lambda: |-
+          id(oled).turn_on();
+          id(screen_lines).clear();  // force a redraw on the next check
+      - delay: 10min
+      - lambda: id(oled).turn_off();
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (!id(oled).is_on())
+            return;
+          std::vector<std::string> lines{
+              "test tx",
+              str_sprintf("tx %d rx %d", id(tx_count), id(rx_count)),
+              "sent " + id(tx_last),
+              "heard " + id(rx_last),
+              id(rx_count) > 0 ? str_sprintf("rssi %.0f snr %.1f", id(rx_rssi), id(rx_snr)) : "",
+              id(ip_addr).state.empty() ? "WiFi connecting" : id(ip_addr).state,
+          };
+          if (lines != id(screen_lines)) {
+            id(screen_lines) = std::move(lines);
+            id(oled).update();
+          }
+
+display:
+  - platform: ssd1306_i2c
+    id: oled
+    i2c_id: oled_bus
+    model: SSD1306_128X64
+    address: 0x3C
+    reset_pin: GPIO21
+    update_interval: never
+    lambda: |-
+      const auto &l = id(screen_lines);
+      if (l.size() != 6)
+        return;
+      // Font is 13 px tall: five 13 px rows fill the 64 px screen.
+      it.print(0, 0, id(small), l[0].c_str());
+      it.print(127, 0, id(small), TextAlign::TOP_RIGHT, l[1].c_str());
+      static const int row_y[] = {13, 26, 39, 51};
+      for (int i = 0; i < 4; i++)
+        it.print(0, row_y[i], id(small), l[i + 2].c_str());
