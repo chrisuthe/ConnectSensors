@@ -11,8 +11,8 @@ to its own repository without changes.
 | 00 | [Conventions](00-conventions.md) | Draft |
 | 01 | [Radio profiles](01-radio-profiles.md) | Draft |
 | 02 | [Frame format v1](02-frame-v1.md) | Draft |
-| 03 | Payload v1 (reading kinds and encodings) | Planned |
-| 04 | Pairing | Planned |
+| 03 | [Payload v1](03-payload-v1.md) | Draft |
+| 04 | [Pairing](04-pairing.md) | Draft |
 | 05 | Proxy envelope (proxy to server) | Planned |
 | 06 | `cs_proxy` ESPHome component | Planned |
 | 07 | Network server behavior | Planned |
@@ -24,12 +24,13 @@ to its own repository without changes.
 
 - [`vectors/`](vectors/) - test vectors. An implementation that does not
   reproduce them byte for byte is not conformant.
-- [`tools/csframe.py`](tools/csframe.py) - informative reference encoder and
-  decoder that generates and checks the vectors.
+- [`tools/csframe.py`](tools/csframe.py) - informative reference implementation
+  of frames, payloads, pairing codes and the key exchange. It generates and
+  checks the vectors.
 
 ```
 cd tools
-python3 csframe.py verify ../vectors/frame-v1.json
+python3 csframe.py verify ../vectors
 ```
 
 ## Licensing

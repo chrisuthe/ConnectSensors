@@ -1,7 +1,7 @@
 # 01 - Radio Profiles
 
 Status: Draft
-Version: 1.0-draft.1
+Version: 1.0-draft.2
 
 A radio profile fixes every physical-layer parameter for a region. All sensors and
 proxies in an area using the same profile can hear each other. A network uses
@@ -164,7 +164,8 @@ Computed with the Semtech time-on-air formula, explicit header, CRC on, CR 4/5,
 |---|---|---|
 | 23 bytes (smallest uplink) | 51.5 ms | 205.8 ms |
 | 31 bytes (plain acknowledgement) | 61.7 ms | 246.8 ms |
-| 40 bytes | 71.9 ms | 287.7 ms |
+| 55 bytes (`JOIN`) | 87.3 ms | 349.2 ms |
+| 65 bytes (`KEY_EXCHANGE` downlink) | 97.5 ms | 390.1 ms |
 | 86 bytes (maximum) | 123.1 ms | 492.5 ms |
 
 `tools/csframe.py airtime` prints this table.

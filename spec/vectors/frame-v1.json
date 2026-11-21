@@ -1,15 +1,26 @@
 {
-  "spec": "ConnectSensors frame v1",
+  "spec": "ConnectSensors frame v1 (02) and key exchange (04)",
   "inputs": {
     "k_root": "000102030405060708090a0b0c0d0e0f",
     "dev_eui": "c5c5000000000001",
     "k_net": "f0e1d2c3b4a5968778695a4b3c2d1e0f",
+    "sensor_ephemeral_private": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a1",
+    "server_ephemeral_private": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b1",
     "time": 1795226400,
     "epoch": 498674
   },
   "derived": {
-    "k_enc": "ae0dafd25a2e89208090739d6df12e82",
-    "k_dev_tag": "1889264ff8f0c57bfc77cc01a5aef167",
+    "root": {
+      "k_enc": "ae0dafd25a2e89208090739d6df12e82",
+      "k_dev_tag": "1889264ff8f0c57bfc77cc01a5aef167"
+    },
+    "sensor_ephemeral_public": "ff0d50ce3f52e043aea631c9abb0a3e771520b951111d5dfb6b0b97fb9336c7f",
+    "server_ephemeral_public": "d60220c0fc285b6e3817072c462db2b7581f41e295fa8eb5d036ea5002862e4f",
+    "k_session": "151466fb0522fa821caffdada6ce9d6c",
+    "session": {
+      "k_enc": "77a25f6ba7d210973e1a19ed70b85177",
+      "k_dev_tag": "de22bd4af619a3b758dc256dfa3b0a5a"
+    },
     "k_net_route": "53e27722471cdf29ebcb23aabc120cfe",
     "net_tag": {
       "498673": "f3b45e76",
@@ -17,71 +28,99 @@
       "498675": "a3793a8a"
     },
     "dev_tag": {
-      "498673": "4dabc78a",
-      "498674": "25b64fa5",
-      "498675": "a1f9ab9a"
+      "498673": "9732d16f",
+      "498674": "452268f4",
+      "498675": "a4c1e4e3"
     }
   },
   "frames": [
     {
       "name": "join",
-      "note": "first frame after factory reset; bootstrap tags",
+      "note": "JOIN with the sensor's ephemeral public key",
+      "keys": "root",
       "type": 5,
       "fcnt": 1,
       "net_tag": "00000000",
       "dev_tag": "00000000",
-      "plaintext": "00",
-      "frame": "c515000000000000000000000001ffc87e0fa0d624916f"
+      "plaintext": "02ff0d50ce3f52e043aea631c9abb0a3e771520b951111d5dfb6b0b97fb9336c7f",
+      "frame": "c515000000000000000000000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc35d435b8268bda9a"
     },
     {
-      "name": "downlink_set_network",
-      "note": "server answers JOIN (reply_to = 1) with SET_NETWORK carrying k_net_route",
+      "name": "downlink_key_exchange",
+      "note": "answer to JOIN: server ephemeral public key",
+      "keys": "root",
       "type": 8,
       "fcnt": 1,
       "net_tag": "00000000",
       "dev_tag": "00000000",
-      "plaintext": "000000016b00fb2000011053e27722471cdf29ebcb23aabc120cfe",
-      "frame": "c518000000000000000000000001ba29bab57b903e695dd9bffba8e0d2b6185572a509d6866449ed9a3aa998b5c19840a2"
+      "plaintext": "000000016b00fb20000420d60220c0fc285b6e3817072c462db2b7581f41e295fa8eb5d036ea5002862e4f",
+      "frame": "c518000000000000000000000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e5a9ff021ca714c8b3"
+    },
+    {
+      "name": "sync_after_exchange",
+      "note": "first frame under session keys; acknowledges KEY_EXCHANGE",
+      "keys": "session",
+      "type": 6,
+      "fcnt": 2,
+      "net_tag": "00000000",
+      "dev_tag": "00000000",
+      "plaintext": "01",
+      "frame": "c516000000000000000000000002670148be10b985ea9a"
+    },
+    {
+      "name": "downlink_set_network",
+      "note": "answer to SYNC: network routing key",
+      "keys": "session",
+      "type": 8,
+      "fcnt": 2,
+      "net_tag": "00000000",
+      "dev_tag": "00000000",
+      "plaintext": "000000026b00fb2300011053e27722471cdf29ebcb23aabc120cfe",
+      "frame": "c5180000000000000000000000026ffd6956eed987d059c0b029705fba1c98cd6be8225f1e914a9e38e86e94c9686a0b63"
     },
     {
       "name": "data_confirmed",
-      "note": "door opened; also acknowledges the SET_NETWORK downlink",
+      "note": "door opened; acknowledges SET_NETWORK",
+      "keys": "session",
       "type": 2,
-      "fcnt": 2,
+      "fcnt": 3,
       "net_tag": "61d306d3",
-      "dev_tag": "25b64fa5",
+      "dev_tag": "452268f4",
       "plaintext": "01000101",
-      "frame": "c51261d306d325b64fa500000002469d35ed3730e6c25ebfe54e"
+      "frame": "c51261d306d3452268f400000003787421e751d0f9c8ee50da1e"
     },
     {
       "name": "downlink_ack",
-      "note": "plain acknowledgement of fcnt 2 (reply_to = 2)",
+      "note": "plain acknowledgement of fcnt 3",
+      "keys": "session",
       "type": 8,
-      "fcnt": 2,
+      "fcnt": 3,
       "net_tag": "61d306d3",
-      "dev_tag": "25b64fa5",
-      "plaintext": "000000026b00fb2100",
-      "frame": "c51861d306d325b64fa50000000211975956d4ddd08d2e97a9818ef5d358ad"
+      "dev_tag": "452268f4",
+      "plaintext": "000000036b00fb5c00",
+      "frame": "c51861d306d3452268f40000000393a31484223543071537987ebb0d761c59"
     },
     {
       "name": "heartbeat",
-      "note": "unconfirmed heartbeat, battery 95%",
+      "note": "heartbeat with current state and battery",
+      "keys": "session",
       "type": 3,
-      "fcnt": 3,
+      "fcnt": 4,
       "net_tag": "61d306d3",
-      "dev_tag": "25b64fa5",
-      "plaintext": "0000105f",
-      "frame": "c51361d306d325b64fa500000003c771fec03af6423817550e60"
+      "dev_tag": "452268f4",
+      "plaintext": "00000101ff075f",
+      "frame": "c51361d306d3452268f400000004bba7002d94c1c391408357c83bf8e7"
     },
     {
-      "name": "sync",
-      "note": "after a reboot that lost the clock; fcnt jumped ahead by 64",
+      "name": "sync_after_reboot",
+      "note": "clock lost on battery change; fcnt jumped to the next reserved block",
+      "keys": "session",
       "type": 6,
       "fcnt": 65,
       "net_tag": "00000000",
       "dev_tag": "00000000",
-      "plaintext": "02",
-      "frame": "c5160000000000000000000000418b8f80f946524cf061"
+      "plaintext": "02000101",
+      "frame": "c5160000000000000000000000415c68aba1d3bb3299d4db9184"
     }
   ]
 }

@@ -1,40 +1,48 @@
 #!/usr/bin/env python3
-"""Reference implementation of the ConnectSensors frame format v1.
+"""Reference implementation of the ConnectSensors v1 encodings.
 
-This module is informative. Where it disagrees with spec/02-frame-v1.md, the
-spec wins and this file has a bug.
+Covers spec 02 (frame format), 03 (payload) and 04 (pairing codes and key
+exchange). This module is informative. Where it disagrees with the spec, the spec
+wins and this file has a bug.
 
 Usage:
-    python3 csframe.py vectors > ../vectors/frame-v1.json   # regenerate vectors
-    python3 csframe.py verify ../vectors/frame-v1.json      # check vectors
-    python3 csframe.py airtime                              # airtime table
+    python3 csframe.py vectors ../vectors   # regenerate all vector files
+    python3 csframe.py verify ../vectors    # check all vector files
+    python3 csframe.py airtime              # airtime table
 
 Requires: cryptography (pip install cryptography)
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import math
+import os
 import struct
 import sys
 from dataclasses import dataclass
 
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+# ======================================================================== 02
 
 MAGIC = 0xC5
 VERSION = 1
 HEADER_LEN = 14
 MIC_LEN = 8
 MAX_PAYLOAD = 64
+MIN_FRAME = HEADER_LEN + 1 + MIC_LEN
+MAX_FRAME = HEADER_LEN + MAX_PAYLOAD + MIC_LEN
 EPOCH_SECONDS = 3600
 ZERO_TAG = b"\x00\x00\x00\x00"
 
-# Frame types (low nibble of byte 1)
 T_DATA = 0x1
 T_DATA_CONFIRMED = 0x2
 T_HEARTBEAT = 0x3
@@ -43,25 +51,22 @@ T_JOIN = 0x5
 T_SYNC = 0x6
 T_DOWNLINK = 0x8
 
-UPLINK_TYPES = {T_DATA, T_DATA_CONFIRMED, T_HEARTBEAT, T_HEARTBEAT_CONFIRMED, T_JOIN, T_SYNC}
-DOWNLINK_TYPES = {T_DOWNLINK}
-CONFIRMED_TYPES = {T_DATA_CONFIRMED, T_HEARTBEAT_CONFIRMED, T_JOIN, T_SYNC}
-BOOTSTRAP_TYPES = {T_JOIN, T_SYNC}
-
 DIR_UP = 0x00
 DIR_DOWN = 0x01
 
-# Uplink flags (first plaintext byte of every uplink payload)
 UF_DL_ACK = 0x01
 UF_TIME_UNSURE = 0x02
-
-# Downlink flags
 DF_PENDING = 0x01
 
-# Downlink commands
 CMD_SET_NETWORK = 0x01
 CMD_SET_HEARTBEAT = 0x02
 CMD_LEAVE = 0x03
+CMD_KEY_EXCHANGE = 0x04
+CMD_SET_CHANNEL = 0x40
+
+
+def is_downlink(ftype: int) -> bool:
+    return ftype >= 0x8
 
 
 def hkdf(ikm: bytes, salt: bytes | None, info: bytes, length: int = 16) -> bytes:
@@ -75,18 +80,26 @@ class DeviceKeys:
     k_dev_tag: bytes
 
 
-def derive_device_keys(k_root: bytes, dev_eui: bytes) -> DeviceKeys:
-    assert len(k_root) == 16 and len(dev_eui) == 8
-    return DeviceKeys(
-        dev_eui=dev_eui,
-        k_enc=hkdf(k_root, dev_eui, b"cs1 enc"),
-        k_dev_tag=hkdf(k_root, dev_eui, b"cs1 tag"),
-    )
+def keys_from(base: bytes, dev_eui: bytes) -> DeviceKeys:
+    """Root keys when base = k_root, session keys when base = k_session (02 5.1, 5.3)."""
+    assert len(base) == 16 and len(dev_eui) == 8
+    return DeviceKeys(dev_eui, hkdf(base, dev_eui, b"cs1 enc"), hkdf(base, dev_eui, b"cs1 tag"))
 
 
 def derive_net_route(k_net: bytes) -> bytes:
-    assert len(k_net) == 16
     return hkdf(k_net, None, b"cs1 route")
+
+
+def x25519_pub(priv: bytes) -> bytes:
+    return X25519PrivateKey.from_private_bytes(priv).public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+
+def derive_session(k_root: bytes, dev_eui: bytes, own_priv: bytes, peer_pub: bytes,
+                   sensor_pub: bytes, server_pub: bytes) -> bytes:
+    shared = X25519PrivateKey.from_private_bytes(own_priv).exchange(X25519PublicKey.from_public_bytes(peer_pub))
+    if shared == bytes(32):
+        raise ValueError("all-zero X25519 shared secret")
+    return hkdf(shared, k_root, b"cs1 session" + dev_eui + sensor_pub + server_pub)
 
 
 def epoch_of(unix_seconds: int) -> int:
@@ -115,17 +128,15 @@ def header(ftype: int, ntag: bytes, dtag: bytes, fcnt: int) -> bytes:
 
 
 def seal(keys: DeviceKeys, ftype: int, ntag: bytes, dtag: bytes, fcnt: int, plaintext: bytes) -> bytes:
-    if len(plaintext) > MAX_PAYLOAD:
-        raise ValueError("payload too long")
-    direction = DIR_DOWN if ftype in DOWNLINK_TYPES else DIR_UP
+    if not 1 <= len(plaintext) <= MAX_PAYLOAD:
+        raise ValueError("payload length out of range")
     hdr = header(ftype, ntag, dtag, fcnt)
-    ct = AESCCM(keys.k_enc, tag_length=MIC_LEN).encrypt(nonce(keys.dev_eui, fcnt, direction), plaintext, hdr)
-    return hdr + ct
+    d = DIR_DOWN if is_downlink(ftype) else DIR_UP
+    return hdr + AESCCM(keys.k_enc, tag_length=MIC_LEN).encrypt(nonce(keys.dev_eui, fcnt, d), plaintext, hdr)
 
 
 @dataclass
 class ParsedHeader:
-    version: int
     ftype: int
     net_tag: bytes
     dev_tag: bytes
@@ -133,24 +144,19 @@ class ParsedHeader:
 
 
 def parse_header(frame: bytes) -> ParsedHeader | None:
-    """What a proxy does: structural checks only, no keys."""
-    if len(frame) < HEADER_LEN + MIC_LEN + 1 or frame[0] != MAGIC:
-        return None
-    version, ftype = frame[1] >> 4, frame[1] & 0x0F
-    if version != VERSION:
+    """Keyless structural checks, as a proxy does them (02 section 12)."""
+    if not MIN_FRAME <= len(frame) <= MAX_FRAME or frame[0] != MAGIC or frame[1] >> 4 != VERSION:
         return None
     (fcnt,) = struct.unpack(">I", frame[10:14])
-    return ParsedHeader(version, ftype, frame[2:6], frame[6:10], fcnt)
+    return ParsedHeader(frame[1] & 0x0F, frame[2:6], frame[6:10], fcnt)
 
 
 def open_frame(keys: DeviceKeys, frame: bytes) -> tuple[ParsedHeader, bytes]:
     h = parse_header(frame)
     if h is None:
         raise ValueError("not a v1 frame")
-    direction = DIR_DOWN if h.ftype in DOWNLINK_TYPES else DIR_UP
-    pt = AESCCM(keys.k_enc, tag_length=MIC_LEN).decrypt(
-        nonce(keys.dev_eui, h.fcnt, direction), frame[HEADER_LEN:], frame[:HEADER_LEN]
-    )
+    d = DIR_DOWN if is_downlink(h.ftype) else DIR_UP
+    pt = AESCCM(keys.k_enc, tag_length=MIC_LEN).decrypt(nonce(keys.dev_eui, h.fcnt, d), frame[HEADER_LEN:], frame[:HEADER_LEN])
     return h, pt
 
 
@@ -162,7 +168,113 @@ def command(cmd_id: int, args: bytes = b"") -> bytes:
     return bytes([cmd_id, len(args)]) + args
 
 
-# ---------------------------------------------------------------- airtime
+# ======================================================================== 03
+
+# kind -> (name, format, unknown sentinel). Size class comes from the top two bits.
+KINDS = {
+    0x01: ("contact", "B"), 0x02: ("motion", "B"), 0x03: ("leak", "B"), 0x04: ("tamper", "B"),
+    0x05: ("vibration", "B"), 0x06: ("binary", "B"), 0x07: ("battery_percent", "B"),
+    0x08: ("button", "B"), 0x09: ("enum", "B"), 0x0A: ("percent", "B"),
+    0x40: ("temperature", "h"), 0x41: ("humidity", "H"), 0x42: ("battery_voltage", "H"),
+    0x43: ("illuminance", "H"), 0x44: ("distance", "H"), 0x45: ("pressure", "H"),
+    0x46: ("co2", "H"), 0x47: ("moisture", "H"), 0x48: ("voltage", "H"),
+    0x49: ("counter16", "H"), 0x4A: ("int16", "h"),
+    0x80: ("counter32", "I"), 0x81: ("energy", "I"), 0x82: ("water", "I"),
+    0x83: ("uptime", "I"), 0x84: ("float32", "f"), 0x85: ("int32", "i"),
+    0xC0: ("raw", "var"), 0xC1: ("text", "var"), 0xC2: ("firmware_version", "var"),
+}
+FIXED_SIZE = {0: 1, 1: 2, 2: 4}
+
+
+def encode_reading(channel: int, kind: int, value) -> bytes:
+    cls = kind >> 6
+    if cls == 3:
+        data = bytes(value)
+        if len(data) > 60:
+            raise ValueError("variable reading too long")
+        return bytes([channel, kind, len(data)]) + data
+    fmt = KINDS.get(kind, (None, {0: "B", 1: "H", 2: "I"}[cls]))[1]
+    return bytes([channel, kind]) + struct.pack(">" + fmt, value)
+
+
+def decode_readings(data: bytes) -> list[dict]:
+    """Decode a reading list; unknown kinds are kept as raw bytes (03 section 3)."""
+    out, i = [], 0
+    while i < len(data):
+        if i + 2 > len(data):
+            raise ValueError("truncated reading header")
+        channel, kind = data[i], data[i + 1]
+        if kind == 0x00:
+            raise ValueError("kind 0x00 is reserved")
+        cls = kind >> 6
+        i += 2
+        if cls == 3:
+            if i >= len(data):
+                raise ValueError("truncated length")
+            n = data[i]
+            i += 1
+            size = n
+        else:
+            size = FIXED_SIZE[cls]
+        raw = data[i:i + size]
+        if len(raw) != size:
+            raise ValueError("truncated value")
+        i += size
+        name, fmt = KINDS.get(kind, ("unknown", None))
+        if fmt is None:
+            value = raw.hex()
+        elif fmt == "var":
+            value = raw.decode("utf-8") if kind == 0xC1 else raw.hex()
+        else:
+            (value,) = struct.unpack(">" + fmt, raw)
+        out.append({"channel": channel, "kind": kind, "name": name, "value": value})
+    return out
+
+
+# ======================================================================== 04
+
+QR_PREFIX = "CS"
+QR_VERSION = "1"
+
+
+def b32(data: bytes) -> str:
+    return base64.b32encode(data).decode().rstrip("=")
+
+
+def unb32(s: str) -> bytes:
+    return base64.b32decode(s + "=" * (-len(s) % 8))
+
+
+def qr_encode(dev_eui: bytes, k_root: bytes, region: str, profile: str) -> str:
+    body = ":".join([QR_PREFIX, QR_VERSION, dev_eui.hex().upper(), b32(k_root), region, profile])
+    check = hashlib.sha256(body.encode()).hexdigest()[:4].upper()
+    return body + ":" + check
+
+
+QR_ALLOWED = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-:")
+
+
+def qr_parse(code: str) -> dict:
+    code = code.strip().upper()
+    if not set(code) <= QR_ALLOWED:
+        raise ValueError("invalid character")
+    parts = code.split(":")
+    if len(parts) != 7 or parts[0] != QR_PREFIX:
+        raise ValueError("not a ConnectSensors pairing code")
+    if parts[1] != QR_VERSION:
+        raise ValueError("unsupported pairing code version")
+    body, check = ":".join(parts[:6]), parts[6]
+    if hashlib.sha256(body.encode()).hexdigest()[:4].upper() != check:
+        raise ValueError("checksum mismatch")
+    dev_eui, k_root = bytes.fromhex(parts[2]), unb32(parts[3])
+    if len(dev_eui) != 8 or len(k_root) != 16 or len(parts[3]) != 26:
+        raise ValueError("bad field length")
+    if not 1 <= len(parts[5]) <= 32:
+        raise ValueError("bad profile id")
+    return {"dev_eui": dev_eui.hex(), "k_root": k_root.hex(), "region": parts[4], "profile": parts[5]}
+
+
+# ======================================================================== airtime
 
 
 def airtime_ms(payload_len: int, sf: int, bw_hz: int, cr: int = 1, preamble: int = 8,
@@ -170,79 +282,159 @@ def airtime_ms(payload_len: int, sf: int, bw_hz: int, cr: int = 1, preamble: int
     """Semtech LoRa time-on-air for SF7-SF12. cr: 1..4 for 4/5..4/8."""
     tsym = (2 ** sf) / bw_hz
     de = 1 if tsym > 0.016 else 0
-    ih = 0 if explicit_header else 1
-    num = 8 * payload_len - 4 * sf + 28 + 16 * int(crc) - 20 * ih
+    num = 8 * payload_len - 4 * sf + 28 + 16 * int(crc) - 20 * (0 if explicit_header else 1)
     n_payload = 8 + max(math.ceil(num / (4 * (sf - 2 * de))) * (cr + 4), 0)
     return ((preamble + 4.25) + n_payload) * tsym * 1000
 
 
-# ---------------------------------------------------------------- vectors
+# ======================================================================== vectors
 
 K_ROOT = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
 DEV_EUI = bytes.fromhex("c5c5000000000001")
 K_NET = bytes.fromhex("f0e1d2c3b4a5968778695a4b3c2d1e0f")
+SENSOR_PRIV = bytes.fromhex("a0" * 31 + "a1")
+SERVER_PRIV = bytes.fromhex("b0" * 31 + "b1")
 T0 = 1795226400  # 2026-11-21T02:00:00Z
 
 
-def build_vectors() -> dict:
-    keys = derive_device_keys(K_ROOT, DEV_EUI)
+def frame_vectors() -> dict:
+    root = keys_from(K_ROOT, DEV_EUI)
+    s_pub, v_pub = x25519_pub(SENSOR_PRIV), x25519_pub(SERVER_PRIV)
+    k_session = derive_session(K_ROOT, DEV_EUI, SENSOR_PRIV, v_pub, s_pub, v_pub)
+    assert k_session == derive_session(K_ROOT, DEV_EUI, SERVER_PRIV, s_pub, s_pub, v_pub)
+    sess = keys_from(k_session, DEV_EUI)
     route = derive_net_route(K_NET)
     e = epoch_of(T0)
-    nt, dt = net_tag(route, e), dev_tag(keys.k_dev_tag, e)
+    nt, dt = net_tag(route, e), dev_tag(sess.k_dev_tag, e)
+    z = ZERO_TAG
 
-    def case(name, ftype, ntag, dtag, fcnt, pt, note):
-        frame = seal(keys, ftype, ntag, dtag, fcnt, pt)
-        return {"name": name, "note": note, "type": ftype, "fcnt": fcnt,
-                "net_tag": ntag.hex(), "dev_tag": dtag.hex(),
-                "plaintext": pt.hex(), "frame": frame.hex()}
+    def case(name, keyset, keys, ftype, ntag, dtag, fcnt, pt, note):
+        return {"name": name, "note": note, "keys": keyset, "type": ftype, "fcnt": fcnt,
+                "net_tag": ntag.hex(), "dev_tag": dtag.hex(), "plaintext": pt.hex(),
+                "frame": seal(keys, ftype, ntag, dtag, fcnt, pt).hex()}
 
-    # contact sensor: uflags=0, channel 0, kind 0x01 (contact), value 1 (open)
-    data_pt = bytes([0x00, 0x00, 0x01, 0x01])
-    hb_pt = bytes([0x00, 0x00, 0x10, 0x5F])  # channel 0, kind 0x10 (battery %), 95
-    set_net = command(CMD_SET_NETWORK, route)
+    contact_open = encode_reading(0x00, 0x01, 1)
+    battery = encode_reading(0xFF, 0x07, 95)
     return {
-        "spec": "ConnectSensors frame v1",
+        "spec": "ConnectSensors frame v1 (02) and key exchange (04)",
         "inputs": {"k_root": K_ROOT.hex(), "dev_eui": DEV_EUI.hex(), "k_net": K_NET.hex(),
-                   "time": T0, "epoch": e},
-        "derived": {"k_enc": keys.k_enc.hex(), "k_dev_tag": keys.k_dev_tag.hex(),
-                    "k_net_route": route.hex(),
-                    "net_tag": {str(x): net_tag(route, x).hex() for x in (e - 1, e, e + 1)},
-                    "dev_tag": {str(x): dev_tag(keys.k_dev_tag, x).hex() for x in (e - 1, e, e + 1)}},
+                   "sensor_ephemeral_private": SENSOR_PRIV.hex(),
+                   "server_ephemeral_private": SERVER_PRIV.hex(), "time": T0, "epoch": e},
+        "derived": {
+            "root": {"k_enc": root.k_enc.hex(), "k_dev_tag": root.k_dev_tag.hex()},
+            "sensor_ephemeral_public": s_pub.hex(), "server_ephemeral_public": v_pub.hex(),
+            "k_session": k_session.hex(),
+            "session": {"k_enc": sess.k_enc.hex(), "k_dev_tag": sess.k_dev_tag.hex()},
+            "k_net_route": route.hex(),
+            "net_tag": {str(x): net_tag(route, x).hex() for x in (e - 1, e, e + 1)},
+            "dev_tag": {str(x): dev_tag(sess.k_dev_tag, x).hex() for x in (e - 1, e, e + 1)},
+        },
         "frames": [
-            case("join", T_JOIN, ZERO_TAG, ZERO_TAG, 1, bytes([0x00]),
-                 "first frame after factory reset; bootstrap tags"),
-            case("downlink_set_network", T_DOWNLINK, ZERO_TAG, ZERO_TAG, 1,
-                 downlink_payload(1, T0, 0, set_net), "server answers JOIN (reply_to = 1) with SET_NETWORK carrying k_net_route"),
-            case("data_confirmed", T_DATA_CONFIRMED, nt, dt, 2, bytes([UF_DL_ACK]) + data_pt[1:],
-                 "door opened; also acknowledges the SET_NETWORK downlink"),
-            case("downlink_ack", T_DOWNLINK, nt, dt, 2, downlink_payload(2, T0 + 1, 0),
-                 "plain acknowledgement of fcnt 2 (reply_to = 2)"),
-            case("heartbeat", T_HEARTBEAT, nt, dt, 3, hb_pt, "unconfirmed heartbeat, battery 95%"),
-            case("sync", T_SYNC, ZERO_TAG, ZERO_TAG, 65, bytes([UF_TIME_UNSURE]),
-                 "after a reboot that lost the clock; fcnt jumped ahead by 64"),
+            case("join", "root", root, T_JOIN, z, z, 1, bytes([UF_TIME_UNSURE]) + s_pub,
+                 "JOIN with the sensor's ephemeral public key"),
+            case("downlink_key_exchange", "root", root, T_DOWNLINK, z, z, 1,
+                 downlink_payload(1, T0, 0, command(CMD_KEY_EXCHANGE, v_pub)),
+                 "answer to JOIN: server ephemeral public key"),
+            case("sync_after_exchange", "session", sess, T_SYNC, z, z, 2, bytes([UF_DL_ACK]),
+                 "first frame under session keys; acknowledges KEY_EXCHANGE"),
+            case("downlink_set_network", "session", sess, T_DOWNLINK, z, z, 2,
+                 downlink_payload(2, T0 + 3, 0, command(CMD_SET_NETWORK, route)),
+                 "answer to SYNC: network routing key"),
+            case("data_confirmed", "session", sess, T_DATA_CONFIRMED, nt, dt, 3,
+                 bytes([UF_DL_ACK]) + contact_open, "door opened; acknowledges SET_NETWORK"),
+            case("downlink_ack", "session", sess, T_DOWNLINK, nt, dt, 3, downlink_payload(3, T0 + 60, 0),
+                 "plain acknowledgement of fcnt 3"),
+            case("heartbeat", "session", sess, T_HEARTBEAT, nt, dt, 4, bytes([0]) + contact_open + battery,
+                 "heartbeat with current state and battery"),
+            case("sync_after_reboot", "session", sess, T_SYNC, z, z, 65, bytes([UF_TIME_UNSURE]) + contact_open,
+                 "clock lost on battery change; fcnt jumped to the next reserved block"),
         ],
     }
 
 
-def verify(path: str) -> int:
-    with open(path) as f:
-        v = json.load(f)
-    inp = v["inputs"]
-    keys = derive_device_keys(bytes.fromhex(inp["k_root"]), bytes.fromhex(inp["dev_eui"]))
-    route = derive_net_route(bytes.fromhex(inp["k_net"]))
+def payload_vectors() -> dict:
+    cases = [
+        ("contact_open", [(0x00, 0x01, 1)]),
+        ("temp_humidity", [(0x00, 0x40, 2153), (0x00, 0x41, 4520)]),
+        ("negative_temperature", [(0x01, 0x40, -1250)]),
+        ("unknown_temperature", [(0x00, 0x40, -32768)]),
+        ("battery_and_firmware", [(0xFF, 0x07, 88), (0xFF, 0x42, 2950), (0xFF, 0xC2, bytes([1, 2, 0]))]),
+        ("button_long", [(0x00, 0x08, 3)]),
+        ("water_counter", [(0x00, 0x82, 123456)]),
+        ("text", [(0x02, 0xC1, "hi".encode())]),
+    ]
+    out = []
+    for name, readings in cases:
+        enc = b"".join(encode_reading(c, k, v) for c, k, v in readings)
+        out.append({"name": name, "encoded": enc.hex(), "decoded": decode_readings(enc)})
+    out.append({"name": "unknown_kind_skipped", "encoded": "00590102" + "000101",
+                "decoded": decode_readings(bytes.fromhex("00590102000101")),
+                "note": "kind 0x59 is unassigned (2-byte class); receivers skip it and keep parsing"})
+    return {"spec": "ConnectSensors payload v1 (03)", "readings": out}
+
+
+def pairing_vectors() -> dict:
+    good = qr_encode(DEV_EUI, K_ROOT, "US915", "CS.CONTACT-1")
+    bad_check = good[:-1] + ("0" if good[-1] != "0" else "1")
+    return {
+        "spec": "ConnectSensors pairing codes (04)",
+        "valid": [{"code": good, "parsed": qr_parse(good)},
+                  {"code": good.lower(), "parsed": qr_parse(good.lower()), "note": "lowercase input accepted"}],
+        "invalid": [{"code": bad_check, "reason": "checksum mismatch"},
+                    {"code": good.replace("CS:1:", "CS:2:", 1), "reason": "unsupported pairing code version"}],
+    }
+
+
+def write_vectors(d: str) -> None:
+    for fname, data in (("frame-v1.json", frame_vectors()), ("payload-v1.json", payload_vectors()),
+                        ("pairing-v1.json", pairing_vectors())):
+        with open(os.path.join(d, fname), "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+
+
+def verify(d: str) -> int:
     bad = 0
-    bad += keys.k_enc.hex() != v["derived"]["k_enc"]
-    bad += keys.k_dev_tag.hex() != v["derived"]["k_dev_tag"]
-    bad += route.hex() != v["derived"]["k_net_route"]
-    for ep, t in v["derived"]["net_tag"].items():
-        bad += net_tag(route, int(ep)).hex() != t
-    for ep, t in v["derived"]["dev_tag"].items():
-        bad += dev_tag(keys.k_dev_tag, int(ep)).hex() != t
+    with open(os.path.join(d, "frame-v1.json")) as f:
+        v = json.load(f)
+    i = v["inputs"]
+    k_root, eui = bytes.fromhex(i["k_root"]), bytes.fromhex(i["dev_eui"])
+    s_priv, v_priv = bytes.fromhex(i["sensor_ephemeral_private"]), bytes.fromhex(i["server_ephemeral_private"])
+    s_pub, v_pub = x25519_pub(s_priv), x25519_pub(v_priv)
+    k_sess = derive_session(k_root, eui, s_priv, v_pub, s_pub, v_pub)
+    sets = {"root": keys_from(k_root, eui), "session": keys_from(k_sess, eui)}
+    dv = v["derived"]
+    bad += k_sess.hex() != dv["k_session"]
+    for name, ks in sets.items():
+        bad += ks.k_enc.hex() != dv[name]["k_enc"] or ks.k_dev_tag.hex() != dv[name]["k_dev_tag"]
+    route = derive_net_route(bytes.fromhex(i["k_net"]))
+    bad += route.hex() != dv["k_net_route"]
+    bad += any(net_tag(route, int(ep)).hex() != t for ep, t in dv["net_tag"].items())
+    bad += any(dev_tag(sets["session"].k_dev_tag, int(ep)).hex() != t for ep, t in dv["dev_tag"].items())
     for c in v["frames"]:
-        h, pt = open_frame(keys, bytes.fromhex(c["frame"]))
+        h, pt = open_frame(sets[c["keys"]], bytes.fromhex(c["frame"]))
         ok = (pt.hex() == c["plaintext"] and h.ftype == c["type"] and h.fcnt == c["fcnt"]
               and h.net_tag.hex() == c["net_tag"] and h.dev_tag.hex() == c["dev_tag"])
-        print(f"{'ok  ' if ok else 'FAIL'} {c['name']}")
+        print(f"{'ok  ' if ok else 'FAIL'} frame   {c['name']}")
+        bad += not ok
+    with open(os.path.join(d, "payload-v1.json")) as f:
+        for c in json.load(f)["readings"]:
+            ok = decode_readings(bytes.fromhex(c["encoded"])) == c["decoded"]
+            print(f"{'ok  ' if ok else 'FAIL'} payload {c['name']}")
+            bad += not ok
+    with open(os.path.join(d, "pairing-v1.json")) as f:
+        p = json.load(f)
+    for c in p["valid"]:
+        ok = qr_parse(c["code"]) == c["parsed"]
+        print(f"{'ok  ' if ok else 'FAIL'} pairing valid {c['code']}")
+        bad += not ok
+    for c in p["invalid"]:
+        try:
+            qr_parse(c["code"])
+            ok = False
+        except ValueError as ex:
+            ok = str(ex) == c["reason"]
+        print(f"{'ok  ' if ok else 'FAIL'} pairing invalid ({c['reason']})")
         bad += not ok
     print("all vectors pass" if bad == 0 else f"{bad} failures")
     return 1 if bad else 0
@@ -250,15 +442,15 @@ def verify(path: str) -> int:
 
 def airtime_table() -> None:
     print("frame_bytes  SF  BW_kHz  airtime_ms")
-    for n in (23, 31, 40, 86):
-        for sf, bw in ((7, 500_000), (9, 500_000), (9, 125_000), (10, 125_000)):
+    for n in (23, 31, 55, 65, 86):
+        for sf, bw in ((9, 500_000), (9, 125_000)):
             print(f"{n:11d}  {sf:2d}  {bw // 1000:6d}  {airtime_ms(n, sf, bw):10.1f}")
 
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd == "vectors":
-        print(json.dumps(build_vectors(), indent=2))
+    if cmd == "vectors" and len(sys.argv) > 2:
+        write_vectors(sys.argv[2])
     elif cmd == "verify" and len(sys.argv) > 2:
         sys.exit(verify(sys.argv[2]))
     elif cmd == "airtime":

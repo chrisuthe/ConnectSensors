@@ -1,0 +1,138 @@
+{
+  "spec": "ConnectSensors payload v1 (03)",
+  "readings": [
+    {
+      "name": "contact_open",
+      "encoded": "000101",
+      "decoded": [
+        {
+          "channel": 0,
+          "kind": 1,
+          "name": "contact",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "temp_humidity",
+      "encoded": "00400869004111a8",
+      "decoded": [
+        {
+          "channel": 0,
+          "kind": 64,
+          "name": "temperature",
+          "value": 2153
+        },
+        {
+          "channel": 0,
+          "kind": 65,
+          "name": "humidity",
+          "value": 4520
+        }
+      ]
+    },
+    {
+      "name": "negative_temperature",
+      "encoded": "0140fb1e",
+      "decoded": [
+        {
+          "channel": 1,
+          "kind": 64,
+          "name": "temperature",
+          "value": -1250
+        }
+      ]
+    },
+    {
+      "name": "unknown_temperature",
+      "encoded": "00408000",
+      "decoded": [
+        {
+          "channel": 0,
+          "kind": 64,
+          "name": "temperature",
+          "value": -32768
+        }
+      ]
+    },
+    {
+      "name": "battery_and_firmware",
+      "encoded": "ff0758ff420b86ffc203010200",
+      "decoded": [
+        {
+          "channel": 255,
+          "kind": 7,
+          "name": "battery_percent",
+          "value": 88
+        },
+        {
+          "channel": 255,
+          "kind": 66,
+          "name": "battery_voltage",
+          "value": 2950
+        },
+        {
+          "channel": 255,
+          "kind": 194,
+          "name": "firmware_version",
+          "value": "010200"
+        }
+      ]
+    },
+    {
+      "name": "button_long",
+      "encoded": "000803",
+      "decoded": [
+        {
+          "channel": 0,
+          "kind": 8,
+          "name": "button",
+          "value": 3
+        }
+      ]
+    },
+    {
+      "name": "water_counter",
+      "encoded": "00820001e240",
+      "decoded": [
+        {
+          "channel": 0,
+          "kind": 130,
+          "name": "water",
+          "value": 123456
+        }
+      ]
+    },
+    {
+      "name": "text",
+      "encoded": "02c1026869",
+      "decoded": [
+        {
+          "channel": 2,
+          "kind": 193,
+          "name": "text",
+          "value": "hi"
+        }
+      ]
+    },
+    {
+      "name": "unknown_kind_skipped",
+      "encoded": "00590102000101",
+      "decoded": [
+        {
+          "channel": 0,
+          "kind": 89,
+          "name": "unknown",
+          "value": "0102"
+        },
+        {
+          "channel": 0,
+          "kind": 1,
+          "name": "contact",
+          "value": 1
+        }
+      ],
+      "note": "kind 0x59 is unassigned (2-byte class); receivers skip it and keep parsing"
+    }
+  ]
+}

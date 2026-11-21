@@ -241,24 +241,23 @@ advertisements. ConnectSensors would then become one decoder on top of it.
 
 ### 7.2 Pairing
 
-Sensor QR code:
+The normative definition is [spec/04-pairing.md](../spec/04-pairing.md).
+Summary:
 
-```
-CS:1:<dev_eui hex>:<K_root base32>:<profile id>
-```
+- Each sensor ships with a pairing code, normally a QR code inside the battery
+  compartment:
+  `CS:1:<DEV_EUI>:<K_ROOT base32>:<REGION>:<PROFILE>:<CHECK>`.
+- The user scans it, then presses the sensor's button. `JOIN` and
+  `KEY_EXCHANGE` carry an X25519 exchange authenticated by `k_root`, which
+  produces a fresh `k_session` for every pairing. `SYNC` and `SET_NETWORK` then
+  deliver the network routing key under the session keys.
+- A previous owner who kept the pairing code cannot read the device's traffic
+  after it is paired again.
+- Removal sends `LEAVE`; a factory reset keeps `k_root` and the frame counter.
+  Network keys can be rotated without re-pairing.
 
-Flow:
-
-1. User scans the QR code in the Home Assistant companion app (or types it).
-2. Integration stores the device, derives keys, starts listening for `JOIN_HELLO`
-   under its tag.
-3. User presses the sensor's button. It sends `JOIN_HELLO` with a well-known
-   bootstrap `net_tag` (all-zero) since it has no network key yet.
-4. Server replies with `COMMAND(set_network)` carrying `K_net_route` and the epoch.
-5. Sensor switches to normal tags. Pairing done.
-
-Re-pairing to a different home is a factory reset plus a new scan. The QR code is
-the secret: printed inside the battery cover, not on the outside.
+Readings inside payloads, the default Home Assistant entity mapping and device
+profiles are defined in [spec/03-payload-v1.md](../spec/03-payload-v1.md).
 
 ### 7.3 Storage
 

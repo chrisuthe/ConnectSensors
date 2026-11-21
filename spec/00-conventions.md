@@ -1,7 +1,7 @@
 # 00 - Conventions
 
 Status: Draft
-Version: 1.0-draft.1
+Version: 1.0-draft.2
 
 This document defines terms and notation used by every other ConnectSensors
 specification.
@@ -50,6 +50,8 @@ Sections marked *informative* contain no requirements.
 | AES-128-CCM | NIST SP 800-38C / RFC 3610, 13-byte nonce, 8-byte tag |
 | HMAC-SHA256 | RFC 2104 with SHA-256 (FIPS 180-4) |
 | HKDF-SHA256 | RFC 5869 with SHA-256. A missing salt means the RFC's default (32 zero bytes). |
+| X25519 | RFC 7748 Diffie-Hellman over Curve25519, 32-byte keys |
+| Base32 | RFC 4648 section 6 alphabet, uppercase |
 
 ## 5. Versioning
 
