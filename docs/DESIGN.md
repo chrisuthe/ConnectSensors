@@ -199,79 +199,46 @@ Publishing every sensor frame permanently (AT Protocol) leaks activity timing ev
 when payloads are encrypted. ActivityPub requires public inboxes, which most homes
 do not have. Both are kept for the control plane (Section 9).
 
-### 8.2 Relay protocol
+### 8.2 How it works
 
-Use the Nostr event and relay model (NIP-01), with a dedicated ephemeral event kind
-in the 20000-29999 range (number to be registered through a NIP).
+The normative definitions are
+[spec/09-federation-relay.md](../spec/09-federation-relay.md) and
+[spec/10-control-plane.md](../spec/10-control-plane.md). Summary:
 
-- Each proxy generates a secp256k1 keypair (Nostr identity) on first boot and
-  stores it in flash.
-- Foreign frame published as:
-
-```json
-{
-  "kind": 2xxxx,
-  "pubkey": "<proxy pubkey>",
-  "created_at": 1795226690,
-  "tags": [["h", "<net_tag hex>"], ["r", "US915"]],
-  "content": "<base64: raw frame | rssi | snr | freq_err>",
-  "sig": "<schnorr sig>"
-}
-```
-
-- Owner's HA subscribes with filter `{"kinds":[2xxxx], "#h":[tags for e-1..e+1]}`
-  on several relays and updates the filter each epoch.
-- Relays store nothing (ephemeral kind) and apply per-pubkey rate limits.
-- Proxies publish to at least two relays. Owners subscribe to the same set.
-  A default relay list ships with the integration; anyone can run `cs-relay`.
-
-### 8.3 Federated downlinks
-
-A neighbor's proxy may be the only one that hears a device. Downlinks to it go
-back over the relay as a second ephemeral kind tagged `["p", "<proxy pubkey>"]`.
-They are always too slow for RX1 and usually make RX2; otherwise they wait for
-the next uplink. Proxies only transmit federated downlinks if
-`federation.downlink: true` (off by default) and subject to the region's
-duty-cycle budget.
-
-### 8.4 What a relay operator or neighbor learns
-
-- That some device with an hourly-changing tag sent a frame at time T, heard by
-  proxy P at signal strength S.
-- Not which home it belongs to, what it measured, or which device it is across
-  hours.
-- Residual leak: a neighbor can correlate "frames appear when someone walks past
-  my window". Optional cover traffic (dummy heartbeats) is a later mitigation.
+- **The home server federates, not the proxy.** Proxies already send every frame
+  to their server, so the server publishes the frames none of its devices
+  verify, signed with its own federation key. A standalone proxy with no server
+  can publish directly, to donate coverage.
+- **Events:** three ephemeral Nostr kinds (provisionally 21110-21112): uplink,
+  downlink request and downlink result. Relays forward and never store them.
+- **Finding your frames:** subscribers filter by one-byte buckets of their
+  `net_tag`s plus random decoys, so a relay learns that a subscriber wants
+  1/256 of the traffic, not which network is theirs.
+- **Federated downlinks:** RX2 only, through the publisher's proxy, referenced by
+  a random `rx_ref` so publishers never reveal proxy timing. Publishing and
+  accepting downlinks are separate opt-ins, both off by default, with airtime
+  caps and optional allow lists.
+- **Relays:** any NIP-01 relay that treats these kinds as ephemeral and rate
+  limits per key; `cs-relay` is a minimal reference relay for neighborhoods.
 
 ---
 
 ## 9. Control plane (optional)
 
-These are useful but not required for the network to work.
+Defined in [spec/10-control-plane.md](../spec/10-control-plane.md), with
+lexicons in `spec/lexicons/`:
 
-### 9.1 Identity
-
-Owners and proxies may publish a DID (`did:plc` or `did:web`). Linking a proxy's
-Nostr pubkey to its owner's DID lets other owners trust or block proxies by owner,
-and keeps that trust when keys rotate.
-
-### 9.2 Coverage map
-
-Opt-in records (AT Protocol lexicon `org.connectsensors.proxy`):
-coarse location (geohash precision 5, roughly 5 km), region profile, uptime,
-relay set. Lets people see where community coverage exists, like a non-token
-Helium map.
-
-### 9.3 Device profiles
-
-Lexicon `org.connectsensors.deviceProfile`: maps `channel`/`kind` to Home Assistant
-entity type, device class, unit, name and icon, plus heartbeat interval and
-firmware version. Profiles are signed by their author and pulled by the
-integration, so a new sensor design works in everyone's Home Assistant without
-an integration release.
-
-ActivityPub is a reasonable alternative for 9.2 and 9.3 if a fediverse community
-prefers it; the integration should treat the control plane as pluggable.
+- **Device profiles** published as AT Protocol records and fetched from profile
+  sources the user trusts, so a new sensor design works without an integration
+  release. Changes that alter entities need the user's approval.
+- **Trust:** local allow and block lists for federation keys, optionally
+  published and importable.
+- **Coverage statements:** opt-in, limited to about 5 km, listing the relays a
+  home uses.
+- **Identity links** between a DID and a federation key, valid only when stated
+  in both directions.
+- The NSID authority `org.connectsensors` is provisional until the project has
+  a domain.
 
 ---
 
@@ -336,10 +303,14 @@ support is worth evaluating so sensors can also be configured in YAML.
 2. Is one shared channel enough for a dense neighborhood once federation is on?
    May need two channels and SF diversity.
 3. Default relay operators and governance: who runs the bootstrap relays?
-4. Ephemeral event kind number and NIP process.
+4. Registering the provisional event kinds 21110-21112 through the NIP process.
 5. Whether to hide `fcnt` per epoch to reduce traffic analysis.
 6. Battery-sensor firmware: Zephyr vs. ESPHome nRF52.
 7. License for code outside `spec/` (the spec is CC BY 4.0, its tools and vectors MIT).
+8. The project's domain, which fixes the lexicon NSID authority (currently the
+   provisional `org.connectsensors`).
+9. Whether bucket-level subscriptions give enough privacy while few networks
+   exist in a region, or whether relays should be neighborhood-run by default.
 
 ---
 

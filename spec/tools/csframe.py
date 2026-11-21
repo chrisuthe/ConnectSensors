@@ -2,7 +2,8 @@
 """Reference implementation of the ConnectSensors v1 encodings.
 
 Covers spec 02 (frame format), 03 (payload), 04 (pairing codes and key
-exchange), 05 (proxy envelope) and the testable rules of 07 (network server). This module is informative. Where it disagrees with the spec, the spec
+exchange), 05 (proxy envelope), the testable rules of 07 (network server) and
+09 (federation events, including a minimal BIP-340 implementation). This module is informative. Where it disagrees with the spec, the spec
 wins and this file has a bug.
 
 Usage:
@@ -368,6 +369,123 @@ def unwrap(prev_raw: int, prev_total: int, raw: int, modulus: int) -> tuple[int,
     return prev_total + raw, "reset"
 
 
+# ======================================================================== 09
+
+# Minimal BIP-340 Schnorr signatures over secp256k1, following the BIP's
+# reference code. Not constant-time: for test vectors only.
+_P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+_G = (0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
+      0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8)
+
+
+def _tagged(tag: str, msg: bytes) -> bytes:
+    t = hashlib.sha256(tag.encode()).digest()
+    return hashlib.sha256(t + t + msg).digest()
+
+
+def _add(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if a[0] == b[0] and a[1] != b[1]:
+        return None
+    if a == b:
+        lam = 3 * a[0] * a[0] * pow(2 * a[1], _P - 2, _P) % _P
+    else:
+        lam = (b[1] - a[1]) * pow(b[0] - a[0], _P - 2, _P) % _P
+    x = (lam * lam - a[0] - b[0]) % _P
+    return x, (lam * (a[0] - x) - a[1]) % _P
+
+
+def _mul(pt, k: int):
+    r = None
+    for i in range(256):
+        if (k >> i) & 1:
+            r = _add(r, pt)
+        pt = _add(pt, pt)
+    return r
+
+
+def _lift_x(x: int):
+    if x >= _P:
+        return None
+    c = (pow(x, 3, _P) + 7) % _P
+    y = pow(c, (_P + 1) // 4, _P)
+    if y * y % _P != c:
+        return None
+    return x, y if y % 2 == 0 else _P - y
+
+
+def schnorr_pub(sk: bytes) -> bytes:
+    return _mul(_G, int.from_bytes(sk, "big"))[0].to_bytes(32, "big")
+
+
+def schnorr_sign(msg: bytes, sk: bytes, aux: bytes = bytes(32)) -> bytes:
+    d0 = int.from_bytes(sk, "big")
+    if not 1 <= d0 < _N:
+        raise ValueError("bad secret key")
+    pt = _mul(_G, d0)
+    d = d0 if pt[1] % 2 == 0 else _N - d0
+    t = bytes(a ^ b for a, b in zip(d.to_bytes(32, "big"), _tagged("BIP0340/aux", aux)))
+    px = pt[0].to_bytes(32, "big")
+    k0 = int.from_bytes(_tagged("BIP0340/nonce", t + px + msg), "big") % _N
+    if k0 == 0:
+        raise ValueError("bad nonce")
+    r = _mul(_G, k0)
+    k = k0 if r[1] % 2 == 0 else _N - k0
+    rx = r[0].to_bytes(32, "big")
+    e = int.from_bytes(_tagged("BIP0340/challenge", rx + px + msg), "big") % _N
+    return rx + ((k + e * d) % _N).to_bytes(32, "big")
+
+
+def schnorr_verify(msg: bytes, pub: bytes, sig: bytes) -> bool:
+    pt = _lift_x(int.from_bytes(pub, "big"))
+    r, s_ = int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big")
+    if pt is None or r >= _P or s_ >= _N:
+        return False
+    e = int.from_bytes(_tagged("BIP0340/challenge", sig[:32] + pub + msg), "big") % _N
+    rr = _add(_mul(_G, s_), _mul(pt, _N - e))
+    return rr is not None and rr[1] % 2 == 0 and rr[0] == r
+
+
+KIND_UPLINK = 21110
+KIND_DOWNLINK_REQUEST = 21111
+KIND_DOWNLINK_RESULT = 21112
+FED_VERSION = 1
+
+
+def nostr_event(sk: bytes, created_at: int, kind: int, tags: list, content: str) -> dict:
+    pub = schnorr_pub(sk).hex()
+    ser = json.dumps([0, pub, created_at, kind, tags, content], separators=(",", ":"), ensure_ascii=False)
+    eid = hashlib.sha256(ser.encode()).digest()
+    return {"id": eid.hex(), "pubkey": pub, "created_at": created_at, "kind": kind, "tags": tags,
+            "content": content, "sig": schnorr_sign(eid, sk).hex()}
+
+
+def nostr_verify(ev: dict) -> bool:
+    ser = json.dumps([0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
+                     separators=(",", ":"), ensure_ascii=False)
+    eid = hashlib.sha256(ser.encode()).digest()
+    return eid.hex() == ev["id"] and schnorr_verify(eid, bytes.fromhex(ev["pubkey"]), bytes.fromhex(ev["sig"]))
+
+
+def fed_uplink_content(frame: bytes, age_ms: int, receptions: list[tuple[bytes, float, float, int]]) -> str:
+    body = bytes([FED_VERSION, len(frame)]) + frame + struct.pack(">HB", age_ms, len(receptions))
+    for rx_ref, rssi, snr, flags in receptions:
+        body += rx_ref + struct.pack(">hhB", round(rssi * 10), round(snr * 10), flags)
+    return base64.b64encode(body).decode()
+
+
+def fed_downlink_content(rx_ref: bytes, frame: bytes) -> str:
+    return base64.b64encode(bytes([FED_VERSION]) + rx_ref + bytes([len(frame)]) + frame).decode()
+
+
+def fed_result_content(rx_ref: bytes, result: int, offset_us: int) -> str:
+    return base64.b64encode(bytes([FED_VERSION]) + rx_ref + struct.pack(">Bi", result, offset_us)).decode()
+
+
 # ======================================================================== airtime
 
 
@@ -529,8 +647,41 @@ def server_vectors() -> dict:
             "counter16_unwrap": {"modulus": 65536, "sequence": unwrap_cases}}
 
 
+PUBLISHER_SK = bytes.fromhex("11" * 32)
+OWNER_SK = bytes.fromhex("22" * 32)
+
+# BIP-340 official test vector 0
+BIP340_V0 = {"sk": "0000000000000000000000000000000000000000000000000000000000000003",
+             "pub": "F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9",
+             "aux": "0" * 64, "msg": "0" * 64,
+             "sig": "E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA8215"
+                    "25F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0"}
+
+
+def federation_vectors() -> dict:
+    fv = frame_vectors()
+    frames = {f["name"]: bytes.fromhex(f["frame"]) for f in fv["frames"]}
+    up = frames["data_confirmed"]
+    rx_ref = bytes.fromhex("0102030405060708")
+    t = T0 + 60
+    bucket = up[2:3].hex()
+    ev_up = nostr_event(PUBLISHER_SK, t, KIND_UPLINK, [["h", bucket], ["r", "US915"], ["dl", "1"]],
+                        fed_uplink_content(up, 180, [(rx_ref, -112.5, -4.0, 0)]))
+    pub_hex = schnorr_pub(PUBLISHER_SK).hex()
+    ev_dl = nostr_event(OWNER_SK, t, KIND_DOWNLINK_REQUEST, [["p", pub_hex]],
+                        fed_downlink_content(rx_ref, frames["downlink_ack"]))
+    ev_res = nostr_event(PUBLISHER_SK, t + 3, KIND_DOWNLINK_RESULT, [["p", schnorr_pub(OWNER_SK).hex()]],
+                         fed_result_content(rx_ref, 0, 2100))
+    return {"spec": "ConnectSensors federation events (09)",
+            "bip340_check": BIP340_V0,
+            "inputs": {"publisher_sk": PUBLISHER_SK.hex(), "owner_sk": OWNER_SK.hex(),
+                       "aux_rand": "00" * 32, "note": "frames from frame-v1.json"},
+            "events": [{"name": "uplink", "event": ev_up}, {"name": "downlink_request", "event": ev_dl},
+                       {"name": "downlink_result", "event": ev_res}]}
+
+
 def write_vectors(d: str) -> None:
-    for fname, data in (("server-v1.json", server_vectors()), ("frame-v1.json", frame_vectors()), ("payload-v1.json", payload_vectors()),
+    for fname, data in (("server-v1.json", server_vectors()), ("federation-v1.json", federation_vectors()), ("frame-v1.json", frame_vectors()), ("payload-v1.json", payload_vectors()),
                         ("pairing-v1.json", pairing_vectors()), ("proxy-envelope-v1.json", envelope_vectors())):
         with open(os.path.join(d, fname), "w") as f:
             json.dump(data, f, indent=2)
@@ -610,6 +761,22 @@ def verify(d: str) -> int:
         prev = c["raw"]
         ok = total == c["total"] and how == c["how"]
         print(f"{'ok  ' if ok else 'FAIL'} unwrap {c['raw']} -> {c['total']} ({c['how']})")
+        bad += not ok
+    with open(os.path.join(d, "federation-v1.json")) as f:
+        fd = json.load(f)
+    b = fd["bip340_check"]
+    ok = (schnorr_pub(bytes.fromhex(b["sk"])).hex().upper() == b["pub"]
+          and schnorr_sign(bytes.fromhex(b["msg"]), bytes.fromhex(b["sk"]), bytes.fromhex(b["aux"])).hex().upper() == b["sig"]
+          and schnorr_verify(bytes.fromhex(b["msg"]), bytes.fromhex(b["pub"]), bytes.fromhex(b["sig"])))
+    print(f"{'ok  ' if ok else 'FAIL'} BIP-340 official vector 0")
+    bad += not ok
+    sks = {"uplink": fd["inputs"]["publisher_sk"], "downlink_request": fd["inputs"]["owner_sk"],
+           "downlink_result": fd["inputs"]["publisher_sk"]}
+    for c in fd["events"]:
+        ev = c["event"]
+        rebuilt = nostr_event(bytes.fromhex(sks[c["name"]]), ev["created_at"], ev["kind"], ev["tags"], ev["content"])
+        ok = nostr_verify(ev) and rebuilt == ev
+        print(f"{'ok  ' if ok else 'FAIL'} federation {c['name']}")
         bad += not ok
     print("all vectors pass" if bad == 0 else f"{bad} failures")
     return 1 if bad else 0

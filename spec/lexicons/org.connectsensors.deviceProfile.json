@@ -1,0 +1,58 @@
+{
+  "lexicon": 1,
+  "id": "org.connectsensors.deviceProfile",
+  "description": "A ConnectSensors device profile (spec 03 section 9, published as in spec 10 section 4). The record key is the profile identifier.",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["profile", "profileVersion", "name", "manufacturer", "model", "power", "heartbeatMinutes", "channels", "createdAt"],
+        "properties": {
+          "profile": { "type": "string", "minLength": 1, "maxLength": 32, "description": "Profile identifier: A-Z, 0-9, '.' and '-'. MUST equal the record key." },
+          "profileVersion": { "type": "integer", "minimum": 1, "description": "Increases with every published change." },
+          "name": { "type": "string", "maxLength": 100 },
+          "manufacturer": { "type": "string", "maxLength": 100 },
+          "model": { "type": "string", "maxLength": 100 },
+          "power": { "type": "string", "knownValues": ["battery", "mains"] },
+          "heartbeatMinutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+          "channels": { "type": "array", "maxLength": 64, "items": { "type": "ref", "ref": "#channel" } },
+          "commands": { "type": "array", "maxLength": 63, "items": { "type": "ref", "ref": "#command" } },
+          "createdAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    },
+    "channel": {
+      "type": "object",
+      "required": ["channel", "kind"],
+      "properties": {
+        "channel": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "kind": { "type": "string", "maxLength": 32, "description": "Reading kind name from spec 03 section 4." },
+        "name": { "type": "string", "maxLength": 100 },
+        "deviceClass": { "type": "string", "maxLength": 64 },
+        "unit": { "type": "string", "maxLength": 16 },
+        "scale": { "type": "string", "maxLength": 16, "description": "Decimal multiplier as text, for example \"0.01\". Lexicons have no floating-point type." },
+        "options": { "type": "array", "maxLength": 32, "items": { "type": "string", "maxLength": 64 } },
+        "writable": { "type": "boolean" }
+      }
+    },
+    "command": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 65, "maximum": 127, "description": "Application command 0x41-0x7F." },
+        "name": { "type": "string", "maxLength": 64 },
+        "args": { "type": "array", "maxLength": 8, "items": { "type": "ref", "ref": "#commandArg" } }
+      }
+    },
+    "commandArg": {
+      "type": "object",
+      "required": ["name", "kind"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 64 },
+        "kind": { "type": "string", "maxLength": 32, "description": "Encoding, as a reading kind name from spec 03 section 4." }
+      }
+    }
+  }
+}

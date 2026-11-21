@@ -1,0 +1,24 @@
+{
+  "lexicon": 1,
+  "id": "org.connectsensors.coverage",
+  "description": "An opt-in statement that a federation publisher (spec 09) offers coverage in an area (spec 10 section 6). The record key is the publisher's Nostr public key in hex.",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["nostrPubkey", "region", "geohash", "relays", "updatedAt"],
+        "properties": {
+          "nostrPubkey": { "type": "string", "minLength": 64, "maxLength": 64, "description": "Publisher key, 64 lowercase hex digits. MUST equal the record key." },
+          "region": { "type": "string", "maxLength": 16, "description": "Region profile name from spec 01." },
+          "geohash": { "type": "string", "minLength": 1, "maxLength": 5, "description": "Approximate area. At most 5 characters (about 5 km)." },
+          "relays": { "type": "array", "minLength": 1, "maxLength": 8, "items": { "type": "string", "format": "uri" } },
+          "downlinks": { "type": "boolean", "description": "Whether the publisher accepts downlink requests." },
+          "proxies": { "type": "integer", "minimum": 0, "maximum": 1000 },
+          "updatedAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    }
+  }
+}

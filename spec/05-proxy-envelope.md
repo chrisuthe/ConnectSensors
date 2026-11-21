@@ -1,7 +1,7 @@
 # 05 - Proxy Envelope
 
 Status: Draft
-Version: 1.0-draft.1
+Version: 1.0-draft.2
 
 This document defines the messages between a proxy and its owner's server on the
 local network: how a proxy delivers the frames it hears, how a server asks a
@@ -151,7 +151,7 @@ Sent by the proxy right after boot and then every 60 seconds. It doubles as a
 keepalive and a status report.
 
 ```
-caps           uint8   bit 0 downlink capable, bit 1 federation enabled
+caps           uint8   bit 0 downlink capable; bits 1-7 reserved (0)
 region_len     uint8
 region         region profile name (01), ASCII
 frequency_hz   uint32
@@ -186,8 +186,10 @@ tags         n_tags x 4 bytes: the net_tag values the server owns for epochs
              e-1, e and e+1, for all its networks
 ```
 
-The proxy uses `tags` only to decide which frames are foreign and may go to a
-relay (09). It MUST still send every frame to its server (02 section 12).
+The proxy MAY use `tags` for diagnostics, for example to count how many of the
+frames it hears belong to its own server's networks. It MUST still send every
+frame to its server (02 section 12); federation is the server's job (09 section
+5.1).
 
 A proxy that receives no `SERVER_STATUS` for 3 consecutive `HELLO` intervals
 considers itself disconnected (shown as a diagnostic, 06). It keeps forwarding

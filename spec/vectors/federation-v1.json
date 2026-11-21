@@ -1,0 +1,77 @@
+{
+  "spec": "ConnectSensors federation events (09)",
+  "bip340_check": {
+    "sk": "0000000000000000000000000000000000000000000000000000000000000003",
+    "pub": "F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9",
+    "aux": "0000000000000000000000000000000000000000000000000000000000000000",
+    "msg": "0000000000000000000000000000000000000000000000000000000000000000",
+    "sig": "E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0"
+  },
+  "inputs": {
+    "publisher_sk": "1111111111111111111111111111111111111111111111111111111111111111",
+    "owner_sk": "2222222222222222222222222222222222222222222222222222222222222222",
+    "aux_rand": "0000000000000000000000000000000000000000000000000000000000000000",
+    "note": "frames from frame-v1.json"
+  },
+  "events": [
+    {
+      "name": "uplink",
+      "event": {
+        "id": "3ab7b398a66f1239e027a16f0fd6851ff33552884e230554b19e4d0128af140c",
+        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "created_at": 1795226460,
+        "kind": 21110,
+        "tags": [
+          [
+            "h",
+            "61"
+          ],
+          [
+            "r",
+            "US915"
+          ],
+          [
+            "dl",
+            "1"
+          ]
+        ],
+        "content": "ARrFEmHTBtNFImj0AAAAA3h0IedR0PnI7lDaHgC0AQECAwQFBgcI+5v/2AA=",
+        "sig": "c201a47c941b8873521feb6845e6fd548e40788f71e79b3cb13b67f788681e5ac30654ad8f4c292bc14924be70fcd14ef7125b3f16433d2e4620d3354f356d05"
+      }
+    },
+    {
+      "name": "downlink_request",
+      "event": {
+        "id": "dc424a17e970c04f7ff2fc261248ef271a7e679641fffe9bf2e3ae3d0224b124",
+        "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+        "created_at": 1795226460,
+        "kind": 21111,
+        "tags": [
+          [
+            "p",
+            "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
+          ]
+        ],
+        "content": "AQECAwQFBgcIH8UYYdMG00UiaPQAAAADk6MUhCI1QwcVN5h+uw12HFk=",
+        "sig": "638d7ac026dbd9d1ad67f3a0f630bee6f96c2964b79beb5fb48010f46a70a0ac31244dff12ad233254f76ec07ad145088426d3b0b1616001458e3e82bec8884a"
+      }
+    },
+    {
+      "name": "downlink_result",
+      "event": {
+        "id": "6e75c02ce2ddd7bb5df7a95922a79fce4f097e8d18e8dd3718194e4370094b0b",
+        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "created_at": 1795226463,
+        "kind": 21112,
+        "tags": [
+          [
+            "p",
+            "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+          ]
+        ],
+        "content": "AQECAwQFBgcIAAAACDQ=",
+        "sig": "667953409e167a94f77528863924cc6b9696fe5a8eaccae0eea7b848d9612a972d42dfc0fd8734b0f45f540d51b860c48b1a33cc75f1d89ab4b6aea5246cbdbd"
+      }
+    }
+  ]
+}

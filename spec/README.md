@@ -17,16 +17,18 @@ to its own repository without changes.
 | 06 | [`cs_proxy` ESPHome component](06-cs-proxy-component.md) | Draft |
 | 07 | [Network server](07-network-server.md) | Draft |
 | 08 | [Sensor behavior](08-sensor-behavior.md) | Draft |
-| 09 | Federation relay | Planned |
-| 10 | Control plane | Planned |
+| 09 | [Federation relay](09-federation-relay.md) | Draft |
+| 10 | [Control plane](10-control-plane.md) | Draft |
 
 ## Supporting material
 
+- [`lexicons/`](lexicons/) - AT Protocol lexicons for the control plane (10).
 - [`vectors/`](vectors/) - test vectors. An implementation that does not
   reproduce them byte for byte is not conformant.
 - [`tools/csframe.py`](tools/csframe.py) - informative reference implementation
   of frames, payloads, pairing codes, the key exchange, the proxy envelope, and
-  the server's counter rules. It generates and
+  the server's counter rules, and federation events (with a minimal BIP-340
+  implementation checked against the official test vector). It generates and
   checks the vectors.
 
 ```
@@ -38,7 +40,7 @@ python3 csframe.py verify ../vectors
 
 - Specification documents (`*.md`): Creative Commons Attribution 4.0
   International, see [LICENSE](LICENSE).
-- Code and test vectors (`tools/`, `vectors/`): MIT, see
+- Code, test vectors and lexicons (`tools/`, `vectors/`, `lexicons/`): MIT, see
   [LICENSE-CODE](LICENSE-CODE), so they can be copied into implementations
   under any license.
 

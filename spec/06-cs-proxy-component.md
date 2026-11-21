@@ -1,7 +1,7 @@
 # 06 - `cs_proxy` ESPHome Component
 
 Status: Draft
-Version: 1.0-draft.1
+Version: 1.0-draft.2
 
 This document specifies `cs_proxy`, the ESPHome external component that turns a
 node with a LoRa radio into a ConnectSensors proxy. It covers configuration,
@@ -18,8 +18,10 @@ adds no radio driver of its own and never changes the radio's configuration. It:
 - transmits downlinks on request, inside the sensor's receive windows;
 - reports its health as ESPHome entities.
 
-Federation (forwarding to relays) is specified in 09. Until 09 is implemented,
-the component MUST reject `federation: enabled: true`.
+Federation is normally done by the home server, which already receives every
+frame (09 section 5.1), so a proxy attached to a server never talks to relays.
+A proxy with no server can instead publish directly to relays as a *standalone
+proxy* (09 section 5.2, and section 3.4 below).
 
 ## 2. Requirements
 
@@ -63,7 +65,7 @@ A complete board example is in section 13.
 | `server.transport` | `udp` or `mqtt` | `udp` | 05 section 2 |
 | `server.host` | hostname or IP | none | Server address for UDP. If omitted, mDNS discovery (05 section 2.1). |
 | `server.port` | int | 47800 | Server UDP port |
-| `server.key` | 32 hex digits | required | The proxy key (05 section 4.2) |
+| `server.key` | 32 hex digits | required unless standalone | The proxy key (05 section 4.2) |
 | `proxy_id` | 16 hex digits | from MAC | Override only when the MAC is not stable |
 | `downlink.enabled` | bool | `true` | Accept `DOWNLINK` messages |
 | `downlink.airtime_budget` | percent | 2% | Transmit budget per rolling hour; MUST NOT exceed 2% (01 section 5) |
@@ -72,7 +74,10 @@ A complete board example is in section 13.
 | `rate_limit.global` | rate | 20/s | Token bucket, burst equal to the rate |
 | `rate_limit.per_device` | rate | 2/s | Per `dev_tag`, burst 5 |
 | `rate_limit.bootstrap` | rate | 5/s | Shared by all bootstrap frames (`dev_tag` 0), burst 5 |
-| `federation.enabled` | bool | `false` | Reserved for 09 |
+| `federation.enabled` | bool | `false` | Standalone mode (section 3.4); only allowed without `server` |
+| `federation.relays` | list of `wss://` URLs | none | Required in standalone mode; at least 2 RECOMMENDED |
+| `federation.downlinks` | bool | `false` | Accept downlink requests from relays (09 section 7) |
+| `federation.allow` | list of pubkeys | none | If set, accept downlink requests only from these subscriber keys |
 
 `transport: mqtt` requires ESPHome's `mqtt` component; `host` and `port` are then
 ignored.
@@ -90,10 +95,25 @@ The component's final validation MUST fail with a clear message if:
 5. The radio's `pa_power` exceeds the profile's maximum.
 6. `server.key` is not exactly 32 hex digits.
 7. `downlink.airtime_budget` is above 2%.
-8. `federation.enabled` is `true` (until 09).
+8. Both `server` and `federation.enabled: true` are given, or neither is.
+9. `federation.enabled: true` without at least one relay.
 
 ESPHome's final-validation hook (`FINAL_VALIDATE_SCHEMA`) gives access to the
 radio's configuration for these checks.
+
+### 3.4 Standalone mode
+
+A standalone proxy has no server and donates coverage to its neighbors.
+
+- It publishes every valid frame as an uplink event (09 section 4.1) to its
+  relays, signed with a key it generates on first boot and keeps in non-volatile
+  storage. The public key is logged at `INFO` and exposed as a text sensor so
+  neighbors can add it to allow lists.
+- With `federation.downlinks: true` it handles downlink requests itself
+  (09 section 7), scheduling them as in section 8.
+- It needs a TLS WebSocket client and BIP-340 signatures (for example
+  libsecp256k1). An ESP32-S3 with PSRAM is RECOMMENDED.
+- There is no `HELLO`, `SERVER_STATUS` or envelope traffic in this mode.
 
 ## 4. Startup
 
@@ -119,8 +139,7 @@ For each packet the radio delivers, in this order:
    `rate_limited` and stop.
 6. Insert the frame into the dedupe cache.
 7. Build and send `UPLINK` (05 section 5.1). Increment `forwarded`.
-8. (09, later) If federation is enabled and `net_tag` is not in the server's tag
-   set, also send to relays.
+8. In standalone mode, publish to relays as in 09 section 5.2 instead of step 7.
 
 The packet buffer belongs to the radio component and is only valid during the
 callback; the component MUST copy what it keeps. The whole pipeline MUST NOT
@@ -196,7 +215,7 @@ messages. It never originates or modifies frames.
 
 - The proxy is *connected* while it has received a `SERVER_STATUS` within the last
   3 `HELLO` intervals (180 s).
-- The latest `SERVER_STATUS` tag set is kept in memory for federation decisions.
+- The latest `SERVER_STATUS` tag set is kept in memory for diagnostics (05 section 5.3).
 - When disconnected, the proxy keeps forwarding to the configured address and
   keeps accepting `DOWNLINK` messages that pass the envelope checks.
 - With mDNS discovery, a proxy that has been disconnected for 5 minutes repeats
