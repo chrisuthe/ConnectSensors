@@ -21,14 +21,42 @@ PROXY_ID = bytes.fromhex("348518fffe000001")
 BOOT = 0x01020304
 
 
-def main() -> int:
-    port = 47999
+PORT = 47999
+
+
+def start_server() -> subprocess.Popen:
     srv = subprocess.Popen(
-        [sys.executable, "-I", os.path.join(ROOT, "devtools", "cs_testserver.py"), "--port", str(port),
+        [sys.executable, "-I", os.path.join(ROOT, "devtools", "cs_testserver.py"), "--port", str(PORT),
          "--key", KEY.hex(), "--ack"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    time.sleep(1.0)
+    return srv
+
+
+def stop_server(srv: subprocess.Popen) -> str:
+    srv.terminate()
+    return srv.communicate(timeout=5)[0]
+
+
+class SeqGuard:
+    """The proxy's check on server messages (05 section 3.2, ServerSeqGuard)."""
+
+    def __init__(self, boot_id: int):
+        self.boot_id, self.last = boot_id, 0
+
+    def accept(self, m) -> bool:
+        if m["boot_id"] != self.boot_id or m["seq"] <= self.last:
+            return False
+        self.last = m["seq"]
+        return True
+
+
+def main() -> int:
+    port = PORT
+    srv = start_server()
+    out = out2 = ""
+    dl_seq = None
     try:
-        time.sleep(1.0)
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(3)
         dest = ("127.0.0.1", port)
@@ -44,14 +72,17 @@ def main() -> int:
                               "cs_proxy test")
         s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_ID, BOOT, 1, hello), dest)
         m = cs.open_envelope(KEY, s.recv(2048))
-        check(m["type"] == cs.M_SERVER_STATUS and m["boot_id"] == BOOT and m["seq"] == 1,
+        guard = SeqGuard(BOOT)
+        check(m["type"] == cs.M_SERVER_STATUS and guard.accept(m),
               "HELLO answered with SERVER_STATUS for this boot")
+        check(0 < m["seq"] <= 0xFFFFFFFF, "server seq is a uint32")
 
         rx_time = 5_000_000
         up = cs.uplink_body(rx_time, -90.0, 7.5, 0, frames["data_confirmed"])
         s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 2, up), dest)
         m = cs.open_envelope(KEY, s.recv(2048))
-        check(m["type"] == cs.M_DOWNLINK and m["seq"] == 2, "confirmed uplink answered with DOWNLINK")
+        check(m["type"] == cs.M_DOWNLINK and guard.accept(m), "confirmed uplink answered with DOWNLINK")
+        dl_seq = m["seq"]
         body = bytes.fromhex(m["body"])
         ref, offset, flen = struct.unpack(">QIB", body[:13])
         check(ref == rx_time and offset == 1_000_000, "downlink targets RX1 on the proxy's own clock")
@@ -76,13 +107,27 @@ def main() -> int:
         except socket.timeout:
             check(True, "wrong key rejected")
 
-        s.sendto(cs.envelope(KEY, cs.M_TX_RESULT, PROXY_ID, BOOT, 4, cs.tx_result_body(2, 0, 1500)), dest)
+        s.sendto(cs.envelope(KEY, cs.M_TX_RESULT, PROXY_ID, BOOT, 4, cs.tx_result_body(dl_seq, 0, 1500)), dest)
         time.sleep(0.5)
+        out = stop_server(srv)
+
+        # Restart the server (#5). The proxy keeps its boot and its guard; the new
+        # instance learns the boot from the next periodic HELLO.
+        time.sleep(1.0)
+        srv = start_server()
+        s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_ID, BOOT, 5, hello), dest)
+        m = cs.open_envelope(KEY, s.recv(2048))
+        check(m["type"] == cs.M_SERVER_STATUS and guard.accept(m),
+              "restarted server's SERVER_STATUS accepted by the running proxy")
+        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 6, up), dest)
+        m = cs.open_envelope(KEY, s.recv(2048))
+        check(m["type"] == cs.M_DOWNLINK and guard.accept(m),
+              "restarted server's DOWNLINK accepted by the running proxy")
     finally:
-        srv.terminate()
-        out = srv.communicate(timeout=5)[0]
-    check("TX_RESULT seq 2: SENT, 1.5 ms after target" in out, "TX_RESULT reported")
+        out2 = stop_server(srv)
+    check(f"TX_RESULT seq {dl_seq}: SENT, 1.5 ms after target" in out, "TX_RESULT reported")
     print("--- server output ---\n" + out.strip())
+    print("--- restarted server output ---\n" + out2.strip())
     print("all checks pass" if failures == 0 else f"{failures} failures")
     return 1 if failures else 0
 
