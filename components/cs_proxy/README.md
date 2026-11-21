@@ -94,13 +94,15 @@ Sensors (all optional, all diagnostic): `frames_heard`, `frames_forwarded`,
 
 | File | Contents |
 |---|---|
-| `proxy_core.h/.cpp` | All protocol logic, with no ESPHome dependency |
+| `proxy_core.h/.cpp` | Protocol building blocks: frames, envelope, dedupe, rate limits, airtime, scheduling |
+| `proxy_engine.h/.cpp` | Runtime behaviour on top of the core: receive pipeline, counters, loop gaps, `HELLO`, connection state, transmit state machine. No ESPHome dependency; the glue implements its `ProxyIo` |
 | `cs_sha256.h/.cpp` | SHA-256 and HMAC-SHA256 |
-| `cs_proxy.h/.cpp` | ESPHome glue: radio listener, UDP, timers, entities |
+| `cs_proxy.h/.cpp` | ESPHome glue: radio listener, UDP, address resolution, timers, entities, logging |
 | `__init__.py` | Configuration schema, region checks, code generation |
 | `sensor.py`, `binary_sensor.py` | Entity platforms |
 
-The core is unit-tested on a computer against the specification's test vectors:
+The core and the engine are tested on a computer, against the specification's test
+vectors and end to end through the engine with a fake clock, radio and server:
 
 ```
 make -C tests/proxy_core

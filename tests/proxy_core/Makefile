@@ -6,8 +6,11 @@ all: run
 vectors.inc: gen_vectors.py ../../spec/vectors/frame-v1.json ../../spec/vectors/proxy-envelope-v1.json
 	python3 gen_vectors.py
 
-test_core: test_core.cpp vectors.inc $(COMPONENT)/proxy_core.cpp $(COMPONENT)/proxy_core.h $(COMPONENT)/cs_sha256.cpp $(COMPONENT)/cs_sha256.h
-	$(CXX) $(CXXFLAGS) -I$(COMPONENT) -o $@ test_core.cpp $(COMPONENT)/proxy_core.cpp $(COMPONENT)/cs_sha256.cpp
+SOURCES := $(COMPONENT)/proxy_core.cpp $(COMPONENT)/proxy_engine.cpp $(COMPONENT)/cs_sha256.cpp
+HEADERS := $(COMPONENT)/proxy_core.h $(COMPONENT)/proxy_engine.h $(COMPONENT)/cs_sha256.h
+
+test_core: test_core.cpp vectors.inc $(SOURCES) $(HEADERS)
+	$(CXX) $(CXXFLAGS) -I$(COMPONENT) -o $@ test_core.cpp $(SOURCES)
 
 run: test_core
 	./test_core

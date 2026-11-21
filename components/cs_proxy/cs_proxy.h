@@ -1,7 +1,8 @@
 #pragma once
 
-// ESPHome glue for the ConnectSensors proxy (spec 06). Protocol logic lives in
-// proxy_core; this file connects it to the radio, the network and entities.
+// ESPHome glue for the ConnectSensors proxy (spec 06). Behaviour lives in
+// ProxyEngine (proxy_engine.h) on top of proxy_core; this file adapts it to the
+// radio, the UDP socket, address resolution, esp_timer, entities and logging.
 
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
@@ -22,6 +23,7 @@
 #endif
 
 #include "proxy_core.h"
+#include "proxy_engine.h"
 
 #include <esp_timer.h>
 #include <memory>
@@ -32,7 +34,8 @@ namespace esphome::cs_proxy {
 
 static constexpr const char *CS_PROXY_VERSION = "0.2.0";
 
-class CSProxy : public Component
+class CSProxy : public Component,
+                protected ProxyIo
 #ifdef USE_CS_PROXY_SX126X
     ,
                 public sx126x::SX126xListener,
@@ -54,12 +57,12 @@ class CSProxy : public Component
   void on_packet(const std::vector<uint8_t> &packet, float rssi, float snr) override;
 #ifdef USE_CS_PROXY_SX126X
   void on_transmit_complete(sx126x::SX126xError result) override {
-    this->tx_complete_(result == sx126x::SX126xError::SX126X_ERROR_NONE);
+    this->engine_->on_transmit_complete(result == sx126x::SX126xError::SX126X_ERROR_NONE);
   }
 #endif
 #ifdef USE_CS_PROXY_SX127X
   void on_transmit_complete(sx127x::SX127xError result) override {
-    this->tx_complete_(result == sx127x::SX127xError::SX127X_ERROR_NONE);
+    this->engine_->on_transmit_complete(result == sx127x::SX127xError::SX127X_ERROR_NONE);
   }
 #endif
 
@@ -113,23 +116,26 @@ class CSProxy : public Component
 #endif
 
  protected:
-  static uint64_t now_us_() { return uint64_t(esp_timer_get_time()); }
   static void tx_timer_cb_(void *arg);
-
-  // TX_SENT when the radio accepted the frame, TX_BUSY when a received packet is waiting,
-  // TX_RADIO_ERROR otherwise.
-  uint8_t radio_start_transmit_(const ScheduledTx &slot);
-  void tx_complete_(bool ok);
-  void handle_message_(const uint8_t *data, size_t len, uint64_t now);
-  void handle_downlink_(const Envelope &e, uint64_t now);
-  void run_due_transmissions_();
-  void arm_tx_timer_();
-  void send_(uint8_t type, const std::vector<uint8_t> &body);
-  void send_tx_result_(uint32_t seq, uint8_t result, int32_t offset_us);
-  void send_hello_();
   void poll_server_address_(uint64_t now);
-  void set_connected_(bool connected);
   void publish_counters_();
+
+  // ProxyIo
+  uint64_t now_us() override { return uint64_t(esp_timer_get_time()); }
+  void wait_until(uint64_t t_us) override;
+  uint64_t loop_interval_us() override;
+  bool server_known() override { return this->socket_ != nullptr && this->server_addr_len_ != 0; }
+  bool network_up() override;
+  void send_datagram(const uint8_t *data, size_t len) override;
+  void rediscover() override;
+  uint8_t start_transmit(const uint8_t *frame, size_t len, uint32_t timeout_ms) override;
+  void arm_timer(uint64_t wake_us) override;
+  void request_loop() override { this->enable_loop_soon_any_context(); }
+  void on_connected(bool connected) override;
+  void on_signal(float rssi, float snr) override;
+  void on_hello(uint16_t max_loop_gap_ms) override;
+  bool log_enabled(LogLevel level) override;
+  void vlog(LogLevel level, const char *fmt, va_list args) override;
 
   // Configuration
 #ifdef USE_CS_PROXY_SX126X
@@ -158,17 +164,8 @@ class CSProxy : public Component
 
   // State
   uint8_t proxy_id_[8]{};
-  uint32_t boot_id_{0};
-  uint32_t seq_{0};
-  std::unique_ptr<EnvelopeCodec> codec_;
-  std::unique_ptr<ServerSeqGuard> seq_guard_;
-  std::unique_ptr<DedupeCache> dedupe_;
-  std::unique_ptr<RateLimiter> rate_;
-  std::unique_ptr<AirtimeBudget> budget_;
-  TxScheduler scheduler_;
+  std::unique_ptr<ProxyEngine> engine_;
   esp_timer_handle_t tx_timer_{nullptr};
-  uint64_t tx_timer_at_{0};
-  ScheduledTx *tx_in_flight_{nullptr};
 
   std::unique_ptr<socket::UDPSocket> socket_;
   socket::Ipv4Resolve resolver_;
@@ -176,28 +173,6 @@ class CSProxy : public Component
   socklen_t server_addr_len_{0};
   uint64_t resolve_retry_at_{0};
   bool resolving_{false};
-
-  bool connected_{false};
-  uint64_t last_status_us_{0};
-  uint64_t disconnected_since_us_{0};
-  bool hello_sent_{false};
-  uint64_t next_hello_us_{0};
-
-  uint64_t last_loop_us_{0};
-  uint64_t max_gap_us_{0};
-  bool degraded_{false};
-  uint64_t last_rssi_publish_us_{0};
-  std::vector<uint32_t> server_tags_;
-
-  uint32_t heard_{0};
-  uint32_t forwarded_{0};
-  uint32_t duplicates_{0};
-  uint32_t invalid_{0};
-  uint32_t rate_limited_{0};
-  uint32_t tx_ok_{0};
-  uint32_t tx_failed_{0};
-  float last_rssi_{0};
-  float last_snr_{0};
 
 #ifdef USE_SENSOR
   sensor::Sensor *frames_heard_sensor_{nullptr};
