@@ -1,7 +1,7 @@
 # 05 - Proxy Envelope
 
 Status: Draft
-Version: 1.0-draft.2
+Version: 1.0-draft.3
 
 This document defines the messages between a proxy and its owner's server on the
 local network: how a proxy delivers the frames it hears, how a server asks a
@@ -61,7 +61,7 @@ Offset  Size  Field
 |---|---|
 | `proxy_id` | The proxy's identifier, in both directions (section 4.1) |
 | `boot_id` | Random `uint32` the proxy picks at every boot. Server messages carry the proxy's current `boot_id`. |
-| `seq` | Sender's message counter for this `boot_id`, starting at 1. The proxy and the server each keep their own. |
+| `seq` | Sender's message counter for this `boot_id`, starting at 1. The proxy and the server each keep their own. A `HELLO_REQUEST` carries 0 (section 5.6). |
 
 A receiver MUST discard a message that is shorter than 34 bytes, has an unknown
 `version`, or fails the MAC check. MAC comparison MUST be constant-time.
@@ -75,20 +75,56 @@ A receiver MUST discard a message that is shorter than 34 bytes, has an unknown
 | `0x03` | `TX_RESULT` | Proxy to server |
 | `0x81` | `SERVER_STATUS` | Server to proxy |
 | `0x82` | `DOWNLINK` | Server to proxy |
+| `0x83` | `HELLO_REQUEST` | Server to proxy |
 
 The high bit gives the direction. A receiver MUST ignore message types it does not
 know (after checking the MAC), so new types can be added.
 
-### 3.2 Replay protection
+### 3.2 Replay protection and sessions
 
-- **Server, for messages from a proxy:** it keeps the highest `seq` per
-  `(proxy_id, boot_id)`. It MUST discard a message whose `seq` is not greater,
-  except that it MAY accept up to 16 values below the highest that it has not yet
-  seen, to tolerate UDP reordering. A message with a new `boot_id` starts a new
-  sequence; the server SHOULD only switch to a new `boot_id` on a `HELLO`.
-- **Proxy, for messages from the server:** it MUST discard a message whose
-  `boot_id` is not its own current `boot_id`, or whose `seq` is not greater than
-  the last accepted server `seq`.
+The server tracks one *session* per proxy: the proxy's current `boot_id` and the
+`seq` values in each direction. Neither side persists any of it, and neither
+relies on the other's clock. A proxy reboot or a server restart is recovered by a
+short handshake instead.
+
+**Server, for messages from a proxy:**
+
+- It keeps the proxy's current `boot_id` and the highest `seq` received for it. It
+  MUST discard a message from that boot whose `seq` is not greater, except that it
+  MAY accept up to 16 values below the highest that it has not yet seen, to
+  tolerate UDP reordering.
+- It MUST switch to another `boot_id` only on a `HELLO` from that boot whose
+  `request_nonce` equals the nonce of a `HELLO_REQUEST` it sent for that boot
+  within the last 30 seconds. The `HELLO`'s `seq` becomes the highest received,
+  and the server's own `seq` for the proxy starts again at 1.
+- Any other message from a `boot_id` that is not current (the proxy rebooted, the
+  server restarted, or the message is a replay) changes no state, not even the
+  proxy's address. The server answers it with a `HELLO_REQUEST` for that
+  `boot_id`, sent to the message's source address. It keeps one nonce per
+  `boot_id` for 30 seconds and reuses it for repeated requests, keeps nonces for
+  at least the 4 most recent such `boot_id`s per proxy, and sends at most one
+  `HELLO_REQUEST` per `boot_id` per second.
+
+A rebooted proxy is therefore known after one extra round trip: `HELLO`,
+`HELLO_REQUEST`, `HELLO` echoing the nonce, `SERVER_STATUS`. A restarted server
+learns a running proxy's boot the same way from the proxy's next message,
+usually an `UPLINK`, rather than waiting for its next periodic `HELLO`.
+
+**Proxy, for messages from the server:**
+
+- It MUST discard a message whose `boot_id` is not its own current `boot_id`.
+- It keeps a *floor*: the highest server `seq` accepted in this boot, initially 0.
+  It MUST discard a message whose `seq` is not above the floor, with two
+  exceptions:
+  - A `SERVER_STATUS` whose `hello_seq` (section 5.3) is the `seq` of one of the
+    proxy's last 3 `HELLO`s, sent within the last 120 seconds and not echoed by a
+    `SERVER_STATUS` it already accepted, is accepted whatever its `seq`, and the
+    floor becomes that `seq`. This is how a proxy follows a restarted server,
+    whose `seq` starts again at 1, without rebooting.
+  - A `HELLO_REQUEST` is not checked against the floor and does not move it
+    (section 5.6).
+- Accepting a `SERVER_STATUS` either way uses up its `hello_seq`, so a replayed
+  copy is held to the floor.
 
 Replayed uplinks would be harmless anyway, since the server's frame counter rules
 (02 section 8.5) reject them, but replay protection stops a recorded `DOWNLINK`
@@ -147,8 +183,8 @@ does not interpret it except to hand it back in a `DOWNLINK`.
 
 ### 5.2 `HELLO` (0x02)
 
-Sent by the proxy right after boot and then every 60 seconds. It doubles as a
-keepalive and a status report.
+Sent by the proxy right after boot, then every 60 seconds, and in answer to a
+`HELLO_REQUEST` (section 5.6). It doubles as a keepalive and a status report.
 
 ```
 caps           uint8   bit 0 downlink capable; bits 1-7 reserved (0)
@@ -166,6 +202,7 @@ rate_limited   uint32  frames dropped by rate limits
 tx_ok          uint32  downlinks transmitted
 tx_failed      uint32  downlinks not transmitted, any reason
 max_loop_gap_ms uint16 longest main-loop gap since the previous HELLO (06 section 7)
+request_nonce  uint32  nonce of the HELLO_REQUEST this answers; 0 if none
 fw_len         uint8
 fw             firmware name and version, ASCII, for example "cs_proxy 0.1.0"
 ```
@@ -176,11 +213,13 @@ downlinks through such a proxy.
 
 ### 5.3 `SERVER_STATUS` (0x81)
 
-Sent by the server in reply to every `HELLO`, and to every connected proxy within
-10 seconds after each epoch boundary.
+Sent by the server in reply to every `HELLO` from the proxy's current boot,
+including the one that makes it current (section 3.2), and to every connected
+proxy within 10 seconds after each epoch boundary.
 
 ```
 server_time  uint32  Unix time
+hello_seq    uint32  seq of the HELLO this answers; 0 at an epoch boundary
 n_tags       uint8   0-32
 tags         n_tags x 4 bytes: the net_tag values the server owns for epochs
              e-1, e and e+1, for all its networks
@@ -262,12 +301,32 @@ the radio's transmit command.
 Servers use `offset_us` and the result codes to decide which proxies to trust for
 RX1 (07).
 
+### 5.6 `HELLO_REQUEST` (0x83)
+
+Asks the proxy for a `HELLO` echoing a nonce, so the server can start a session
+with the proxy's boot (section 3.2).
+
+```
+nonce  uint32  random, not 0
+```
+
+The header's `seq` is 0; the proxy does not check it. The proxy accepts a
+`HELLO_REQUEST` that passes the MAC check, carries its current `boot_id`, and has
+a 4-byte body with a nonce other than 0. It then sends a `HELLO` with that
+`request_nonce`:
+
+- at once, unless it sent a `HELLO` in answer to a `HELLO_REQUEST` within the last
+  5 seconds; then when those 5 seconds are up;
+- echoing the most recent nonce, if several requests arrive meanwhile.
+
+That `HELLO` counts as the periodic one: the next follows 60 seconds later.
+
 ## 6. Sizes (informative)
 
 | Message | Size |
 |---|---|
 | `UPLINK` with an 86-byte frame | 134 bytes |
-| `HELLO` | about 100 bytes |
+| `HELLO` | about 104 bytes |
 | `DOWNLINK` with an 86-byte frame | 133 bytes |
 
 All messages fit in one UDP datagram with no fragmentation on any normal network.
@@ -280,6 +339,9 @@ All messages fit in one UDP datagram with no fragmentation on any normal network
 | Using a proxy as a jammer | `DOWNLINK` requires the proxy key; replay protection; frames must be valid downlink-type frames; airtime budget |
 | Reading traffic on the LAN | Envelopes are not encrypted. They expose what a proxy already exposes over the air: frame bytes, signal strength and timing. |
 | Stolen proxy | It holds only its proxy key. Removing the proxy in the server revokes it. |
+| Replaying an old `HELLO` to move the server to a stale boot or address | The server switches boot only on a `HELLO` echoing a `HELLO_REQUEST` nonce from the last 30 seconds (section 3.2). A recorded `HELLO` carries an old nonce or none, and messages from other boots change no state. This holds right after a server restart too. |
+| Replaying a `HELLO_REQUEST` | It is checked only for the MAC and the proxy's `boot_id`, so it can be replayed within a boot. It can only make the proxy send a `HELLO`, at most one per 5 seconds beyond its periodic ones. The `HELLO` goes to the configured server, not to the request's source. |
+| Replaying server messages after a server restart | Once the proxy has followed the restarted server, its floor is the new server's low `seq`. A message the old server instance sent in this boot with a higher `seq` would pass the check again, until the new `seq` overtakes it. A `DOWNLINK` among them targets a time in this boot that has long passed, so the proxy rejects it as `TOO_LATE` without transmitting. A `SERVER_STATUS` only refreshes diagnostics. A server MAY start its `seq` above any value it used before, for example from its clock, to close this window. |
 
 ## 8. Test vectors
 
@@ -287,3 +349,10 @@ All messages fit in one UDP datagram with no fragmentation on any normal network
 key and `proxy_id`. The `UPLINK` and `DOWNLINK` carry frames from
 `vectors/frame-v1.json`. The reference tool also checks that a one-bit change to
 any message fails the MAC check.
+
+Its `session` sequence walks section 3.2 from both ends: a boot handshake, a
+replayed `HELLO` from an earlier boot, a server restart recovered by
+`HELLO_REQUEST` and the `SERVER_STATUS` echo, and replays of each kind of
+message. Each step gives the time, the message, which side receives it and that
+side's result. Its nonces are fixed so the sequence is reproducible; real nonces
+are random.

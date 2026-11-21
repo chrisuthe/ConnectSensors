@@ -17,6 +17,7 @@
 namespace esphome::cs_proxy {
 
 static constexpr uint64_t HELLO_INTERVAL_US = 60000000ULL;     // 05 section 5.2
+static constexpr uint64_t HELLO_REQUEST_GAP_US = 5000000ULL;   // 05 section 5.6
 static constexpr uint64_t CONNECT_TIMEOUT_US = 180000000ULL;   // 06 section 9
 static constexpr uint64_t REDISCOVER_AFTER_US = 300000000ULL;  // 06 section 9
 static constexpr uint64_t TS_UNCERTAIN_EXTRA_US = 20000;       // 06 section 7
@@ -119,9 +120,11 @@ class ProxyEngine {
 
  protected:
   void handle_downlink_(const Envelope &e, uint64_t now);
+  void handle_server_status_(const Envelope &e, uint64_t now);
+  void handle_hello_request_(const Envelope &e, uint64_t now);
   void run_due_transmissions_();
   void arm_timer_();
-  void send_(uint8_t type, const std::vector<uint8_t> &body);
+  bool send_(uint8_t type, const std::vector<uint8_t> &body);
   void send_tx_result_(uint32_t seq, uint8_t result, int32_t offset_us);
   void send_hello_();
   void set_connected_(bool connected);
@@ -131,6 +134,7 @@ class ProxyEngine {
   ProxyIo &io_;
   EnvelopeCodec codec_;
   ServerSeqGuard seq_guard_;
+  HelloEchoes hello_echoes_;
   DedupeCache dedupe_;
   RateLimiter rate_;
   AirtimeBudget budget_;
@@ -144,6 +148,9 @@ class ProxyEngine {
   uint64_t disconnected_since_us_{0};
   bool hello_sent_{false};
   uint64_t next_hello_us_{0};
+  uint32_t request_nonce_{0};  // to echo in the next HELLO
+  bool requested_hello_sent_{false};
+  uint64_t requested_hello_us_{0};
 
   uint64_t last_loop_us_{0};
   uint64_t max_gap_us_{0};

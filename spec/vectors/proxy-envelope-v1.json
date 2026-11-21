@@ -11,26 +11,44 @@
       "type": 2,
       "boot_id": 439041101,
       "seq": 1,
-      "body": "0105555339313536bf32a00901f40000002a0000000a00000009000000010000000000000000000000020000000000070e63735f70726f787920302e312e30",
-      "message": "0102348518fffe0000011a2b3c4d000000010105555339313536bf32a00901f40000002a0000000a00000009000000010000000000000000000000020000000000070e63735f70726f787920302e312e3061881737b23801684cc9334c13f8ca77"
+      "body": "0105555339313536bf32a00901f40000002a0000000a0000000900000001000000000000000000000002000000000007000000000e63735f70726f787920302e312e30",
+      "message": "0102348518fffe0000011a2b3c4d000000010105555339313536bf32a00901f40000002a0000000a0000000900000001000000000000000000000002000000000007000000000e63735f70726f787920302e312e3059b610de9573e2627a5828dd02dcf6a0"
+    },
+    {
+      "name": "hello_request",
+      "note": "server does not know this boot yet and asks for a HELLO echoing its nonce",
+      "type": 131,
+      "boot_id": 439041101,
+      "seq": 0,
+      "body": "5eed1234",
+      "message": "0183348518fffe0000011a2b3c4d000000005eed1234178d9a44bd8ab4362c002dc54bad97cf"
+    },
+    {
+      "name": "hello_answer",
+      "note": "proxy answers the HELLO_REQUEST at once",
+      "type": 2,
+      "boot_id": 439041101,
+      "seq": 2,
+      "body": "0105555339313536bf32a00901f40000002a0000000a00000009000000010000000000000000000000020000000000075eed12340e63735f70726f787920302e312e30",
+      "message": "0102348518fffe0000011a2b3c4d000000020105555339313536bf32a00901f40000002a0000000a00000009000000010000000000000000000000020000000000075eed12340e63735f70726f787920302e312e30a95a82540af36377eb3daf6990324f27"
     },
     {
       "name": "server_status",
-      "note": "server answers HELLO with its time and the network's tags for epochs e-1..e+1",
+      "note": "server switches to the boot and answers HELLO seq 2 with its time and the tags for epochs e-1..e+1",
       "type": 129,
       "boot_id": 439041101,
       "seq": 1,
-      "body": "6b00fb2003f3b45e7661d306d3a3793a8a",
-      "message": "0181348518fffe0000011a2b3c4d000000016b00fb2003f3b45e7661d306d3a3793a8a66982a2228f19d2ca0c799de1f80822f"
+      "body": "6b00fb200000000203f3b45e7661d306d3a3793a8a",
+      "message": "0181348518fffe0000011a2b3c4d000000016b00fb200000000203f3b45e7661d306d3a3793a8a7123136548d7978350f8d746c90841ba"
     },
     {
       "name": "uplink",
       "note": "proxy forwards the DATA_CONFIRMED frame heard at -97.5 dBm, SNR 6.3 dB",
       "type": 1,
       "boot_id": 439041101,
-      "seq": 2,
+      "seq": 3,
       "body": "00000000075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da1e",
-      "message": "0101348518fffe0000011a2b3c4d0000000200000000075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da1e6f856835d55d5db340cd92f41f251d35"
+      "message": "0101348518fffe0000011a2b3c4d0000000300000000075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da1e9565c4fa443141e53e611f0d363eaee9"
     },
     {
       "name": "downlink",
@@ -46,9 +64,210 @@
       "note": "proxy reports it transmitted downlink seq 2, 1.8 ms after the requested time",
       "type": 3,
       "boot_id": 439041101,
-      "seq": 3,
+      "seq": 4,
       "body": "000000020000000708",
-      "message": "0103348518fffe0000011a2b3c4d000000030000000200000007087ecf26f8fd23cdb3a79fd3c6e8e105a9"
+      "message": "0103348518fffe0000011a2b3c4d000000040000000200000007080b78f85b4c4836b65a5558d0809c6e6e"
     }
-  ]
+  ],
+  "session": {
+    "boot_id": 439041101,
+    "hello_echo_slots": 3,
+    "hello_echo_max_age_ms": 120000,
+    "hello_request_gap_ms": 5000,
+    "request_nonce_ms": 30000,
+    "request_resend_ms": 1000,
+    "request_boots": 4,
+    "nonces": [
+      1592590337,
+      1592590338,
+      1592590339,
+      1592590340,
+      1592590341
+    ],
+    "steps": [
+      {
+        "t_ms": 0,
+        "to": "server",
+        "from": "proxy",
+        "note": "HELLO after boot: the server does not know this boot",
+        "message": "0102348518fffe0000011a2b3c4d000000010105555339313536bf32a00901f400000000000000000000000000000000000000000000000000000000000000000000000000000e63735f70726f787920302e312e30440f667f3c4d461a1474f2a57d87ddf3",
+        "result": "hello_request",
+        "nonce": 1592590337
+      },
+      {
+        "t_ms": 20,
+        "to": "proxy",
+        "note": "HELLO_REQUEST for the proxy's boot",
+        "message": "0183348518fffe0000011a2b3c4d000000005eed000114f646cacab714ce64bbe77d378541da",
+        "result": "hello",
+        "hello_at_ms": 20
+      },
+      {
+        "t_ms": 20,
+        "to": "server",
+        "from": "proxy",
+        "note": "HELLO echoing the nonce: the server switches to this boot",
+        "message": "0102348518fffe0000011a2b3c4d000000020105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00010e63735f70726f787920302e312e304972d011994c765c04327846f12e2b4c",
+        "result": "switched"
+      },
+      {
+        "t_ms": 40,
+        "to": "proxy",
+        "note": "SERVER_STATUS answering that HELLO",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb2000000002006423c5c44e18ca1987a87a6985d32f7f",
+        "result": "accepted"
+      },
+      {
+        "t_ms": 1000,
+        "to": "server",
+        "from": "proxy",
+        "note": "UPLINK",
+        "message": "0101348518fffe0000011a2b3c4d000000030086c3cb52329e629cca2dcee4a00419ba",
+        "result": "accepted"
+      },
+      {
+        "t_ms": 1050,
+        "to": "proxy",
+        "note": "DOWNLINK",
+        "message": "0182348518fffe0000011a2b3c4d00000002006dc6843300b0b45ae53025883a632fe8",
+        "result": "accepted"
+      },
+      {
+        "t_ms": 1060,
+        "to": "proxy",
+        "note": "the same DOWNLINK replayed",
+        "message": "0182348518fffe0000011a2b3c4d00000002006dc6843300b0b45ae53025883a632fe8",
+        "result": "ignored"
+      },
+      {
+        "t_ms": 3000,
+        "to": "proxy",
+        "note": "unsolicited SERVER_STATUS at an epoch boundary",
+        "message": "0181348518fffe0000011a2b3c4d000000036b00fb2000000000008c217070933a42d1d71105ac6ed0387f",
+        "result": "accepted"
+      },
+      {
+        "t_ms": 5000,
+        "to": "server",
+        "from": "replay",
+        "note": "HELLO from an earlier boot, replayed: no switch, only a HELLO_REQUEST",
+        "message": "0102348518fffe0000010badb007000000090105555339313536bf32a00901f400000000000000000000000000000000000000000000000000000000000000000000000000000e63735f70726f787920302e312e30980cc60c961a288b0cc3183447710556",
+        "result": "hello_request",
+        "nonce": 1592590338
+      },
+      {
+        "t_ms": 5100,
+        "to": "server",
+        "from": "replay",
+        "note": "replayed again within a second: no second HELLO_REQUEST",
+        "message": "0102348518fffe0000010badb007000000090105555339313536bf32a00901f400000000000000000000000000000000000000000000000000000000000000000000000000000e63735f70726f787920302e312e30980cc60c961a288b0cc3183447710556",
+        "result": "ignored"
+      },
+      {
+        "t_ms": 6000,
+        "to": "proxy",
+        "note": "that HELLO_REQUEST reaches the proxy: not its boot",
+        "message": "0183348518fffe0000010badb007000000005eed0002b61a50fdb967e6cd98924576523578cc",
+        "result": "ignored"
+      },
+      {
+        "t_ms": 10000,
+        "event": "server_restart",
+        "note": "the server restarts and forgets every session"
+      },
+      {
+        "t_ms": 12000,
+        "to": "server",
+        "from": "proxy",
+        "note": "UPLINK to the restarted server: unknown boot",
+        "message": "0101348518fffe0000011a2b3c4d0000000400dbd4c5018f5f3f4845359f85923972cc",
+        "result": "hello_request",
+        "nonce": 1592590339
+      },
+      {
+        "t_ms": 12020,
+        "to": "proxy",
+        "note": "HELLO_REQUEST; its seq is not checked",
+        "message": "0183348518fffe0000011a2b3c4d000000005eed00035641326c7ed36aff23a7ee4dceb2c282",
+        "result": "hello",
+        "hello_at_ms": 12020
+      },
+      {
+        "t_ms": 12020,
+        "to": "server",
+        "from": "proxy",
+        "note": "HELLO echoing the nonce: the restarted server switches",
+        "message": "0102348518fffe0000011a2b3c4d000000050105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e306931db3e096fb559f81da532f47a76a5",
+        "result": "switched"
+      },
+      {
+        "t_ms": 12040,
+        "to": "proxy",
+        "note": "SERVER_STATUS seq 1, at or below the proxy's floor, echoing that HELLO: resync",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb200000000500c5c641d4b55ffe15bb9c17990e9c5d16",
+        "result": "resync"
+      },
+      {
+        "t_ms": 12045,
+        "to": "proxy",
+        "note": "the same SERVER_STATUS replayed: its echo is used up",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb200000000500c5c641d4b55ffe15bb9c17990e9c5d16",
+        "result": "ignored"
+      },
+      {
+        "t_ms": 13000,
+        "to": "proxy",
+        "note": "DOWNLINK from the restarted server",
+        "message": "0182348518fffe0000011a2b3c4d00000002006dc6843300b0b45ae53025883a632fe8",
+        "result": "accepted"
+      },
+      {
+        "t_ms": 14000,
+        "to": "proxy",
+        "note": "HELLO_REQUEST replayed: the HELLO waits until 5 s after the last requested one",
+        "message": "0183348518fffe0000011a2b3c4d000000005eed00035641326c7ed36aff23a7ee4dceb2c282",
+        "result": "hello",
+        "hello_at_ms": 17020
+      },
+      {
+        "t_ms": 17020,
+        "to": "server",
+        "from": "proxy",
+        "note": "that HELLO: the boot is current, so it is a normal HELLO",
+        "message": "0102348518fffe0000011a2b3c4d000000060105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e301f17c819182cd0b2668cd6a4966bd110",
+        "result": "accepted"
+      },
+      {
+        "t_ms": 17040,
+        "to": "proxy",
+        "note": "SERVER_STATUS answering it",
+        "message": "0181348518fffe0000011a2b3c4d000000036b00fb200000000600d5e8c8f6235c5768c1c9f9e3f8f7e445",
+        "result": "accepted"
+      },
+      {
+        "t_ms": 20000,
+        "to": "server",
+        "from": "replay",
+        "note": "HELLO from the earlier boot replayed again: still no switch",
+        "message": "0102348518fffe0000010badb007000000090105555339313536bf32a00901f400000000000000000000000000000000000000000000000000000000000000000000000000000e63735f70726f787920302e312e30980cc60c961a288b0cc3183447710556",
+        "result": "hello_request",
+        "nonce": 1592590340
+      },
+      {
+        "t_ms": 21000,
+        "to": "server",
+        "from": "replay",
+        "note": "HELLO from this boot recorded before the restart: stale seq",
+        "message": "0102348518fffe0000011a2b3c4d000000020105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00010e63735f70726f787920302e312e304972d011994c765c04327846f12e2b4c",
+        "result": "ignored"
+      },
+      {
+        "t_ms": 22000,
+        "to": "proxy",
+        "note": "SERVER_STATUS from before the restart replayed: its echo is used up",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb2000000002006423c5c44e18ca1987a87a6985d32f7f",
+        "result": "ignored"
+      }
+    ]
+  }
 }

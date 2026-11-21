@@ -286,6 +286,7 @@ M_HELLO = 0x02
 M_TX_RESULT = 0x03
 M_SERVER_STATUS = 0x81
 M_DOWNLINK = 0x82
+M_HELLO_REQUEST = 0x83
 
 UPF_TS_UNCERTAIN = 0x01
 
@@ -316,15 +317,41 @@ def uplink_body(rx_time_us: int, rssi: float, snr: float, flags: int, frame: byt
 
 
 def hello_body(caps: int, region: str, freq_hz: int, sf: int, bw_khz: int, uptime_s: int,
-               counters: list[int], max_loop_gap_ms: int, fw: str) -> bytes:
+               counters: list[int], max_loop_gap_ms: int, fw: str, request_nonce: int = 0) -> bytes:
     assert len(counters) == 7
     return (bytes([caps, len(region)]) + region.encode() + struct.pack(">IBHI", freq_hz, sf, bw_khz, uptime_s)
-            + struct.pack(">7I", *counters) + struct.pack(">H", max_loop_gap_ms)
+            + struct.pack(">7I", *counters) + struct.pack(">HI", max_loop_gap_ms, request_nonce)
             + bytes([len(fw)]) + fw.encode())
 
 
-def server_status_body(server_time: int, tags: list[bytes]) -> bytes:
-    return struct.pack(">IB", server_time, len(tags)) + b"".join(tags)
+def parse_hello(body: bytes) -> dict:
+    caps, rlen = body[0], body[1]
+    p = 2 + rlen
+    freq, sf, bw, uptime = struct.unpack(">IBHI", body[p:p + 11])
+    counters = list(struct.unpack(">7I", body[p + 11:p + 39]))
+    gap, nonce = struct.unpack(">HI", body[p + 39:p + 45])
+    flen = body[p + 45]
+    if len(body) != p + 46 + flen:
+        raise ValueError("bad HELLO length")
+    return {"caps": caps, "region": body[2:p].decode(), "frequency_hz": freq, "sf": sf, "bw_khz": bw,
+            "uptime_s": uptime, "counters": counters, "max_loop_gap_ms": gap, "request_nonce": nonce,
+            "fw": body[p + 46:].decode()}
+
+
+def server_status_body(server_time: int, tags: list[bytes], hello_seq: int = 0) -> bytes:
+    return struct.pack(">IIB", server_time, hello_seq, len(tags)) + b"".join(tags)
+
+
+def parse_server_status(body: bytes) -> dict:
+    server_time, hello_seq, n = struct.unpack(">IIB", body[:9])
+    if n > 32 or len(body) != 9 + 4 * n:
+        raise ValueError("bad SERVER_STATUS length")
+    tags = [body[9 + 4 * i:13 + 4 * i] for i in range(n)]
+    return {"server_time": server_time, "hello_seq": hello_seq, "tags": tags}
+
+
+def hello_request_body(nonce: int) -> bytes:
+    return struct.pack(">I", nonce)
 
 
 def downlink_msg_body(ref_rx_time_us: int, tx_offset_us: int, frame: bytes) -> bytes:
@@ -333,6 +360,107 @@ def downlink_msg_body(ref_rx_time_us: int, tx_offset_us: int, frame: bytes) -> b
 
 def tx_result_body(downlink_seq: int, result: int, offset_us: int) -> bytes:
     return struct.pack(">IBi", downlink_seq, result, offset_us)
+
+
+# ---------------------------------------------------------------- 05 section 3.2: sessions
+
+HELLO_ECHO_SLOTS = 3            # proxy: HELLOs whose echo can resync the server seq floor
+HELLO_ECHO_MAX_AGE_MS = 120_000  # proxy: ... and only within 2 HELLO intervals
+HELLO_REQUEST_GAP_MS = 5000     # proxy: at most one requested HELLO per 5 s
+REQUEST_NONCE_MS = 30_000       # server: how long a HELLO_REQUEST nonce stays valid
+REQUEST_RESEND_MS = 1000        # server: at most one HELLO_REQUEST per boot_id per second
+REQUEST_BOOTS = 4               # server: outstanding nonces kept per proxy
+
+
+class ProxyLink:
+    """The proxy's checks on messages from its server (05 section 3.2)."""
+
+    def __init__(self, boot_id: int):
+        self.boot_id = boot_id
+        self.floor = 0
+        self.echoes: list[list] = []  # [HELLO seq, sent at, echoed], the last 3 sent
+        self.last_requested_ms = None
+
+    def sent(self, m: dict, now_ms: int) -> None:
+        if m["type"] != M_HELLO:
+            return
+        self.echoes = (self.echoes + [[m["seq"], now_ms, False]])[-HELLO_ECHO_SLOTS:]
+        if parse_hello(bytes.fromhex(m["body"]))["request_nonce"]:
+            self.last_requested_ms = now_ms
+
+    def _take_echo(self, hello_seq: int, now_ms: int) -> bool:
+        for e in self.echoes:
+            if e[0] == hello_seq and not e[2] and now_ms - e[1] <= HELLO_ECHO_MAX_AGE_MS:
+                e[2] = True
+                return True
+        return False
+
+    def receive(self, m: dict, now_ms: int) -> dict:
+        if m["boot_id"] != self.boot_id:
+            return {"result": "ignored"}
+        body = bytes.fromhex(m["body"])
+        if m["type"] == M_HELLO_REQUEST:
+            if len(body) != 4 or struct.unpack(">I", body)[0] == 0:
+                return {"result": "ignored"}
+            at = now_ms
+            if self.last_requested_ms is not None:
+                at = max(at, self.last_requested_ms + HELLO_REQUEST_GAP_MS)
+            return {"result": "hello", "hello_at_ms": at}
+        if m["type"] == M_SERVER_STATUS:
+            hello_seq = parse_server_status(body)["hello_seq"]
+            if m["seq"] > self.floor:
+                self.floor = m["seq"]
+                self._take_echo(hello_seq, now_ms)
+                return {"result": "accepted"}
+            if hello_seq and self._take_echo(hello_seq, now_ms):
+                self.floor = m["seq"]
+                return {"result": "resync"}
+            return {"result": "ignored"}
+        if m["seq"] > self.floor:
+            self.floor = m["seq"]
+            return {"result": "accepted"}
+        return {"result": "ignored"}
+
+
+class ServerLink:
+    """A server's session with one proxy (05 section 3.2, 07 section 2.3). Nothing persisted."""
+
+    def __init__(self, new_nonce):
+        self.new_nonce = new_nonce
+        self.boot_id = None
+        self.last_seq = 0
+        self.seq = 0
+        self.requests: dict[int, list] = {}  # boot_id -> [nonce, issued_ms, last_sent_ms]
+
+    def next_seq(self) -> int:
+        self.seq += 1
+        return self.seq
+
+    def receive(self, m: dict, now_ms: int) -> dict:
+        boot = m["boot_id"]
+        if boot == self.boot_id:
+            if m["seq"] <= self.last_seq:
+                return {"result": "ignored"}
+            self.last_seq = m["seq"]
+            return {"result": "accepted"}
+        req = self.requests.get(boot)
+        if req is not None and now_ms - req[1] > REQUEST_NONCE_MS:
+            req = None
+        if m["type"] == M_HELLO and req is not None:
+            if parse_hello(bytes.fromhex(m["body"]))["request_nonce"] == req[0]:
+                self.boot_id, self.last_seq, self.seq = boot, m["seq"], 0
+                self.requests.clear()
+                return {"result": "switched"}
+        if req is None:
+            req = [self.new_nonce(), now_ms, None]
+            self.requests.pop(boot, None)
+            self.requests[boot] = req
+            while len(self.requests) > REQUEST_BOOTS:
+                del self.requests[next(iter(self.requests))]
+        if req[2] is not None and now_ms - req[2] < REQUEST_RESEND_MS:
+            return {"result": "ignored"}
+        req[2] = now_ms
+        return {"result": "hello_request", "nonce": req[0]}
 
 
 # ======================================================================== 07
@@ -650,18 +778,25 @@ def envelope_vectors() -> dict:
     e = fv["inputs"]["epoch"]
     boot = 0x1A2B3C4D
     rx_t = 123_456_789
+    nonce = 0x5EED1234
+    counters = [10, 9, 1, 0, 0, 2, 0]
     msgs = [
         ("hello", M_HELLO, boot, 1,
-         hello_body(CAP_DOWNLINK, "US915", 918_500_000, 9, 500, 42, [10, 9, 1, 0, 0, 2, 0], 7, "cs_proxy 0.1.0"),
+         hello_body(CAP_DOWNLINK, "US915", 918_500_000, 9, 500, 42, counters, 7, "cs_proxy 0.1.0"),
          "proxy announces itself after boot"),
+        ("hello_request", M_HELLO_REQUEST, boot, 0, hello_request_body(nonce),
+         "server does not know this boot yet and asks for a HELLO echoing its nonce"),
+        ("hello_answer", M_HELLO, boot, 2,
+         hello_body(CAP_DOWNLINK, "US915", 918_500_000, 9, 500, 42, counters, 7, "cs_proxy 0.1.0", nonce),
+         "proxy answers the HELLO_REQUEST at once"),
         ("server_status", M_SERVER_STATUS, boot, 1,
-         server_status_body(T0, [net_tag(route, x) for x in (e - 1, e, e + 1)]),
-         "server answers HELLO with its time and the network's tags for epochs e-1..e+1"),
-        ("uplink", M_UPLINK, boot, 2, uplink_body(rx_t, -97.5, 6.3, 0, frames["data_confirmed"]),
+         server_status_body(T0, [net_tag(route, x) for x in (e - 1, e, e + 1)], 2),
+         "server switches to the boot and answers HELLO seq 2 with its time and the tags for epochs e-1..e+1"),
+        ("uplink", M_UPLINK, boot, 3, uplink_body(rx_t, -97.5, 6.3, 0, frames["data_confirmed"]),
          "proxy forwards the DATA_CONFIRMED frame heard at -97.5 dBm, SNR 6.3 dB"),
         ("downlink", M_DOWNLINK, boot, 2, downlink_msg_body(rx_t, 1_000_000, frames["downlink_ack"]),
          "server asks the proxy to transmit the acknowledgement in RX1"),
-        ("tx_result", M_TX_RESULT, boot, 3, tx_result_body(2, 0, 1800),
+        ("tx_result", M_TX_RESULT, boot, 4, tx_result_body(2, 0, 1800),
          "proxy reports it transmitted downlink seq 2, 1.8 ms after the requested time"),
     ]
     return {
@@ -670,7 +805,111 @@ def envelope_vectors() -> dict:
         "messages": [{"name": n, "note": note, "type": t, "boot_id": b, "seq": q, "body": body.hex(),
                       "message": envelope(PROXY_KEY, t, PROXY_ID, b, q, body).hex()}
                      for n, t, b, q, body, note in msgs],
+        "session": session_vectors(),
     }
+
+
+SESSION_NONCES = [0x5EED0001, 0x5EED0002, 0x5EED0003, 0x5EED0004, 0x5EED0005]
+
+
+def session_vectors() -> dict:
+    """Boot handshake, server restart and resync, and replays (05 section 3.2)."""
+    boot, old_boot = 0x1A2B3C4D, 0x0BADB007
+    nonces = iter(SESSION_NONCES)
+    proxy = ProxyLink(boot)
+    server = ServerLink(lambda: next(nonces))
+    pseq = 0
+    steps = []
+
+    def env(t, b, q, body):
+        return envelope(PROXY_KEY, t, PROXY_ID, b, q, body)
+
+    def hello(q, nonce=0, b=boot):
+        return env(M_HELLO, b, q, hello_body(CAP_DOWNLINK, "US915", 918_500_000, 9, 500, 0, [0] * 7, 0,
+                                             "cs_proxy 0.1.0", nonce))
+
+    def nxt():
+        nonlocal pseq
+        pseq += 1
+        return pseq
+
+    def up(t, msg, note, sender="proxy"):
+        m = open_envelope(PROXY_KEY, msg)
+        if sender == "proxy":
+            proxy.sent(m, t)
+        steps.append({"t_ms": t, "to": "server", "from": sender, "note": note, "message": msg.hex(),
+                      **server.receive(m, t)})
+        return steps[-1]
+
+    def down(t, msg, note):
+        m = open_envelope(PROXY_KEY, msg)
+        steps.append({"t_ms": t, "to": "proxy", "note": note, "message": msg.hex(), **proxy.receive(m, t)})
+        return steps[-1]
+
+    def status(hello_seq):
+        return env(M_SERVER_STATUS, boot, server.next_seq(), server_status_body(T0, [], hello_seq))
+
+    def req(b, n):
+        return env(M_HELLO_REQUEST, b, 0, hello_request_body(n))
+
+    n1 = up(0, hello(nxt()), "HELLO after boot: the server does not know this boot")["nonce"]
+    down(20, req(boot, n1), "HELLO_REQUEST for the proxy's boot")
+    first_hello = hello(nxt(), n1)
+    up(20, first_hello, "HELLO echoing the nonce: the server switches to this boot")
+    first_status = status(pseq)
+    down(40, first_status, "SERVER_STATUS answering that HELLO")
+    up(1000, env(M_UPLINK, boot, nxt(), b"\x00"), "UPLINK")
+    dl = env(M_DOWNLINK, boot, server.next_seq(), b"\x00")
+    down(1050, dl, "DOWNLINK")
+    down(1060, dl, "the same DOWNLINK replayed")
+    down(3000, status(0), "unsolicited SERVER_STATUS at an epoch boundary")
+    old = hello(9, b=old_boot)
+    n_old = up(5000, old, "HELLO from an earlier boot, replayed: no switch, only a HELLO_REQUEST", "replay")["nonce"]
+    up(5100, old, "replayed again within a second: no second HELLO_REQUEST", "replay")
+    down(6000, req(old_boot, n_old), "that HELLO_REQUEST reaches the proxy: not its boot")
+
+    steps.append({"t_ms": 10000, "event": "server_restart", "note": "the server restarts and forgets every session"})
+    server = ServerLink(lambda: next(nonces))
+    n2 = up(12000, env(M_UPLINK, boot, nxt(), b"\x00"), "UPLINK to the restarted server: unknown boot")["nonce"]
+    down(12020, req(boot, n2), "HELLO_REQUEST; its seq is not checked")
+    up(12020, hello(nxt(), n2), "HELLO echoing the nonce: the restarted server switches")
+    st = status(pseq)
+    down(12040, st, "SERVER_STATUS seq 1, at or below the proxy's floor, echoing that HELLO: resync")
+    down(12045, st, "the same SERVER_STATUS replayed: its echo is used up")
+    down(13000, env(M_DOWNLINK, boot, server.next_seq(), b"\x00"), "DOWNLINK from the restarted server")
+    down(14000, req(boot, n2), "HELLO_REQUEST replayed: the HELLO waits until 5 s after the last requested one")
+    up(17020, hello(nxt(), n2), "that HELLO: the boot is current, so it is a normal HELLO")
+    down(17040, status(pseq), "SERVER_STATUS answering it")
+    up(20000, old, "HELLO from the earlier boot replayed again: still no switch", "replay")
+    up(21000, first_hello, "HELLO from this boot recorded before the restart: stale seq", "replay")
+    down(22000, first_status, "SERVER_STATUS from before the restart replayed: its echo is used up")
+    return {"boot_id": boot, "hello_echo_slots": HELLO_ECHO_SLOTS, "hello_echo_max_age_ms": HELLO_ECHO_MAX_AGE_MS,
+            "hello_request_gap_ms": HELLO_REQUEST_GAP_MS, "request_nonce_ms": REQUEST_NONCE_MS,
+            "request_resend_ms": REQUEST_RESEND_MS, "request_boots": REQUEST_BOOTS, "nonces": SESSION_NONCES,
+            "steps": steps}
+
+
+def verify_session(sv: dict) -> int:
+    bad = 0
+    nonces = iter(sv["nonces"])
+    proxy = ProxyLink(sv["boot_id"])
+    server = ServerLink(lambda: next(nonces))
+    for c in sv["steps"]:
+        if c.get("event") == "server_restart":
+            server = ServerLink(lambda: next(nonces))
+            continue
+        m = open_envelope(PROXY_KEY, bytes.fromhex(c["message"]))
+        if c["to"] == "server":
+            if c["from"] == "proxy":
+                proxy.sent(m, c["t_ms"])
+            got = server.receive(m, c["t_ms"])
+        else:
+            got = proxy.receive(m, c["t_ms"])
+        want = {k: v for k, v in c.items() if k not in ("t_ms", "to", "from", "note", "message")}
+        ok = got == want
+        print(f"{'ok  ' if ok else 'FAIL'} session {c['t_ms']} ms to {c['to']} -> {want['result']}")
+        bad += not ok
+    return bad
 
 
 def server_vectors() -> dict:
@@ -814,6 +1053,7 @@ def verify(d: str) -> int:
             pass
         print(f"{'ok  ' if ok else 'FAIL'} envelope {c['name']}")
         bad += not ok
+    bad += verify_session(ev["session"])
     with open(os.path.join(d, "server-v1.json")) as f:
         sv = json.load(f)
     ctr = UplinkCounter(sv["uplink_counter"]["first_accepted"])

@@ -118,11 +118,12 @@ void ProxyEngine::loop_end() {
 
 // ------------------------------------------------------------------------ messages
 
-void ProxyEngine::send_(uint8_t type, const std::vector<uint8_t> &body) {
+bool ProxyEngine::send_(uint8_t type, const std::vector<uint8_t> &body) {
   if (!this->io_.server_known())
-    return;
+    return false;
   auto msg = this->codec_.build(type, this->config_.boot_id, ++this->seq_, body);
   this->io_.send_datagram(msg.data(), msg.size());
+  return true;
 }
 
 void ProxyEngine::send_tx_result_(uint32_t seq, uint8_t result, int32_t offset_us) {
@@ -150,7 +151,15 @@ void ProxyEngine::send_hello_() {
   uint64_t gap_ms = this->max_gap_us_ / 1000;
   h.max_loop_gap_ms = uint16_t(gap_ms > 65535 ? 65535 : gap_ms);
   h.firmware = this->config_.firmware;
-  this->send_(MSG_HELLO, hello_body(h));
+  h.request_nonce = this->request_nonce_;
+  if (this->send_(MSG_HELLO, hello_body(h))) {
+    this->hello_echoes_.sent(this->seq_, now);
+    if (h.request_nonce != 0) {
+      this->requested_hello_sent_ = true;
+      this->requested_hello_us_ = now;
+      this->request_nonce_ = 0;
+    }
+  }
   if (this->degraded_)
     this->log_(LogLevel::Warn, "Main loop stalled for %u ms; downlinks withdrawn until it recovers",
                h.max_loop_gap_ms);
@@ -168,25 +177,24 @@ void ProxyEngine::on_datagram(const uint8_t *data, size_t len, uint64_t now) {
   }
   if ((e.type & 0x80) == 0)
     return;  // not a server-to-proxy message
+  if (!this->seq_guard_.current_boot(e.boot_id)) {
+    this->log_(LogLevel::Debug, "Ignored server message for boot %08" PRIx32, e.boot_id);
+    return;
+  }
+  // These two have their own rules for the server seq (05 section 3.2).
+  if (e.type == MSG_HELLO_REQUEST) {
+    this->handle_hello_request_(e, now);
+    return;
+  }
+  if (e.type == MSG_SERVER_STATUS) {
+    this->handle_server_status_(e, now);
+    return;
+  }
   if (!this->seq_guard_.accept(e.boot_id, e.seq)) {
     this->log_(LogLevel::Debug, "Ignored stale or replayed server message seq %" PRIu32, e.seq);
     return;
   }
   switch (e.type) {
-    case MSG_SERVER_STATUS: {
-      ServerStatus st;
-      if (!parse_server_status(e.body, e.body_len, st)) {
-        this->log_(LogLevel::Warn, "Malformed SERVER_STATUS");
-        return;
-      }
-      this->server_tags_ = st.tags;
-      this->last_status_us_ = now;
-      if (!this->connected_)
-        this->log_(LogLevel::Info, "Connected to server (%u network tags)", unsigned(st.tags.size()));
-      this->set_connected_(true);
-      this->disconnected_since_us_ = 0;
-      break;
-    }
     case MSG_DOWNLINK:
       this->handle_downlink_(e, now);
       break;
@@ -194,6 +202,48 @@ void ProxyEngine::on_datagram(const uint8_t *data, size_t len, uint64_t now) {
       this->log_(LogLevel::Verbose, "Ignored unknown message type 0x%02X", e.type);
       break;
   }
+}
+
+void ProxyEngine::handle_server_status_(const Envelope &e, uint64_t now) {
+  ServerStatus st;
+  if (!parse_server_status(e.body, e.body_len, st)) {
+    this->log_(LogLevel::Warn, "Malformed SERVER_STATUS");
+    return;
+  }
+  if (this->seq_guard_.accept(e.boot_id, e.seq)) {
+    this->hello_echoes_.take(st.hello_seq, now);
+  } else if (this->hello_echoes_.take(st.hello_seq, now)) {
+    // A restarted server counts from 1 again; its echo of a HELLO we just sent proves
+    // the message is fresh, so its seq becomes the floor.
+    this->seq_guard_.resync(e.seq);
+    this->log_(LogLevel::Info, "Server restarted; following its seq from %" PRIu32, e.seq);
+  } else {
+    this->log_(LogLevel::Debug, "Ignored stale or replayed SERVER_STATUS seq %" PRIu32, e.seq);
+    return;
+  }
+  this->server_tags_ = st.tags;
+  this->last_status_us_ = now;
+  if (!this->connected_)
+    this->log_(LogLevel::Info, "Connected to server (%u network tags)", unsigned(st.tags.size()));
+  this->set_connected_(true);
+  this->disconnected_since_us_ = 0;
+}
+
+void ProxyEngine::handle_hello_request_(const Envelope &e, uint64_t now) {
+  // Not checked against the server seq: a server that does not know our boot has no
+  // floor to match. A replay can only bring a HELLO forward, at most one per 5 s.
+  uint32_t nonce;
+  if (!parse_hello_request(e.body, e.body_len, nonce)) {
+    this->log_(LogLevel::Debug, "Malformed HELLO_REQUEST");
+    return;
+  }
+  this->request_nonce_ = nonce;
+  uint64_t due = now;
+  if (this->requested_hello_sent_ && this->requested_hello_us_ + HELLO_REQUEST_GAP_US > due)
+    due = this->requested_hello_us_ + HELLO_REQUEST_GAP_US;
+  if (!this->hello_sent_ || due < this->next_hello_us_)
+    this->next_hello_us_ = due;
+  this->log_(LogLevel::Debug, "Server asked for a HELLO");
 }
 
 void ProxyEngine::set_connected_(bool connected) {

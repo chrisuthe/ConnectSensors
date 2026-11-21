@@ -16,7 +16,8 @@ Version 0.2.0, early development. Implemented:
 - Region profile `US915`, with compile-time checks that the radio settings match
 - `sx126x` and `sx127x` radios
 - UDP transport with per-proxy keys, `HELLO`, `SERVER_STATUS`, `UPLINK`,
-  `DOWNLINK`, `TX_RESULT`, replay protection
+  `DOWNLINK`, `TX_RESULT`, `HELLO_REQUEST`, replay protection, and recovery from
+  a server restart without rebooting the proxy
 - Keyless frame checks, dedupe, rate limits, airtime budget, transmit scheduling
 - Asynchronous downlink transmit, so a downlink does not hold the main loop for
   its airtime

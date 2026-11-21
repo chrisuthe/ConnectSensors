@@ -1,7 +1,7 @@
 # 07 - Network Server
 
 Status: Draft
-Version: 1.0-draft.1
+Version: 1.0-draft.2
 
 This document specifies what a network server does: the state it keeps, how it
 processes uplinks, how it answers them, how it picks which proxy transmits, how
@@ -53,7 +53,8 @@ A server MAY run several networks; each has its own keys. Most homes have one.
 |---|---|---|
 | `proxy_id`, `proxy_key` | yes | 05 section 4 |
 | Last address and port | no | 05 section 2.1 |
-| Current `boot_id`, last received `seq`, server `seq` | no | 05 section 3.2 |
+| Current `boot_id`, last received `seq`, server `seq` | no | 05 section 3.2. After a restart they are rebuilt by `HELLO_REQUEST`. |
+| Outstanding `HELLO_REQUEST` nonces, per `boot_id` | no | 05 section 3.2 |
 | Capabilities and radio settings from the last `HELLO` | no | |
 | Timing record: the last 20 `TX_RESULT`s | no | Section 6 |
 | Last `HELLO` time | no | Section 8.2 |
@@ -64,8 +65,8 @@ A server MAY run several networks; each has its own keys. Most homes have one.
   `e - 1`, `e` and `e + 1` of every paired device on every network (02 section
   6.3), including the previous network key during a rotation.
 - At each epoch boundary the server drops epoch `e - 2`, adds `e + 2` (the new
-  `e + 1`), and sends `SERVER_STATUS` to every connected proxy within 10 seconds
-  (05 section 5.3).
+  `e + 1`), and sends `SERVER_STATUS` with `hello_seq` 0 to every connected
+  proxy within 10 seconds (05 section 5.3).
 - If the system clock jumps by more than 60 seconds, the server rebuilds the whole
   table.
 - The server's clock MUST be synchronized to UTC (for example by NTP). A server
@@ -76,7 +77,10 @@ A server MAY run several networks; each has its own keys. Most homes have one.
 
 For each `UPLINK` message:
 
-1. **Envelope.** Verify it (05 section 3). Discard on failure.
+1. **Envelope.** Verify it (05 section 3). Discard on failure. An `UPLINK` from
+   a boot that is not the proxy's current one is discarded too, after answering
+   it with `HELLO_REQUEST` (05 section 3.2); the frame is usually also heard by
+   other proxies or retransmitted by the sensor.
 2. **Header.** Apply the keyless checks of 02 section 12. Discard downlink types.
 3. **Collect.** Compute the dedupe key (the first 8 bytes of SHA-256 over the
    frame) and the copy's reception time (section 4.3). If the same frame has an
@@ -354,6 +358,7 @@ written to logs. Diagnostics downloads MUST redact keys.
 | CPU exhaustion with bootstrap frames | 50 per minute limit (section 4) |
 | CPU exhaustion with normal frames | Tag lookups are hash-table hits; at most a few MIC checks per frame |
 | Replay after restart | Section 10 |
+| Proxy sessions after restart | Not persisted. The proxy's next message draws a `HELLO_REQUEST`, and the proxy follows the server's new `seq` through the `SERVER_STATUS` echo (05 section 3.2). |
 | Replaying a captured confirmed frame to draw downlinks | Proxies filter it only within `dedupe_window` (06 section 6); the server answers a frame again at most 3 times, within 60 s (section 4, step 5), and proxy airtime budgets cap the rest |
 | A malicious proxy reporting false RSSI to win downlinks | It can only drop the downlink, which the RX2 fallback and sensor retries cover. Remove the proxy if it misbehaves. |
 | Leaking state through Home Assistant | Out of scope: Home Assistant's own access control applies |
@@ -366,3 +371,5 @@ result for each (`accept`, `accept_late`, `duplicate`, `too_old`), a
 increase, a wrap or a reset, and a `retransmission` sequence: copies of a
 confirmed uplink and its retries from proxies and a relay, with whether each is
 a new transmission (section 4, step 3) and whether it is answered (step 5).
+The proxy sessions of 05 section 3.2, including a server restart, are in the
+`session` sequence of `vectors/proxy-envelope-v1.json`.

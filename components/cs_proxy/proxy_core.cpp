@@ -309,6 +309,7 @@ std::vector<uint8_t> hello_body(const HelloInfo &h) {
   w.u32(h.tx_ok);
   w.u32(h.tx_failed);
   w.u16(h.max_loop_gap_ms);
+  w.u32(h.request_nonce);
   size_t fw_len = h.firmware.size() > 255 ? 255 : h.firmware.size();
   w.u8(uint8_t(fw_len));
   w.bytes(reinterpret_cast<const uint8_t *>(h.firmware.data()), fw_len);
@@ -324,16 +325,24 @@ std::vector<uint8_t> tx_result_body(uint32_t downlink_seq, uint8_t result, int32
 }
 
 bool parse_server_status(const uint8_t *body, size_t len, ServerStatus &out) {
-  if (len < 5)
+  if (len < 9)
     return false;
-  uint8_t n = body[4];
-  if (n > 32 || len != 5 + size_t(n) * 4)
+  uint8_t n = body[8];
+  if (n > 32 || len != 9 + size_t(n) * 4)
     return false;
   out.server_time = be32(body);
+  out.hello_seq = be32(body + 4);
   out.tags.clear();
   for (uint8_t i = 0; i < n; i++)
-    out.tags.push_back(be32(body + 5 + 4 * i));
+    out.tags.push_back(be32(body + 9 + 4 * i));
   return true;
+}
+
+bool parse_hello_request(const uint8_t *body, size_t len, uint32_t &nonce) {
+  if (len != 4)
+    return false;
+  nonce = be32(body);
+  return nonce != 0;
 }
 
 bool parse_downlink(const uint8_t *body, size_t len, DownlinkRequest &out) {
@@ -353,6 +362,23 @@ bool ServerSeqGuard::accept(uint32_t boot_id, uint32_t seq) {
     return false;
   this->last_seq_ = seq;
   return true;
+}
+
+void HelloEchoes::sent(uint32_t seq, uint64_t now_us) {
+  this->slots_[this->next_] = {seq, now_us};
+  this->next_ = (this->next_ + 1) % HELLO_ECHO_SLOTS;
+}
+
+bool HelloEchoes::take(uint32_t hello_seq, uint64_t now_us) {
+  if (hello_seq == 0)
+    return false;
+  for (auto &s : this->slots_) {
+    if (s.seq == hello_seq && now_us - s.sent_us <= HELLO_ECHO_MAX_AGE_US) {
+      s.seq = 0;
+      return true;
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------- transmit scheduling

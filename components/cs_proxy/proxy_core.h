@@ -146,6 +146,7 @@ enum MsgType : uint8_t {
   MSG_TX_RESULT = 0x03,
   MSG_SERVER_STATUS = 0x81,
   MSG_DOWNLINK = 0x82,
+  MSG_HELLO_REQUEST = 0x83,
 };
 
 constexpr uint8_t UPLINK_TS_UNCERTAIN = 0x01;
@@ -214,6 +215,7 @@ struct HelloInfo {
   uint32_t tx_ok{0};
   uint32_t tx_failed{0};
   uint16_t max_loop_gap_ms{0};
+  uint32_t request_nonce{0};  // the HELLO_REQUEST this answers (05 section 5.6)
   std::string firmware;
 };
 std::vector<uint8_t> hello_body(const HelloInfo &h);
@@ -221,6 +223,7 @@ std::vector<uint8_t> tx_result_body(uint32_t downlink_seq, uint8_t result, int32
 
 struct ServerStatus {
   uint32_t server_time;
+  uint32_t hello_seq;  // 0: not an answer to a HELLO
   std::vector<uint32_t> tags;
 };
 bool parse_server_status(const uint8_t *body, size_t len, ServerStatus &out);
@@ -231,16 +234,41 @@ struct DownlinkRequest {
   std::vector<uint8_t> frame;
 };
 bool parse_downlink(const uint8_t *body, size_t len, DownlinkRequest &out);
+// False unless the body is a 4-byte nonce other than 0.
+bool parse_hello_request(const uint8_t *body, size_t len, uint32_t &nonce);
 
 // Replay protection for messages from the server (05 section 3.2).
 class ServerSeqGuard {
  public:
   explicit ServerSeqGuard(uint32_t boot_id) : boot_id_(boot_id) {}
+  bool current_boot(uint32_t boot_id) const { return boot_id == this->boot_id_; }
+  // The strict rule: our boot and a seq above the floor.
   bool accept(uint32_t boot_id, uint32_t seq);
+  // Follow a restarted server: only on a SERVER_STATUS echoing one of our HELLOs.
+  void resync(uint32_t seq) { this->last_seq_ = seq; }
 
  private:
   uint32_t boot_id_;
   uint32_t last_seq_{0};
+};
+
+// Our recent HELLOs, each usable once as the echo that resyncs the server seq floor.
+static constexpr size_t HELLO_ECHO_SLOTS = 3;
+static constexpr uint64_t HELLO_ECHO_MAX_AGE_US = 120000000ULL;  // 2 HELLO intervals
+
+class HelloEchoes {
+ public:
+  void sent(uint32_t seq, uint64_t now_us);
+  // True, and forgets the HELLO, if hello_seq is one we sent recently and not yet echoed.
+  bool take(uint32_t hello_seq, uint64_t now_us);
+
+ private:
+  struct Slot {
+    uint32_t seq{0};  // 0: empty
+    uint64_t sent_us{0};
+  };
+  std::array<Slot, HELLO_ECHO_SLOTS> slots_{};
+  size_t next_{0};
 };
 
 // ---------------------------------------------------------------- transmit scheduling (06 section 8)

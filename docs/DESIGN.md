@@ -133,7 +133,10 @@ component). Summary:
   message to the server.
 - Messages to and from the server use one binary envelope over UDP (port 47800)
   or MQTT, authenticated with a per-proxy key (HMAC-SHA256), with boot IDs and
-  sequence numbers against replay.
+  sequence numbers against replay. Nothing about a session is persisted: the
+  server asks for a `HELLO` echoing a nonce before it accepts a new boot, and the
+  proxy follows a restarted server through the `SERVER_STATUS` echo of its
+  `HELLO`.
 - Downlinks need no clock sync: the server hands back the proxy's own receive
   timestamp plus an offset (1 s for RX1, 3 s for RX2), and the proxy reports
   each result with its timing error.
