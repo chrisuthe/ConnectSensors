@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.esphome/
+secrets.yaml
+tests/proxy_core/test_core
+tests/proxy_core/vectors.inc

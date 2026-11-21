@@ -1,0 +1,91 @@
+# ConnectSensors proxy on a Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262), US915.
+#
+# Needs secrets: wifi_ssid, wifi_password, cs_proxy_key (32 hex digits, from the
+# server; for testing with devtools/cs_testserver.py use the key it prints).
+# Pins are from the board's published pinout; check them against your revision.
+
+substitutions:
+  name: lora-proxy
+  server_host: "192.168.1.10"
+
+esphome:
+  name: ${name}
+
+esp32:
+  board: heltec_wifi_lora_32_V3
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+  level: DEBUG
+
+api:
+
+ota:
+  - platform: esphome
+
+external_components:
+  - source: github://chrisuthe/ConnectSensors@main
+    components: [cs_proxy]
+
+spi:
+  clk_pin: GPIO9
+  mosi_pin: GPIO10
+  miso_pin: GPIO11
+
+sx126x:
+  id: lora
+  hw_version: sx1262
+  cs_pin: GPIO8
+  rst_pin: GPIO12
+  busy_pin: GPIO13
+  dio1_pin: GPIO14
+  rf_switch: true
+  tcxo_voltage: 1_8V
+  tcxo_delay: 5ms
+  modulation: LORA
+  frequency: 918.5MHz
+  bandwidth: 500_0kHz
+  spreading_factor: 9
+  coding_rate: CR_4_5
+  preamble_size: 8
+  sync_value: [0x14, 0x24]
+  crc_enable: true
+  pa_power: 20
+  rx_start: true
+
+cs_proxy:
+  id: proxy
+  radio_id: lora
+  region: US915
+  server:
+    host: ${server_host}
+    key: !secret cs_proxy_key
+
+sensor:
+  - platform: cs_proxy
+    frames_heard:
+      name: "LoRa frames heard"
+    frames_forwarded:
+      name: "LoRa frames forwarded"
+    invalid:
+      name: "LoRa packets ignored"
+    downlinks_sent:
+      name: "LoRa downlinks sent"
+    last_rssi:
+      name: "LoRa last RSSI"
+    last_snr:
+      name: "LoRa last SNR"
+    max_loop_gap:
+      name: "Main loop max gap"
+    airtime_used:
+      name: "LoRa airtime used"
+
+binary_sensor:
+  - platform: cs_proxy
+    server_connected:
+      name: "ConnectSensors server connected"
