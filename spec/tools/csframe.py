@@ -598,7 +598,7 @@ def pairing_vectors() -> dict:
 
 
 PROXY_KEY = bytes.fromhex("5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a")
-PROXY_ID = bytes.fromhex("3485180000fffe01")  # EUI-64 from MAC 34:85:18:00:00:01
+PROXY_ID = bytes.fromhex("348518fffe000001")  # EUI-64 from MAC 34:85:18:00:00:01
 
 
 def envelope_vectors() -> dict:

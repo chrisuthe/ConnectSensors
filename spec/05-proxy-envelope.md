@@ -100,7 +100,7 @@ from being used to waste a proxy's airtime.
 
 8 bytes. A proxy SHOULD use an EUI-64 derived from its primary MAC address by
 inserting `FFFE` in the middle (MAC `34:85:18:00:00:01` becomes
-`3485180000fffe01`). It MUST stay the same across reboots and firmware updates.
+`348518fffe000001`). It MUST stay the same across reboots and firmware updates.
 
 ### 4.2 `proxy_key`
 

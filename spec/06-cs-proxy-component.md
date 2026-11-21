@@ -1,7 +1,7 @@
 # 06 - `cs_proxy` ESPHome Component
 
 Status: Draft
-Version: 1.0-draft.2
+Version: 1.0-draft.3
 
 This document specifies `cs_proxy`, the ESPHome external component that turns a
 node with a LoRa radio into a ConnectSensors proxy. It covers configuration,
@@ -31,7 +31,7 @@ proxy* (09 section 5.2, and section 3.4 below).
 | Framework | ESP-IDF or Arduino, as supported by the radio component |
 | Network | Wi-Fi or Ethernet, on the same LAN as the server for UDP |
 | Radio | Exactly one `sx126x` or `sx127x` component in LoRa mode |
-| ESPHome | A release whose radio component provides `register_listener` and `start_transmit_async`. Both are in ESPHome's development branch as of November 2026; the minimum release is to be confirmed. |
+| ESPHome | 2026.11.0 or later: the radio components provide `register_listener` and a blocking `transmit_packet`. ESPHome's development branch adds `start_transmit_async`, which a later version of the component can use. |
 
 The radio MUST be configured with `rx_start: true` (the default), so it returns
 to receive after every transmission.
@@ -164,9 +164,12 @@ healthy, but a slow component elsewhere can delay it.
 - `rx_time_us` MUST be taken from the ESP's monotonic microsecond clock
   (`esp_timer_get_time()`) at the start of the listener callback.
 - The component runs its own `loop()` every main-loop pass and records the time
-  of each pass. When a packet arrives, if more than 20 ms have passed since the
+  of each pass. When a packet arrives, if more than the main-loop interval
+  (`App.get_loop_interval()`, normally 16 ms) plus 20 ms has passed since the
   component's previous pass, the main loop was stalled and the packet may have
-  waited. The component MUST then set `TS_UNCERTAIN` in the `UPLINK`.
+  waited. The component MUST then set `TS_UNCERTAIN` in the `UPLINK`. The loop
+  interval is allowed for because an idle main loop sleeps between passes; the
+  radio interrupt wakes it, so sleeping does not delay packet delivery.
 - The component tracks the longest gap between its own loop passes and reports it
   in `HELLO` as `max_loop_gap_ms`, then resets it.
 - If `max_loop_gap_ms` for the last interval exceeded 100 ms, the component MUST
@@ -193,13 +196,16 @@ Rejections are reported immediately with `TX_RESULT`.
 
 ### 8.2 Transmitting
 
-- A one-shot high-resolution timer (`esp_timer`) fires at `tx_at`. Its callback
-  only wakes the main loop (`enable_loop_soon_any_context()`); the transmission
-  itself starts from the main loop.
-- In the main loop, the component calls the radio's `start_transmit_async` if the
-  current time is in `[tx_at, tx_at + 100 ms]`.
-- If the radio answers `BUSY` (a received packet is waiting), the component
-  retries on the next loop pass until `tx_at + 100 ms`, then reports `BUSY`.
+- A one-shot high-resolution timer (`esp_timer`) fires 2 ms before `tx_at`. Its
+  callback only wakes the main loop (`enable_loop_soon_any_context()`); the main
+  loop waits out the last 2 ms and starts the transmission itself.
+- The component transmits if the current time is in `[tx_at, tx_at + 100 ms]`.
+  With ESPHome releases up to 2026.11 this uses the radio's blocking
+  `transmit_packet`, which holds the main loop for the frame's airtime (about 60
+  to 125 ms on US915), as ESPHome's own `packet_transport` does. With
+  `start_transmit_async`, a radio answer of `BUSY` (a received packet is
+  waiting) is retried on the next loop pass until `tx_at + 100 ms`, then
+  reported as `BUSY`.
 - If the window has passed, it reports `TOO_LATE` and does not transmit.
 - On transmit completion it reports `SENT` with `offset_us` = actual start time
   minus `tx_at`, and adds the airtime to the budget. On a radio error it reports
