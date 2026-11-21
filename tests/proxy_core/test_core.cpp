@@ -2,11 +2,13 @@
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "cs_sha256.h"
 #include "proxy_core.h"
+#include "proxy_engine.h"
 #include "vectors.inc"
 
 using namespace esphome::cs_proxy;
@@ -361,6 +363,580 @@ static void test_eui64() {
   CHECK(hex(out, 8) == PROXY_ID_HEX);
 }
 
+// ---------------------------------------------------------------- engine (06 sections 5-9)
+
+static uint32_t rd32(const uint8_t *p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
+
+// Clock, radio, socket and entities for one ProxyEngine, plus the server's side of
+// the envelope. Time only moves when a test says so.
+struct FakeIo : ProxyIo {
+  uint64_t t = 1000000000;
+  uint64_t loop_interval = 16000;
+  bool server = true;
+  bool network = true;
+  std::vector<std::vector<uint8_t>> datagrams;
+  struct Tx {
+    std::vector<uint8_t> frame;
+    uint32_t timeout_ms;
+    uint64_t at;
+  };
+  std::vector<Tx> transmits;
+  std::vector<uint8_t> radio_answers;  // consumed per start_transmit; TX_SENT once empty
+  uint64_t start_cost_us = 0;          // clock advance inside start_transmit
+  uint64_t timer = 0;
+  int loop_requests = 0;
+  int rediscovers = 0;
+  std::vector<bool> connected_events;
+  std::vector<uint16_t> hello_gaps;
+
+  uint64_t now_us() override { return t; }
+  void wait_until(uint64_t at) override {
+    if (t < at)
+      t = at;
+  }
+  uint64_t loop_interval_us() override { return loop_interval; }
+  bool server_known() override { return server; }
+  bool network_up() override { return network; }
+  void send_datagram(const uint8_t *data, size_t len) override { datagrams.emplace_back(data, data + len); }
+  void rediscover() override {
+    rediscovers++;
+    server = false;
+  }
+  uint8_t start_transmit(const uint8_t *frame, size_t len, uint32_t timeout_ms) override {
+    uint8_t answer = TX_SENT;
+    if (!radio_answers.empty()) {
+      answer = radio_answers.front();
+      radio_answers.erase(radio_answers.begin());
+    }
+    if (answer == TX_SENT) {
+      t += start_cost_us;
+      transmits.push_back({std::vector<uint8_t>(frame, frame + len), timeout_ms, t});
+    }
+    return answer;
+  }
+  void arm_timer(uint64_t wake_us) override { timer = wake_us; }
+  void request_loop() override { loop_requests++; }
+  void on_connected(bool c) override { connected_events.push_back(c); }
+  void on_hello(uint16_t gap_ms) override { hello_gaps.push_back(gap_ms); }
+};
+
+struct Sent {
+  uint8_t type;
+  uint32_t seq;
+  std::vector<uint8_t> body;
+};
+
+struct Rig {
+  static constexpr uint32_t BOOT = 0x0B007001;
+  FakeIo io;
+  ProxyConfig cfg;
+  std::unique_ptr<ProxyEngine> engine;
+  std::unique_ptr<EnvelopeCodec> server;
+  uint32_t server_seq = 0;
+  size_t read_pos = 0;
+
+  explicit Rig(void (*tweak)(ProxyConfig &) = nullptr) {
+    auto key = unhex(PROXY_KEY_HEX);
+    auto pid = unhex(PROXY_ID_HEX);
+    std::memcpy(cfg.key, key.data(), 16);
+    std::memcpy(cfg.proxy_id, pid.data(), 8);
+    cfg.boot_id = BOOT;
+    cfg.region = "US915";
+    cfg.frequency_hz = 918500000;
+    cfg.sf = 9;
+    cfg.bw_hz = 500000;
+    cfg.firmware = "cs_proxy test";
+    if (tweak != nullptr)
+      tweak(cfg);
+    engine = std::make_unique<ProxyEngine>(cfg, io);
+    server = std::make_unique<EnvelopeCodec>(cfg.key, cfg.proxy_id);
+  }
+
+  // One healthy main-loop pass, delivering any datagrams in between.
+  void loop(const std::vector<std::vector<uint8_t>> &in = {}) {
+    uint64_t now = engine->loop_start();
+    for (const auto &d : in)
+      engine->on_datagram(d.data(), d.size(), now);
+    engine->loop_end();
+  }
+  // Healthy loop passes every 16 ms until t.
+  void run_until(uint64_t until) {
+    while (io.t + io.loop_interval <= until) {
+      io.t += io.loop_interval;
+      loop();
+    }
+    if (io.t < until) {
+      io.t = until;
+      loop();
+    }
+  }
+
+  std::vector<uint8_t> msg(uint8_t type, const std::vector<uint8_t> &body, uint32_t boot = BOOT) {
+    return server->build(type, boot, ++server_seq, body);
+  }
+  std::vector<uint8_t> status() {
+    ByteWriter w;
+    w.u32(1795226400);
+    w.u8(1);
+    w.u32(0x61d306d3);
+    return msg(MSG_SERVER_STATUS, w.buf);
+  }
+  static std::vector<uint8_t> downlink_body(uint64_t ref, uint32_t offset, const std::vector<uint8_t> &f) {
+    ByteWriter w;
+    w.u64(ref);
+    w.u32(offset);
+    w.u8(uint8_t(f.size()));
+    w.bytes(f.data(), f.size());
+    return w.buf;
+  }
+  std::vector<uint8_t> downlink(uint64_t ref, uint32_t offset, const std::vector<uint8_t> &f) {
+    return msg(MSG_DOWNLINK, downlink_body(ref, offset, f));
+  }
+
+  // Messages the proxy sent since the last call, opened with the server's codec.
+  std::vector<Sent> take() {
+    std::vector<Sent> out;
+    for (; read_pos < io.datagrams.size(); read_pos++) {
+      const auto &d = io.datagrams[read_pos];
+      Envelope e{};
+      bool ok = server->open(d.data(), d.size(), e);
+      CHECK(ok);
+      CHECK(e.boot_id == BOOT);
+      if (ok)
+        out.push_back({e.type, e.seq, std::vector<uint8_t>(e.body, e.body + e.body_len)});
+    }
+    return out;
+  }
+  std::vector<Sent> take(uint8_t type) {
+    std::vector<Sent> out;
+    for (auto &m : take()) {
+      if (m.type == type)
+        out.push_back(m);
+    }
+    return out;
+  }
+
+  void hear(const std::vector<uint8_t> &f, float rssi = -90, float snr = 5) {
+    engine->on_packet(f.data(), f.size(), rssi, snr);
+  }
+};
+
+struct TxRes {
+  uint32_t seq;
+  uint8_t result;
+  int32_t offset_us;
+};
+static TxRes tx_res(const Sent &m) {
+  return {rd32(m.body.data()), m.body[4], int32_t(rd32(m.body.data() + 5))};
+}
+
+// Conformance items 1 and 3, the counters and the uplink layout.
+static void test_engine_forwarding() {
+  Rig r;
+  r.loop();
+  r.take();  // HELLO
+  int uplinks = 0;
+  for (const auto &v : FRAME_VECTORS) {
+    auto f = unhex(v.hex);
+    r.io.t += 1000;
+    r.hear(f, -97.5f, 6.3f);
+    auto out = r.take();
+    if (v.type >= 8) {
+      CHECK(out.empty());
+      continue;
+    }
+    uplinks++;
+    CHECK(out.size() == 1 && out[0].type == MSG_UPLINK);
+    if (out.size() == 1)
+      CHECK(hex(out[0].body) == hex(uplink_body(r.io.t, -97.5f, 6.3f, 0, f.data(), f.size())));
+  }
+  const int downlinks = int(sizeof(FRAME_VECTORS) / sizeof(FRAME_VECTORS[0])) - uplinks;
+  CHECK(uplinks > 0 && downlinks > 0);
+
+  // Item 3: wrong magic, wrong version, type 0, too short, too long.
+  auto good = frame("data_confirmed");
+  std::vector<std::vector<uint8_t>> bad(5, good);
+  bad[0][0] = 0xC4;
+  bad[1][1] = 0x21;
+  bad[2][1] = 0x10;
+  bad[3].resize(FRAME_MIN - 1);
+  bad[4].resize(FRAME_MAX + 1);
+  for (auto &b : bad)
+    r.hear(b);
+  CHECK(r.take().empty());
+
+  const ProxyCounters &c = r.engine->counters();
+  CHECK(c.heard == uint32_t(uplinks + downlinks + 5));
+  CHECK(c.forwarded == uint32_t(uplinks));
+  CHECK(c.invalid == uint32_t(downlinks + 5));
+  CHECK(c.duplicates == 0 && c.rate_limited == 0);
+
+  // The next HELLO carries those counters.
+  r.run_until(r.io.t + HELLO_INTERVAL_US);
+  auto hello = r.take(MSG_HELLO);
+  CHECK(hello.size() == 1);
+  if (hello.size() == 1) {
+    const uint8_t *p = hello[0].body.data() + 2 + 5 + 4 + 1 + 2 + 4;
+    CHECK(rd32(p) == c.heard && rd32(p + 4) == c.forwarded && rd32(p + 12) == c.invalid);
+  }
+}
+
+// Conformance items 2 and 9, plus the rate limit counter.
+static void test_engine_dedupe_and_offline() {
+  Rig r;
+  r.loop();
+  r.take();
+  auto f = frame("data_confirmed");
+  const uint64_t t0 = r.io.t;
+  r.hear(f);
+  r.io.t = t0 + 1500000;
+  r.hear(f);  // inside the 2 s window
+  CHECK(r.take(MSG_UPLINK).size() == 1);
+  CHECK(r.engine->counters().duplicates == 1);
+  r.io.t = t0 + SENSOR_FIRST_RETRY_US;  // a sensor's earliest retry
+  r.hear(f);
+  CHECK(r.take(MSG_UPLINK).size() == 1);
+
+  // Offline: not forwarded, not counted as a duplicate, and the frame does not
+  // block itself once the server is back.
+  auto g = frame("heartbeat");
+  r.io.network = false;
+  r.hear(g);
+  r.io.network = true;
+  r.io.server = false;
+  r.hear(g);
+  CHECK(r.take().empty());
+  r.io.server = true;
+  r.io.t += 100000;
+  r.hear(g);
+  CHECK(r.take(MSG_UPLINK).size() == 1);
+  const ProxyCounters &c = r.engine->counters();
+  CHECK(c.heard == 6 && c.forwarded == 3 && c.duplicates == 1 && c.invalid == 0);
+
+  // Per-device burst of 5: distinct frames from one device, the sixth is limited.
+  Rig q;
+  auto base = frame("data_confirmed");
+  for (int i = 0; i < 6; i++) {
+    auto x = base;
+    x[13] = uint8_t(0x40 + i);  // fcnt low byte: a different frame each time
+    q.hear(x);
+  }
+  CHECK(q.engine->counters().forwarded == 5 && q.engine->counters().rate_limited == 1);
+}
+
+static void test_engine_ts_uncertain() {
+  Rig r;
+  auto f = frame("data_confirmed");
+  auto g = frame("heartbeat");
+  r.loop();
+  r.take();
+  // Just inside loop interval + 20 ms: certain.
+  r.io.t += r.io.loop_interval + TS_UNCERTAIN_EXTRA_US;
+  r.hear(f);
+  auto up = r.take(MSG_UPLINK);
+  CHECK(up.size() == 1 && up[0].body[12] == 0);
+  // One microsecond more: the main loop was stalled.
+  r.loop();
+  r.io.t += r.io.loop_interval + TS_UNCERTAIN_EXTRA_US + 1;
+  r.hear(g);
+  up = r.take(MSG_UPLINK);
+  CHECK(up.size() == 1 && up[0].body[12] == UPLINK_TS_UNCERTAIN);
+  // A longer configured loop interval moves the threshold with it.
+  r.io.loop_interval = 50000;
+  r.loop();
+  r.io.t += 60000;
+  auto h = frame("sync_after_reboot");
+  r.hear(h);
+  up = r.take(MSG_UPLINK);
+  CHECK(up.size() == 1 && up[0].body[12] == 0);
+}
+
+static uint8_t hello_caps(Rig &r) {
+  auto hello = r.take(MSG_HELLO);
+  CHECK(hello.size() == 1);
+  return hello.empty() ? 0xFF : hello[0].body[0];
+}
+
+static void test_engine_hello_and_capability() {
+  Rig r;
+  // No HELLO before the server address is known or while the network is down.
+  r.io.server = false;
+  r.loop();
+  r.io.server = true;
+  r.io.network = false;
+  r.loop();
+  CHECK(r.take().empty());
+  r.io.network = true;
+  const uint64_t first = r.io.t + 16000;
+  r.run_until(first);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+  // Then every 60 s, not sooner.
+  r.run_until(first + HELLO_INTERVAL_US - 1);
+  CHECK(r.take(MSG_HELLO).empty());
+  r.run_until(first + HELLO_INTERVAL_US);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+  CHECK(r.io.hello_gaps.size() == 2 && r.io.hello_gaps[1] == 16);
+
+  // A stall over 100 ms: the next HELLO withdraws downlinks and reports the gap.
+  r.run_until(r.io.t + 30000000);
+  r.io.t += 150000;
+  r.loop();
+  r.run_until(first + 2 * HELLO_INTERVAL_US);
+  CHECK(hello_caps(r) == 0);
+  CHECK(r.io.hello_gaps.back() == 150);
+  CHECK(r.engine->degraded());
+
+  // While withdrawn, a DOWNLINK is refused as NOT_CAPABLE.
+  r.loop({r.downlink(r.io.t, 1000000, frame("downlink_ack"))});
+  auto res = r.take(MSG_TX_RESULT);
+  CHECK(res.size() == 1 && tx_res(res[0]).result == TX_NOT_CAPABLE);
+
+  // A healthy interval brings the capability back. Exactly 100 ms is still healthy.
+  r.run_until(r.io.t + 20000000);
+  r.io.t += DEGRADED_GAP_US;
+  r.loop();
+  r.run_until(first + 3 * HELLO_INTERVAL_US);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+  CHECK(!r.engine->degraded());
+
+  // downlink: false never advertises the capability.
+  Rig off([](ProxyConfig &c) { c.downlink_enabled = false; });
+  off.loop();
+  CHECK(hello_caps(off) == 0);
+}
+
+static void test_engine_connection() {
+  Rig r;
+  r.loop();
+  CHECK(!r.engine->connected());
+  r.loop({r.status()});
+  CHECK(r.engine->connected() && r.engine->server_tags().size() == 1);
+  CHECK(r.io.connected_events.size() == 1 && r.io.connected_events[0]);
+  const uint64_t last = r.io.t;
+  // Still connected at exactly 180 s; disconnected just after.
+  r.run_until(last + CONNECT_TIMEOUT_US);
+  CHECK(r.engine->connected());
+  r.run_until(last + CONNECT_TIMEOUT_US + 1);
+  CHECK(!r.engine->connected());
+  CHECK(r.io.connected_events.back() == false);
+  // Disconnected: frames are still forwarded to the configured address.
+  r.take();
+  r.hear(frame("data_confirmed"));
+  CHECK(r.take(MSG_UPLINK).size() == 1);
+  // Five more minutes without a SERVER_STATUS: resolve the address again.
+  const uint64_t lost = r.io.t;
+  r.run_until(lost + REDISCOVER_AFTER_US);
+  CHECK(r.io.rediscovers == 0);
+  r.run_until(lost + REDISCOVER_AFTER_US + 16000);
+  CHECK(r.io.rediscovers == 1);
+  // A SERVER_STATUS reconnects.
+  r.io.server = true;
+  r.loop({r.status()});
+  CHECK(r.engine->connected());
+}
+
+// Conformance item 5 and the other envelope paths.
+static void test_engine_envelope_checks() {
+  Rig r;
+  r.loop({r.status()});
+  r.take();
+  auto f = frame("downlink_ack");
+  const uint64_t ref = r.io.t;
+
+  auto bad_mac = r.downlink(ref, 1000000, f);
+  bad_mac[bad_mac.size() - 1] ^= 1;
+  auto wrong_boot = r.msg(MSG_DOWNLINK, Rig::downlink_body(ref, 1000000, f), Rig::BOOT ^ 1);
+  auto uplink_type = r.downlink(ref, 1000000, frame("data_confirmed"));
+  auto good = r.downlink(ref, 1000000, f);
+  auto replay = good;
+  // A message type the proxy sends, and one it does not know.
+  auto own_type = r.msg(MSG_HELLO, {});
+  auto unknown = r.msg(0x8F, {1, 2, 3});
+  ByteWriter w;
+  w.u32(1);
+  w.u8(3);  // three tags promised, none present
+  auto bad_status = r.msg(MSG_SERVER_STATUS, w.buf);
+  // An older seq than one already accepted.
+  auto stale = r.server->build(MSG_DOWNLINK, Rig::BOOT, 1, Rig::downlink_body(ref, 1000000, f));
+  r.loop({bad_mac, wrong_boot, uplink_type, good, replay, own_type, unknown, bad_status, stale});
+
+  auto out = r.take();
+  // Only the uplink-type frame draws a TX_RESULT (INVALID); the rest are dropped silently.
+  CHECK(out.size() == 1 && out[0].type == MSG_TX_RESULT);
+  if (!out.empty()) {
+    TxRes x = tx_res(out[0]);
+    CHECK(x.result == TX_INVALID && x.offset_us == 0);
+  }
+  // The good one is transmitted once, the replay is not.
+  r.run_until(ref + 1000000);
+  CHECK(r.io.transmits.size() == 1);
+  r.engine->on_transmit_complete(true);
+  out = r.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_SENT);
+  CHECK(r.engine->counters().tx_ok == 1 && r.engine->counters().tx_failed == 1);
+
+  // A DOWNLINK body that does not parse: INVALID.
+  r.loop({r.msg(MSG_DOWNLINK, {1, 2, 3})});
+  out = r.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_INVALID && tx_res(out[0]).seq == r.server_seq);
+}
+
+// Conformance item 6: the frame goes out on time and offset_us says how late.
+static void test_engine_rx1_offset() {
+  Rig r;
+  r.loop({r.status()});
+  r.take();
+  auto f = frame("downlink_ack");
+  const uint64_t ref = r.io.t - 300000;  // the uplink was heard 300 ms ago
+  const uint64_t tx_at = ref + 1000000;
+  r.loop({r.downlink(ref, 1000000, f)});
+  CHECK(r.take().empty());
+  CHECK(r.io.timer == tx_at - TIMER_LEAD_US);
+  // The timer wakes the loop 2 ms early; the engine waits out the rest.
+  r.io.t = tx_at - TIMER_LEAD_US;
+  r.io.start_cost_us = 850;
+  r.loop();
+  CHECK(r.io.transmits.size() == 1);
+  if (!r.io.transmits.empty()) {
+    CHECK(hex(r.io.transmits[0].frame) == hex(f));
+    CHECK(r.io.transmits[0].at == tx_at + 850);
+    CHECK(r.io.transmits[0].timeout_ms == lora_airtime_us(f.size(), 9, 500000) / 1000 + 100);
+  }
+  CHECK(r.take().empty());  // nothing until the radio reports completion
+  r.io.t += 70000;
+  r.engine->on_transmit_complete(true);
+  auto out = r.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1);
+  if (!out.empty()) {
+    TxRes x = tx_res(out[0]);
+    CHECK(x.seq == r.server_seq && x.result == TX_SENT && x.offset_us == 850);
+    CHECK(x.offset_us >= 0 && x.offset_us <= 100000);
+  }
+  CHECK(r.io.loop_requests == 1);
+  CHECK(r.engine->airtime_used_us() == lora_airtime_us(f.size(), 9, 500000));
+  // A late completion call with nothing in flight is ignored.
+  r.engine->on_transmit_complete(true);
+  CHECK(r.take().empty() && r.engine->counters().tx_ok == 1);
+}
+
+// Conformance item 7.
+static void test_engine_duty_cycle() {
+  Rig r([](ProxyConfig &c) { c.budget_permille = 1; });  // 3.6 s per hour
+  r.loop({r.status()});
+  r.take();
+  auto f = frame("downlink_ack");
+  const uint32_t air = lora_airtime_us(f.size(), 9, 500000);
+  const uint32_t fit = 3600000 / air;
+  uint32_t sent = 0;
+  for (uint32_t i = 0; i <= fit; i++) {
+    r.loop({r.downlink(r.io.t, 500000, f)});
+    r.run_until(r.io.t + 500000);
+    r.engine->on_transmit_complete(true);
+    for (auto &m : r.take(MSG_TX_RESULT)) {
+      TxRes x = tx_res(m);
+      if (x.result == TX_SENT)
+        sent++;
+      else
+        CHECK(x.result == TX_DUTY_CYCLE && i == fit);
+    }
+  }
+  CHECK(sent == fit);
+  CHECK(r.engine->counters().tx_ok == fit && r.engine->counters().tx_failed == 1);
+}
+
+static void test_engine_busy_retry() {
+  Rig r;
+  r.loop({r.status()});
+  r.take();
+  auto f = frame("downlink_ack");
+  const uint64_t tx_at = r.io.t + 1000000;
+  r.loop({r.downlink(r.io.t, 1000000, f)});
+  // The radio stays BUSY: retried every pass until the window closes, then BUSY.
+  r.io.radio_answers.assign(100, TX_BUSY);
+  r.run_until(tx_at + TX_WINDOW_US);
+  CHECK(r.take(MSG_TX_RESULT).empty());
+  CHECK(r.io.radio_answers.size() < 100 - 5);  // several attempts inside the window
+  CHECK(r.io.timer <= r.io.t);                  // the timer keeps the loop coming back
+  r.run_until(tx_at + TX_WINDOW_US + 1);
+  auto out = r.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_BUSY);
+  CHECK(r.io.transmits.empty());
+
+  // BUSY once, then accepted inside the window: SENT with the later offset.
+  Rig q;
+  q.loop({q.status()});
+  q.take();
+  const uint64_t at = q.io.t + 1000000;
+  q.loop({q.downlink(q.io.t, 1000000, f)});
+  q.io.t = at;
+  q.io.radio_answers = {TX_BUSY};
+  q.loop();
+  CHECK(q.io.transmits.empty());
+  q.io.t = at + 16000;
+  q.loop();
+  CHECK(q.io.transmits.size() == 1);
+  q.engine->on_transmit_complete(true);
+  out = q.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_SENT && tx_res(out[0]).offset_us == 16000);
+
+  // Never attempted (the loop was stalled past the window): TOO_LATE, not BUSY.
+  Rig s;
+  s.loop({s.status()});
+  s.take();
+  const uint64_t when = s.io.t + 1000000;
+  s.loop({s.downlink(s.io.t, 1000000, f)});
+  s.io.t = when + TX_WINDOW_US + 1;
+  s.loop();
+  out = s.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_TOO_LATE);
+  CHECK(s.io.transmits.empty());
+}
+
+static void test_engine_in_flight_and_errors() {
+  auto f = frame("downlink_ack");
+  const uint32_t air = lora_airtime_us(f.size(), 9, 500000);
+  // Two downlinks as close as the schedule allows. The first stays in flight past the
+  // second's window, so the second is reported TOO_LATE once the radio is free.
+  Rig r;
+  r.loop({r.status()});
+  r.take();
+  const uint64_t ref = r.io.t;
+  const uint32_t gap = air + uint32_t(TX_WINDOW_US) + 1;
+  r.loop({r.downlink(ref, 1000000, f), r.downlink(ref, 1000000 + gap, f)});
+  CHECK(r.take().empty());
+  const uint32_t second = r.server_seq;
+  r.run_until(ref + 1000000);
+  CHECK(r.io.transmits.size() == 1);
+  r.run_until(ref + 1000000 + gap + TX_WINDOW_US + 1);
+  CHECK(r.io.transmits.size() == 1);  // one in flight at a time
+  CHECK(r.take().empty());
+  r.engine->on_transmit_complete(false);  // and it failed
+  auto out = r.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_RADIO_ERROR && tx_res(out[0]).offset_us == 0);
+  CHECK(r.engine->airtime_used_us() == 0);  // a failed transmission spends no budget
+  r.loop();
+  out = r.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).seq == second && tx_res(out[0]).result == TX_TOO_LATE);
+  CHECK(r.engine->counters().tx_failed == 2 && r.engine->counters().tx_ok == 0);
+
+  // The radio refuses outright: RADIO_ERROR at once, and the next downlink still goes.
+  Rig q;
+  q.loop({q.status()});
+  q.take();
+  const uint64_t base = q.io.t;
+  q.loop({q.downlink(base, 1000000, f), q.downlink(base, 2000000, f)});
+  q.io.radio_answers = {TX_RADIO_ERROR};
+  q.run_until(base + 1000000);
+  out = q.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_RADIO_ERROR);
+  CHECK(q.io.timer == base + 2000000 - TIMER_LEAD_US);
+  q.run_until(base + 2000000);
+  CHECK(q.io.transmits.size() == 1);
+  q.engine->on_transmit_complete(true);
+  out = q.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_SENT);
+}
+
 int main() {
   test_sha256();
   test_frames();
@@ -374,6 +950,16 @@ int main() {
   test_budget();
   test_scheduler();
   test_eui64();
+  test_engine_forwarding();
+  test_engine_dedupe_and_offline();
+  test_engine_ts_uncertain();
+  test_engine_hello_and_capability();
+  test_engine_connection();
+  test_engine_envelope_checks();
+  test_engine_rx1_offset();
+  test_engine_duty_cycle();
+  test_engine_busy_retry();
+  test_engine_in_flight_and_errors();
   std::printf("%d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;
 }
