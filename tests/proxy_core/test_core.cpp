@@ -207,6 +207,30 @@ static void test_dedupe() {
   CHECK(c.contains(5, 2000, W) && c.contains(2, 2000, W));
 }
 
+// A sensor's retry is the same bytes 4 s or more later (08 section 5); the
+// default window must merge near-simultaneous copies but forward the retry.
+static void test_dedupe_lets_retries_through() {
+  const uint64_t t0 = 10000000;
+  for (uint64_t w : {DEDUPE_WINDOW_DEFAULT_US, DEDUPE_WINDOW_MAX_US}) {
+    DedupeCache d(64);
+    d.insert(7, t0);
+    CHECK(d.contains(7, t0 + 200000, w));                  // an echo of the same transmission
+    CHECK(!d.contains(7, t0 + SENSOR_FIRST_RETRY_US, w));  // retry 1 at its earliest
+  }
+  // Walk the whole retry schedule as the pipeline does: look up, then insert if forwarded.
+  DedupeCache c(64);
+  const uint64_t retries[] = {0, 4000000, 12000000, 30000000};
+  int forwarded = 0;
+  for (uint64_t at : retries) {
+    if (!c.contains(7, t0 + at, DEDUPE_WINDOW_DEFAULT_US)) {
+      forwarded++;
+      c.insert(7, t0 + at);
+    }
+  }
+  CHECK(forwarded == 4);
+  CHECK(c.contains(7, t0 + 30000000 + 1999999, DEDUPE_WINDOW_DEFAULT_US));
+}
+
 static void test_rate_limits() {
   RateLimiter rl(20, 2, 5, 5);
   FrameHeader dev{2, 0x11111111, 0x22222222, 1};
@@ -343,6 +367,7 @@ int main() {
   test_envelope();
   test_seq_guard();
   test_dedupe();
+  test_dedupe_lets_retries_through();
   test_rate_limits();
   test_receive_pipeline();
   test_airtime();

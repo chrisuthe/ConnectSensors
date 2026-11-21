@@ -4,7 +4,8 @@
 Not the real network server. It speaks the proxy envelope (spec 05) to any
 number of proxies sharing one key, prints what they hear, decrypts frames from
 the test-vector device (spec/vectors/frame-v1.json), and with --ack answers
-confirmed uplinks from that device with a real downlink in RX1.
+confirmed uplinks from that device with a real downlink in RX1. Copies of one
+transmission are answered once; a sensor's retry is answered again (07 section 4).
 
     python3 devtools/cs_testserver.py                 # prints a fresh key
     python3 devtools/cs_testserver.py --key 5a5a...   # use a key you already set
@@ -54,6 +55,7 @@ class TestDevice:
         self.session = cs.keys_from(bytes.fromhex(v["derived"]["k_session"]), self.dev_eui)
         self.k_net_route = bytes.fromhex(v["derived"]["k_net_route"])
         self.fcnt_down = 1000  # above every downlink counter used in the vectors
+        self.uplinks = cs.UplinkCollector(0)
 
     def net_tags(self, now: int) -> list[bytes]:
         e = cs.epoch_of(now)
@@ -176,8 +178,12 @@ def main() -> int:
                 log(line + " (not the test device)")
                 continue
             keyset, keys, h, pt = opened
-            log(line + f" test device ({keyset} keys): {describe_payload(h.ftype, pt)}")
-            if args.ack and h.ftype in CONFIRMED:
+            got = device.uplinks.receive(frame, int(time.monotonic() * 1000))
+            if got["result"] == "copy":
+                log(line + " test device: copy of the same transmission")
+                continue
+            log(line + f" test device ({keyset} keys, {got['counter']}): {describe_payload(h.ftype, pt)}")
+            if args.ack and h.ftype in CONFIRMED and got["answer"]:
                 device.fcnt_down += 1
                 dl_pt = cs.downlink_payload(h.fcnt, now, 0)
                 dl = cs.seal(keys, cs.T_DOWNLINK, h.net_tag, h.dev_tag, device.fcnt_down, dl_pt)

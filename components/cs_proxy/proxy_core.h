@@ -42,6 +42,13 @@ uint64_t frame_key(const uint8_t *data, size_t len);
 
 // ---------------------------------------------------------------- dedupe (06 section 6)
 
+// The window only merges copies of one transmission; it must stay below the
+// sensor's earliest retry (08 section 5) so retransmissions are forwarded.
+static constexpr uint64_t DEDUPE_WINDOW_DEFAULT_US = 2000000;
+static constexpr uint64_t DEDUPE_WINDOW_MAX_US = 3000000;
+static constexpr uint64_t SENSOR_FIRST_RETRY_US = 4000000;
+static_assert(DEDUPE_WINDOW_MAX_US < SENSOR_FIRST_RETRY_US, "dedupe would swallow sensor retries");
+
 class DedupeCache {
  public:
   explicit DedupeCache(size_t capacity) : entries_(capacity) {}

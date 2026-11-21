@@ -202,7 +202,12 @@ which is harmless.
 
 A confirmed uplink that is not answered is retransmitted as exactly the same
 bytes: same `fcnt`, same tags, same ciphertext. It is not a new frame and does not
-use a new counter value.
+use a new counter value, but it is a new transmission: the first retry comes at
+least 4 seconds after the original (08 section 5). Proxies and the server
+therefore tell transmissions apart by time, not by bytes: copies received within
+2 seconds of a transmission's first copy are that transmission, and a later copy
+is a retransmission that MUST reach the server and be answered again (section
+8.5).
 
 ### 8.4 Downlink counter
 
@@ -223,7 +228,8 @@ counter, and a record of which of the 16 counter values below it were received.
 - `last_fcnt - 16 < fcnt <= last_fcnt` and not yet received: accept (late
   arrival).
 - Otherwise: treat as a duplicate or replay. Do not deliver it again. If it is a
-  confirmed type, the server MAY answer it again so a sensor that missed the
+  retransmission (section 8.3) of a confirmed type, the server MUST answer it
+  again, within the limits of 07 section 4, step 5, so a sensor that missed the
   first answer stops retrying.
 
 A frame is accepted only after its MIC verifies.
@@ -364,7 +370,8 @@ A proxy has no keys. For each received LoRa packet it MUST:
 2. Discard it if its type is `0x0` or a downlink type (`0x8`-`0xF`). Proxies hear
    each other's downlinks and MUST NOT forward them.
 3. Discard it if the exact same bytes were forwarded within the deduplication
-   window (RECOMMENDED 30 s).
+   window (RECOMMENDED 2 s). The window MUST be shorter than 4 seconds, so a
+   retransmission (section 8.3) is always forwarded.
 4. Forward it unchanged, with reception metadata, as defined in 05 (Proxy
    envelope).
 

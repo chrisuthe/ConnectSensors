@@ -69,7 +69,7 @@ A complete board example is in section 13.
 | `proxy_id` | 16 hex digits | from MAC | Override only when the MAC is not stable |
 | `downlink.enabled` | bool | `true` | Accept `DOWNLINK` messages |
 | `downlink.airtime_budget` | percent | 2% | Transmit budget per rolling hour; MUST NOT exceed 2% (01 section 5) |
-| `dedupe_window` | time | 30 s | 5 s to 120 s |
+| `dedupe_window` | time | 2 s | 1 s to 3 s (section 6) |
 | `dedupe_cache_size` | int | 64 | 16 to 256 entries |
 | `rate_limit.global` | rate | 20/s | Token bucket, burst equal to the rate |
 | `rate_limit.per_device` | rate | 2/s | Per `dev_tag`, burst 5 |
@@ -153,6 +153,12 @@ block: UDP sends are non-blocking, and MQTT publishes are queued.
 
 - Dedupe key: the first 8 bytes of SHA-256 over the complete frame. The cache is
   a fixed-size table of `(key, time)`; when full, the oldest entry is replaced.
+- Dedupe only merges copies of one transmission, such as a packet the radio
+  delivers twice or an echo; it is not replay protection, which the server does
+  with counters (02 section 8.5) and the rate limits below bound. A sensor's
+  first retry comes at least 4 seconds after the original (08 section 5), so
+  `dedupe_window` is capped at 3 seconds and a retransmission is always
+  forwarded (02 section 8.3).
 - Rate limits are token buckets, refilled continuously. The per-device buckets are
   kept in a table of 32 entries keyed by `dev_tag`, least recently used replaced.
 - Frames dropped by rate limits are not inserted into the dedupe cache, so a
@@ -381,7 +387,9 @@ be run against a test server built from the reference tool:
 1. Every frame in `vectors/frame-v1.json` with an uplink type is forwarded
    unchanged; frames with a downlink type are not.
 2. A frame sent twice within `dedupe_window` is forwarded once; sent again after
-   the window, it is forwarded again.
+   the window, it is forwarded again. With the default window, a frame sent again
+   4 seconds after the first copy (a sensor's earliest retry, 08 section 5) is
+   forwarded again.
 3. Packets with a wrong magic byte, wrong version, type `0x0`, or a length outside
    23-86 bytes are counted as `invalid` and not forwarded.
 4. The `UPLINK`, `HELLO` and `TX_RESULT` messages it produces parse and pass the

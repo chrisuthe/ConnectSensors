@@ -128,8 +128,9 @@ component). Summary:
 - An ESPHome external component that registers as a listener on an existing
   `sx126x` or `sx127x` radio and never changes its configuration. Compile-time
   validation rejects radio settings that do not match the region profile.
-- Pipeline: keyless checks, dedupe on a hash of the frame bytes, token-bucket
-  rate limits, then an `UPLINK` message to the server.
+- Pipeline: keyless checks, dedupe on a hash of the frame bytes within 2 s (so
+  sensor retries still get through), token-bucket rate limits, then an `UPLINK`
+  message to the server.
 - Messages to and from the server use one binary envelope over UDP (port 47800)
   or MQTT, authenticated with a per-proxy key (HMAC-SHA256), with boot IDs and
   sequence numbers against replay.
@@ -166,8 +167,10 @@ Pairing is in [spec/04-pairing.md](../spec/04-pairing.md) and readings in
   identified by tag lookup (or trial decryption for bootstrap frames), counters
   are checked, readings applied once.
 - **Answers:** confirmed uplinks, queued commands and clock corrections get a
-  downlink. RX1 goes through the proxy with the best SNR among those with good
-  timing; failures fall back to RX2 through another proxy.
+  downlink. A sensor's retry of a confirmed uplink (4 s or more later) is a new
+  transmission and is answered again. RX1 goes through the proxy with the best
+  SNR among those with good timing; failures fall back to RX2 through another
+  proxy.
 - **Commands** are queued per device and resent until the sensor's next uplink
   acknowledges them.
 - **Supervision:** a device silent for three heartbeat intervals is unreachable

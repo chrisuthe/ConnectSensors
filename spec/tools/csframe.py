@@ -360,6 +360,48 @@ class UplinkCounter:
         return "too_old"
 
 
+MERGE_WINDOW_MS = 2000      # copies of one transmission (07 section 4, step 3)
+FRAME_MEMORY_MS = 60000     # covers the sensor's retry schedule (08 section 5)
+MAX_ANSWERS_AGAIN = 3       # one per sensor retry
+
+
+def frame_key(frame: bytes) -> bytes:
+    return hashlib.sha256(frame).digest()[:8]
+
+
+class UplinkCollector:
+    """Server grouping of copies into transmissions and answering of retransmissions
+    for one device (07 section 4, steps 3 and 5, and section 4.3)."""
+
+    def __init__(self, first: int):
+        self.counter = UplinkCounter(first)
+        self.frames = {}  # key -> [first transmission rx_ms, current transmission rx_ms, answered again]
+
+    def receive(self, frame: bytes, arrived_ms: int, age_ms: int = 0) -> dict:
+        rx = arrived_ms - age_ms  # a federated copy was received age_ms before its event arrived
+        self.frames = {k: v for k, v in self.frames.items() if rx - v[0] < FRAME_MEMORY_MS}
+        key = frame_key(frame)
+        f = self.frames.get(key)
+        if f is not None and rx - f[1] < MERGE_WINDOW_MS:
+            return {"result": "copy"}
+        h = parse_header(frame)
+        counter = self.counter.offer(h.fcnt)
+        if f is None:
+            # A duplicate of a frame no longer remembered is a replay: never answered again.
+            f = self.frames[key] = [rx, rx, MAX_ANSWERS_AGAIN if counter == "duplicate" else 0]
+        else:
+            f[1] = rx
+        # Whether an answer can still make RX2 is not modelled; every answer counts toward the cap.
+        answer = False
+        if h.ftype in (T_DATA_CONFIRMED, T_HEARTBEAT_CONFIRMED, T_JOIN, T_SYNC):
+            if counter in ("accept", "accept_late"):
+                answer = True
+            elif counter == "duplicate" and f[2] < MAX_ANSWERS_AGAIN:
+                f[2] += 1
+                answer = True
+        return {"result": "transmission", "counter": counter, "answer": answer}
+
+
 def unwrap(prev_raw: int, prev_total: int, raw: int, modulus: int) -> tuple[int, str]:
     """Counter unwrapping (03 section 6). Returns (new_total, how)."""
     if raw >= prev_raw:
@@ -644,7 +686,32 @@ def server_vectors() -> dict:
         unwrap_cases.append({"raw": r, "total": total, "how": how})
     return {"spec": "ConnectSensors network server rules (07)",
             "uplink_counter": {"first_accepted": 10, "window": REORDER_WINDOW, "sequence": fcnt_cases},
-            "counter16_unwrap": {"modulus": 65536, "sequence": unwrap_cases}}
+            "counter16_unwrap": {"modulus": 65536, "sequence": unwrap_cases},
+            "retransmission": retransmission_vectors()}
+
+
+def retransmission_vectors() -> dict:
+    """A confirmed uplink whose answers are lost, retried by the sensor (08 section 5)."""
+    frame = next(bytes.fromhex(f["frame"]) for f in frame_vectors()["frames"] if f["name"] == "data_confirmed")
+    steps = [
+        (0, 0, "proxy A", "original"),
+        (60, 0, "proxy B", "second proxy, same transmission"),
+        (1500, 1350, "relay", "neighbor's copy of the original"),
+        (2600, 2450, "relay", "late neighbor's copy: received at 150 ms by age_ms"),
+        (5000, 0, "proxy A", "retry 1: answered again"),
+        (5040, 0, "proxy B", "second proxy, retry 1"),
+        (13500, 0, "proxy A", "retry 2: answered again"),
+        (33000, 0, "proxy A", "retry 3: answered again"),
+        (33800, 700, "relay", "neighbor's copy of retry 3"),
+        (36000, 0, "proxy A", "replay: already answered again 3 times"),
+        (70000, 0, "proxy A", "replay after the frame is forgotten"),
+    ]
+    col = UplinkCollector(2)
+    seq = [{"arrived_ms": t, "age_ms": age, "via": via, "note": note, **col.receive(frame, t, age)}
+           for t, age, via, note in steps]
+    return {"merge_window_ms": MERGE_WINDOW_MS, "frame_memory_ms": FRAME_MEMORY_MS,
+            "max_answers_again": MAX_ANSWERS_AGAIN, "first_accepted": 2,
+            "frame": frame.hex(), "note": "data_confirmed from frame-v1.json (fcnt 3)", "sequence": seq}
 
 
 PUBLISHER_SK = bytes.fromhex("11" * 32)
@@ -762,6 +829,14 @@ def verify(d: str) -> int:
         ok = total == c["total"] and how == c["how"]
         print(f"{'ok  ' if ok else 'FAIL'} unwrap {c['raw']} -> {c['total']} ({c['how']})")
         bad += not ok
+    r = sv["retransmission"]
+    col = UplinkCollector(r["first_accepted"])
+    frame = bytes.fromhex(r["frame"])
+    for c in r["sequence"]:
+        got = col.receive(frame, c["arrived_ms"], c["age_ms"])
+        want = {k: c[k] for k in ("result", "counter", "answer") if k in c}
+        print(f"{'ok  ' if got == want else 'FAIL'} retransmission at {c['arrived_ms']} ms -> {want}")
+        bad += got != want
     with open(os.path.join(d, "federation-v1.json")) as f:
         fd = json.load(f)
     b = fd["bip340_check"]
