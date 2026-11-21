@@ -72,12 +72,24 @@ class TestDevice:
         return None
 
 
+def seq_seed() -> int:
+    """First server seq for a proxy boot, minus one.
+
+    Workaround for #4: the proxy keeps the last server seq per boot_id, so a restarted
+    server counting from 1 again is ignored until the proxy reboots. Seeding from the
+    clock keeps a restart above the old instance's values, as long as that instance
+    sent fewer messages to the proxy than seconds have passed since it started. This
+    departs from "starting at 1" in spec 05 section 3; the proxy only needs it to grow.
+    """
+    return int(time.time()) & 0xFFFFFFFF
+
+
 class Proxy:
     def __init__(self, proxy_id: bytes):
         self.proxy_id = proxy_id
         self.boot_id = None
         self.last_seq = 0
-        self.server_seq = 0
+        self.server_seq = seq_seed()
         self.addr = None
 
 
@@ -117,7 +129,7 @@ def main() -> int:
     log(f"Listening on UDP {args.port}; downlinks {'on (' + args.window + ')' if args.ack else 'off'}")
 
     def send(p: Proxy, msg_type: int, body: bytes) -> None:
-        p.server_seq += 1
+        p.server_seq = (p.server_seq + 1) & 0xFFFFFFFF
         sock.sendto(cs.envelope(key, msg_type, p.proxy_id, p.boot_id, p.server_seq, body), p.addr)
 
     while True:
@@ -131,7 +143,7 @@ def main() -> int:
         p = proxies.setdefault(pid, Proxy(pid))
         if m["type"] == cs.M_HELLO:
             if p.boot_id != m["boot_id"]:
-                p.boot_id, p.last_seq, p.server_seq = m["boot_id"], 0, 0
+                p.boot_id, p.last_seq, p.server_seq = m["boot_id"], 0, seq_seed()
         if m["boot_id"] != p.boot_id or m["seq"] <= p.last_seq:
             log(f"{pid.hex()}: ignored stale message seq {m['seq']}")
             continue
