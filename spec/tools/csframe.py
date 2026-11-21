@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Reference implementation of the ConnectSensors v1 encodings.
 
-Covers spec 02 (frame format), 03 (payload), 04 (pairing codes and key
-exchange), 05 (proxy envelope), the testable rules of 07 (network server) and
-09 (federation events, including a minimal BIP-340 implementation). This module is informative. Where it disagrees with the spec, the spec
+Covers spec 02 (frame format), 03 (payload), 04 (pairing codes, key exchange,
+root downlink counter and sensor floors), 05 (proxy envelope), the testable rules
+of 07 (network server) and 09 (federation events, including a minimal BIP-340 implementation). This module is informative. Where it disagrees with the spec, the spec
 wins and this file has a bug.
 
 Usage:
@@ -273,6 +273,87 @@ def qr_parse(code: str) -> dict:
     if not 1 <= len(parts[5]) <= 32:
         raise ValueError("bad profile id")
     return {"dev_eui": dev_eui.hex(), "k_root": k_root.hex(), "region": parts[4], "profile": parts[5]}
+
+
+JOIN_STALL_RETRANSMISSIONS = 3  # the sensor's last retry of a JOIN (08 section 5), answered and still repeated
+
+
+class JoinResponder:
+    """Server answers to JOIN for one device (02 section 8.4, 04 section 4.2, 07 section 5.1).
+
+    The root downlink counter is never reset, so no two KEY_EXCHANGE frames share a
+    root nonce. A retransmitted JOIN gets the cached frame back byte for byte and
+    leaves the pending k_session alone."""
+
+    def __init__(self, k_root: bytes, dev_eui: bytes, root_fcnt_down: int = 0):
+        self.k_root, self.dev_eui = k_root, dev_eui
+        self.root = keys_from(k_root, dev_eui)
+        self.root_fcnt_down = root_fcnt_down  # last value used; persisted, kept after removal
+        self.pending = None
+
+    def join(self, frame: bytes, server_priv: bytes | None, server_time: int | None) -> dict:
+        h, pt = open_frame(self.root, frame)
+        sensor_pub = pt[1:33]
+        p = self.pending
+        if p is not None and p["sensor_pub"] == sensor_pub:
+            p["retransmissions"] += 1
+            return {"action": "resend", "frame": p["frame"], "k_session": p["k_session"],
+                    "stalled": p["retransmissions"] >= JOIN_STALL_RETRANSMISSIONS}
+        self.root_fcnt_down += 1
+        server_pub = x25519_pub(server_priv)
+        k_session = derive_session(self.k_root, self.dev_eui, server_priv, sensor_pub, sensor_pub, server_pub)
+        dl = seal(self.root, T_DOWNLINK, ZERO_TAG, ZERO_TAG, self.root_fcnt_down,
+                  downlink_payload(h.fcnt, server_time, 0, command(CMD_KEY_EXCHANGE, server_pub)))
+        self.pending = {"sensor_pub": sensor_pub, "frame": dl, "k_session": k_session, "retransmissions": 0}
+        return {"action": "new_exchange", "frame": dl, "k_session": k_session, "stalled": False}
+
+    def paired(self) -> None:
+        """SET_NETWORK acknowledged: the pending exchange is done."""
+        self.pending = None
+
+
+class SensorPairing:
+    """Sensor side of JOIN and KEY_EXCHANGE (02 section 10.2, 04 sections 4.4 and 6.2)."""
+
+    def __init__(self, k_root: bytes, dev_eui: bytes):
+        self.k_root, self.dev_eui = k_root, dev_eui
+        self.root = keys_from(k_root, dev_eui)
+        self.root_floor = 0     # survives pairing, LEAVE and re-pairing
+        self.session_floor = 0  # per k_session
+        self.k_session = None
+        self.joining = None     # (JOIN fcnt, ephemeral private key)
+
+    def join(self, fcnt: int, priv: bytes) -> bytes:
+        self.joining = (fcnt, priv)
+        return seal(self.root, T_JOIN, ZERO_TAG, ZERO_TAG, fcnt, bytes([UF_TIME_UNSURE]) + x25519_pub(priv))
+
+    def downlink(self, frame: bytes) -> str:
+        if self.joining is None:
+            return "not_joining"
+        try:
+            h, pt = open_frame(self.root, frame)
+        except Exception:
+            return "bad_mic"
+        if struct.unpack(">I", pt[:4])[0] != self.joining[0]:
+            return "wrong_reply_to"
+        if h.fcnt <= self.root_floor:
+            return "at_or_below_root_floor"
+        cmd = pt[9:]
+        if len(cmd) < 34 or cmd[0] != CMD_KEY_EXCHANGE or cmd[1] != 32:
+            return "no_key_exchange"
+        server_pub, priv = cmd[2:34], self.joining[1]
+        self.root_floor = h.fcnt
+        self.k_session = derive_session(self.k_root, self.dev_eui, priv, server_pub, x25519_pub(priv), server_pub)
+        self.session_floor = 0
+        self.joining = None
+        return "accept"
+
+    def leave(self) -> None:
+        self.k_session = self.joining = None
+
+    def factory_reset(self) -> None:
+        self.root_floor = self.session_floor = 0
+        self.k_session = self.joining = None
 
 
 # ======================================================================== 05
@@ -719,12 +800,12 @@ def frame_vectors() -> dict:
                  "answer to JOIN: server ephemeral public key"),
             case("sync_after_exchange", "session", sess, T_SYNC, z, z, 2, bytes([UF_DL_ACK]),
                  "first frame under session keys; acknowledges KEY_EXCHANGE"),
-            case("downlink_set_network", "session", sess, T_DOWNLINK, z, z, 2,
+            case("downlink_set_network", "session", sess, T_DOWNLINK, z, z, 1,
                  downlink_payload(2, T0 + 3, 0, command(CMD_SET_NETWORK, route)),
-                 "answer to SYNC: network routing key"),
+                 "answer to SYNC: network routing key; first downlink under this k_session"),
             case("data_confirmed", "session", sess, T_DATA_CONFIRMED, nt, dt, 3,
                  bytes([UF_DL_ACK]) + contact_open, "door opened; acknowledges SET_NETWORK"),
-            case("downlink_ack", "session", sess, T_DOWNLINK, nt, dt, 3, downlink_payload(3, T0 + 60, 0),
+            case("downlink_ack", "session", sess, T_DOWNLINK, nt, dt, 2, downlink_payload(3, T0 + 60, 0),
                  "plain acknowledgement of fcnt 3"),
             case("heartbeat", "session", sess, T_HEARTBEAT, nt, dt, 4, bytes([0]) + contact_open + battery,
                  "heartbeat with current state and battery"),
@@ -764,7 +845,84 @@ def pairing_vectors() -> dict:
                   {"code": good.lower(), "parsed": qr_parse(good.lower()), "note": "lowercase input accepted"}],
         "invalid": [{"code": bad_check, "reason": "checksum mismatch"},
                     {"code": good.replace("CS:1:", "CS:2:", 1), "reason": "unsupported pairing code version"}],
+        "root_floor": root_floor_vectors(),
     }
+
+
+SENSOR_PRIVS = [bytes.fromhex(b * 32) for b in ("a2", "a3", "a4")]
+SERVER_PRIVS = [bytes.fromhex(b * 32) for b in ("b2", "b3")]
+
+
+def root_floor_vectors() -> dict:
+    """The sensor's root downlink floor across re-pairing, a rolled-back server and a factory reset."""
+    sensor = SensorPairing(K_ROOT, DEV_EUI)
+    server, rolled_back, new_owner = (JoinResponder(K_ROOT, DEV_EUI) for _ in range(3))
+    seq = []
+
+    def join(fcnt, priv, note):
+        seq.append({"event": "join", "fcnt": fcnt, "sensor_ephemeral_private": priv.hex(),
+                    "frame": sensor.join(fcnt, priv).hex(), "note": note})
+        return bytes.fromhex(seq[-1]["frame"])
+
+    def downlink(frame, note):
+        result = sensor.downlink(frame)
+        seq.append({"event": "downlink", "frame": frame.hex(), "note": note, "result": result,
+                    "root_floor": sensor.root_floor,
+                    "k_session": sensor.k_session.hex() if result == "accept" else None})
+
+    def other(event, note):
+        getattr(sensor, event)()
+        seq.append({"event": event, "note": note, "root_floor": sensor.root_floor})
+
+    j = join(1, SENSOR_PRIV, "first pairing; frame-v1.json join")
+    first = server.join(j, SERVER_PRIV, T0)["frame"]
+    downlink(first, "KEY_EXCHANGE, root fcnt_down 1; frame-v1.json downlink_key_exchange")
+    other("leave", "LEAVE: keys erased, root floor kept")
+    j = join(70, SENSOR_PRIVS[0], "paired again with the same server")
+    second = server.join(j, SERVER_PRIVS[0], T0 + 3600)["frame"]
+    downlink(second, "KEY_EXCHANGE, root fcnt_down 2: the server never resets its root counter")
+    other("leave", "LEAVE again")
+    j = join(75, SENSOR_PRIVS[1], "pairing with a server whose root counter rolled back")
+    downlink(rolled_back.join(j, SERVER_PRIVS[1], T0 + 7200)["frame"],
+             "KEY_EXCHANGE, root fcnt_down 1: at or below the floor, discarded")
+    downlink(second, "replayed KEY_EXCHANGE answering an older JOIN")
+    other("factory_reset", "factory reset: root floor back to 0")
+    j = join(140, SENSOR_PRIVS[2], "new owner pairs after the reset")
+    downlink(new_owner.join(j, SERVER_PRIVS[1], T0 + 86400)["frame"],
+             "KEY_EXCHANGE, root fcnt_down 1 from the new owner's server: accepted")
+    return {"note": "inputs from frame-v1.json; a sensor in JOINING checks each downlink (02 section 10.2)",
+            "sequence": seq}
+
+
+def join_vectors() -> dict:
+    """Server answers to JOIN for one device (07 section 5.1)."""
+    sensor = SensorPairing(K_ROOT, DEV_EUI)
+    join_a, join_b, join_c = (sensor.join(f, p) for f, p in
+                              ((1, SENSOR_PRIV), (2, SENSOR_PRIVS[0]), (66, SENSOR_PRIVS[1])))
+    steps = [
+        (join_a, SERVER_PRIV, T0, "first JOIN: new exchange (frame-v1.json downlink_key_exchange)"),
+        (join_a, None, None, "retry 1: the cached frame, byte for byte"),
+        (join_a, None, None, "retry 2"),
+        (join_a, None, None, "retry 3, the sensor's last: answered, and the exchange is reported stalled"),
+        (join_b, SERVER_PRIVS[0], T0 + 120, "button pressed again: new sensor_pub, next root value"),
+        (join_b, None, None, "retry 1 of the new JOIN: same frame, same k_session"),
+        (None, None, None, "SET_NETWORK acknowledged: device PAIRED"),
+        (join_c, SERVER_PRIVS[1], T0 + 86400, "re-paired a day later: the root counter continues"),
+    ]
+    srv = JoinResponder(K_ROOT, DEV_EUI)
+    seq = []
+    for frame, priv, t, note in steps:
+        if frame is None:
+            srv.paired()
+            seq.append({"event": "paired", "note": note})
+            continue
+        r = srv.join(frame, priv, t)
+        seq.append({"event": "join", "join": frame.hex(), "server_ephemeral_private": priv.hex() if priv else None,
+                    "server_time": t, "note": note, "action": r["action"],
+                    "root_fcnt_down": parse_header(r["frame"]).fcnt, "frame": r["frame"].hex(),
+                    "k_session": r["k_session"].hex(), "stalled": r["stalled"]})
+    return {"stall_retransmissions": JOIN_STALL_RETRANSMISSIONS, "root_fcnt_down_before": 0,
+            "note": "inputs from frame-v1.json", "sequence": seq}
 
 
 PROXY_KEY = bytes.fromhex("5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a")
@@ -926,7 +1084,8 @@ def server_vectors() -> dict:
     return {"spec": "ConnectSensors network server rules (07)",
             "uplink_counter": {"first_accepted": 10, "window": REORDER_WINDOW, "sequence": fcnt_cases},
             "counter16_unwrap": {"modulus": 65536, "sequence": unwrap_cases},
-            "retransmission": retransmission_vectors()}
+            "retransmission": retransmission_vectors(),
+            "join": join_vectors()}
 
 
 def retransmission_vectors() -> dict:
@@ -1037,6 +1196,27 @@ def verify(d: str) -> int:
             ok = str(ex) == c["reason"]
         print(f"{'ok  ' if ok else 'FAIL'} pairing invalid ({c['reason']})")
         bad += not ok
+    vframes = {c["name"]: c["frame"] for c in v["frames"]}
+    sensor = SensorPairing(k_root, eui)
+    for c in p["root_floor"]["sequence"]:
+        if c["event"] == "join":
+            ok = sensor.join(c["fcnt"], bytes.fromhex(c["sensor_ephemeral_private"])).hex() == c["frame"]
+            label = f"JOIN fcnt {c['fcnt']}"
+        elif c["event"] == "downlink":
+            got = sensor.downlink(bytes.fromhex(c["frame"]))
+            k = sensor.k_session.hex() if got == "accept" else None
+            ok = (got, sensor.root_floor, k) == (c["result"], c["root_floor"], c["k_session"])
+            label = f"downlink -> {c['result']}, floor {c['root_floor']}"
+        else:
+            getattr(sensor, c["event"])()
+            ok = sensor.root_floor == c["root_floor"]
+            label = f"{c['event']}, floor {c['root_floor']}"
+        print(f"{'ok  ' if ok else 'FAIL'} root floor {label}")
+        bad += not ok
+    rf = p["root_floor"]["sequence"]
+    ok = rf[0]["frame"] == vframes["join"] and rf[1]["frame"] == vframes["downlink_key_exchange"]
+    print(f"{'ok  ' if ok else 'FAIL'} root floor starts from the frame-v1 exchange")
+    bad += not ok
     with open(os.path.join(d, "proxy-envelope-v1.json")) as f:
         ev = json.load(f)
     key = bytes.fromhex(ev["inputs"]["proxy_key"])
@@ -1077,6 +1257,25 @@ def verify(d: str) -> int:
         want = {k: c[k] for k in ("result", "counter", "answer") if k in c}
         print(f"{'ok  ' if got == want else 'FAIL'} retransmission at {c['arrived_ms']} ms -> {want}")
         bad += got != want
+    jv = sv["join"]
+    srv = JoinResponder(k_root, eui, jv["root_fcnt_down_before"])
+    sent = {}  # root fcnt_down -> plaintext: no two plaintexts may share a root nonce
+    for c in jv["sequence"]:
+        if c["event"] == "paired":
+            srv.paired()
+            continue
+        priv = c["server_ephemeral_private"]
+        r = srv.join(bytes.fromhex(c["join"]), bytes.fromhex(priv) if priv else None, c["server_time"])
+        got = (r["action"], parse_header(r["frame"]).fcnt, r["frame"].hex(), r["k_session"].hex(), r["stalled"])
+        ok = got == (c["action"], c["root_fcnt_down"], c["frame"], c["k_session"], c["stalled"])
+        _, pt = open_frame(sets["root"], r["frame"])
+        ok = ok and sent.setdefault(c["root_fcnt_down"], pt) == pt
+        print(f"{'ok  ' if ok else 'FAIL'} join -> {c['action']}, root fcnt_down {c['root_fcnt_down']}"
+              f"{', stalled' if c['stalled'] else ''}")
+        bad += not ok
+    ok = jv["sequence"][0]["frame"] == vframes["downlink_key_exchange"]
+    print(f"{'ok  ' if ok else 'FAIL'} join starts from the frame-v1 exchange")
+    bad += not ok
     with open(os.path.join(d, "federation-v1.json")) as f:
         fd = json.load(f)
     b = fd["bip340_check"]

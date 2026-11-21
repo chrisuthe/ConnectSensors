@@ -113,6 +113,10 @@ Summary:
   factory reset. Retransmissions are identical bytes.
 - Every downlink carries `reply_to` (the uplink it answers), `server_time` and
   TLV commands, which prevents downlink replay and keeps sensor clocks set.
+- Downlink counters are per key. The root counter, used only for `KEY_EXCHANGE`,
+  never resets, so one server never reuses a root nonce; a sensor clears its root
+  floor only on a factory reset (hold the button 10 s), which a change of owner
+  requires.
 - Receive windows RX1 at 1 s and RX2 at 3 s, same channel and spreading factor.
 
 ---
@@ -261,7 +265,7 @@ lexicons in `spec/lexicons/`:
 | Relay operator traffic analysis | Ephemeral events; multiple independent relays; optional cover traffic |
 | Lost/compromised device key | Per-device keys; remove device and re-pair |
 | Compromised `K_net` | Rotate network key via `COMMAND(set_network)` to every device |
-| Nonce reuse after reset | Flash-persisted `fcnt` with jump-ahead |
+| Nonce reuse after reset | Flash-persisted `fcnt` with jump-ahead; root downlink counter never reset (spec 02 section 13.1) |
 
 ---
 

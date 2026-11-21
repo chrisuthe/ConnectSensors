@@ -40,7 +40,9 @@ A server MAY run several networks; each has its own keys. Most homes have one.
 | Pairing state | yes | 04 section 4.2 |
 | `k_session` and the derived key set | yes | |
 | `last_fcnt` and the late-arrival record | yes (section 10) | 02 section 8.5 |
-| `fcnt_down` reservation | yes | 02 section 8.4 |
+| Root downlink counter reservation | yes | 02 section 8.4. Never reset. Kept, keyed by `dev_eui`, after the device is removed or discarded |
+| Pending exchange | yes | 04 section 4.2: `sensor_pub`, the `KEY_EXCHANGE` frame, `k_session`, and the retransmission count of section 5.1 |
+| Session `fcnt_down` reservation | yes | 02 section 8.4. Starts at 1 for each new `k_session` |
 | Heartbeat interval | yes | From the profile or the last `SET_HEARTBEAT` |
 | Command queue | yes | Section 7 |
 | Last uplink time, last confirmed-uplink time | yes | Supervision, section 8 |
@@ -94,7 +96,7 @@ For each `UPLINK` message:
 4. **Identify.** Find the device:
    - normal tags: look up `(net_tag, dev_tag)` in the tag table and try each
      candidate's session key set until a MIC verifies (02 section 6.4);
-   - `JOIN`: try the root key set of each `SCANNED` device;
+   - `JOIN`: try the root key set of each `SCANNED` or `EXCHANGED` device;
    - `SYNC`: try the session key set of each `EXCHANGED` or `PAIRED` device.
 
    Bootstrap frames are limited to 50 per minute per server (02 section 11.3);
@@ -115,7 +117,8 @@ For each `UPLINK` message:
    - `DL_ACK`: mark the commands of the device's last downlink as delivered
      (section 7).
    - Readings: update states, unwrap counters, fire `button` events.
-   - `JOIN`, `SYNC`: advance the pairing state machine (04) as applicable.
+   - `JOIN`, `SYNC`: advance the pairing state machine (04) as applicable. A
+     `JOIN` is answered as in section 5.1.
    - Record the uplink time for supervision.
    - Note clock skew: if the frame's tags matched epoch `e - 1` or `e + 1` rather
      than `e`, and the frame arrived more than 5 minutes from an epoch boundary,
@@ -189,12 +192,49 @@ The downlink:
 |---|---|
 | Type | `DOWNLINK` |
 | `net_tag`, `dev_tag` | The same as the uplink it answers |
-| `fcnt` | Next `fcnt_down` |
+| `fcnt` | The next value of the key set's downlink counter: root or session (02 section 8.4) |
 | Key set | Root for an answer to `JOIN`, session otherwise |
 | `reply_to` | The uplink's `fcnt` |
 | `server_time` | Current Unix time, taken when the downlink is built |
 | `PENDING` | Set if commands remain queued after this downlink |
 | Commands | As many queued commands as fit in 55 bytes, in queue order |
+
+An answer to `JOIN` carries only `KEY_EXCHANGE` (02 section 11.1) and follows
+section 5.1.
+
+### 5.1 Answering `JOIN`
+
+- A `JOIN` with a new `sensor_pub` gets a new `KEY_EXCHANGE`, built with the next
+  value of the device's root downlink counter, which the server never resets (02
+  section 8.4). The server persists the counter reservation and the pending
+  exchange before sending it (04 section 4.6).
+- A `JOIN` with the pending exchange's `sensor_pub` is a retransmission. Within
+  the limits of section 4, step 5, the server answers it with the cached
+  `KEY_EXCHANGE`, byte for byte, and changes nothing else (04 section 4.2).
+
+So no two different `KEY_EXCHANGE` plaintexts are encrypted under one root nonce
+by one server.
+
+**Stalled exchange.** A sensor rejects a `KEY_EXCHANGE` whose root counter is not
+above its root floor, without any answer. That happens when the server's counter
+is behind the floor: the sensor was paired by another server and not factory
+reset, or this server lost its counter (reinstalled, or restored from a backup
+older than the last pairing). The server sees it as a `JOIN` that keeps being
+retransmitted although it was answered.
+
+- The server counts retransmissions of the pending exchange's `JOIN` that arrive
+  after at least one transmission of its `KEY_EXCHANGE` was reported `SENT` (05
+  section 5.5).
+- When the count reaches 3, the sensor's last retry (08 section 5), the exchange
+  has stalled. The server MUST then tell the user, in the pairing flow (section
+  11.1), to factory-reset the sensor and pair again, and SHOULD keep the device
+  `SCANNED` so that pressing the button again after the reset just works.
+- The same symptom comes from a sensor that cannot hear the proxies' downlinks,
+  so the prompt also suggests moving the sensor closer to a proxy.
+
+A new `JOIN` (new `sensor_pub`) starts the count again. Each button press uses
+the next root counter value, so a server only slightly behind the floor catches
+up after a few presses; the prompt covers the general case.
 
 ## 6. Choosing a proxy
 
@@ -231,7 +271,9 @@ RSSI, then the proxy with fewer recent failures.
 
 A downlink sent for RX2 after an RX1 failure is the same frame (same
 `fcnt_down`), so the sensor accepts at most one of the two. A downlink that
-answers a retransmitted uplink is a new frame with a new `fcnt_down`.
+answers a retransmitted uplink is a new frame with a new `fcnt_down`, except the
+answer to a retransmitted `JOIN`, which is the cached `KEY_EXCHANGE` frame
+(section 5.1).
 
 ## 7. Command queue
 
@@ -289,8 +331,12 @@ This history is diagnostic and is not persisted.
   any accepted frame and on clean shutdown. After a crash, a frame accepted in the
   last 10 seconds before the crash could be accepted a second time if an attacker
   replays it; this is an accepted risk.
-- `fcnt_down` uses the reservation scheme of 02 section 8.2, so downlink counters
-  never repeat.
+- The root and session downlink counters use the reservation scheme of 02
+  section 8.2, so downlink counters never repeat. The root counter of a device is
+  kept after the device is removed or discarded, so pairing it again continues
+  the counter (02 section 8.4).
+- The pending exchange MUST be persisted before its `KEY_EXCHANGE` is sent (04
+  section 4.6).
 - The command queue MUST be persisted whenever it changes.
 
 ## 11. Home Assistant integration
@@ -301,7 +347,7 @@ This history is diagnostic and is not persisted.
 |---|---|
 | Add the integration | Chooses the region profile. The integration creates the network and its `k_net`. |
 | Add a proxy | Gets a generated proxy key and a ready-to-paste `cs_proxy` YAML snippet (06). The proxy appears when its first `HELLO` arrives. |
-| Add a device | Scans or types a pairing code, gives the device a name and area, then presses the device's button (04). |
+| Add a device | Scans or types a pairing code, gives the device a name and area, then presses the device's button (04). The flow says that a second-hand device must be factory reset first (04 section 6.3). If the exchange stalls (section 5.1), the flow asks the user to hold the device's button for 10 seconds to factory-reset it and then press it again, or to move it closer to a proxy. |
 
 The integration listens for proxies on UDP port 47800 and advertises
 `_connectsensors._udp` by mDNS.
@@ -359,6 +405,8 @@ written to logs. Diagnostics downloads MUST redact keys.
 | CPU exhaustion with normal frames | Tag lookups are hash-table hits; at most a few MIC checks per frame |
 | Replay after restart | Section 10 |
 | Proxy sessions after restart | Not persisted. The proxy's next message draws a `HELLO_REQUEST`, and the proxy follows the server's new `seq` through the `SERVER_STATUS` echo (05 section 3.2). |
+| Replayed `JOIN` during pairing | Answered with the cached frame; `k_session` and the counters are unchanged (section 5.1) |
+| Root nonce reuse | The root downlink counter is never reset and is kept after removal (section 10). Reuse by a different server after a factory reset is accepted (02 section 13.1) |
 | Replaying a captured confirmed frame to draw downlinks | Proxies filter it only within `dedupe_window` (06 section 6); the server answers a frame again at most 3 times, within 60 s (section 4, step 5), and proxy airtime budgets cap the rest |
 | A malicious proxy reporting false RSSI to win downlinks | It can only drop the downlink, which the RX2 fallback and sensor retries cover. Remove the proxy if it misbehaves. |
 | Leaking state through Home Assistant | Out of scope: Home Assistant's own access control applies |
@@ -370,6 +418,9 @@ result for each (`accept`, `accept_late`, `duplicate`, `too_old`), a
 `counter16` sequence with the expected totals and whether each step was an
 increase, a wrap or a reset, and a `retransmission` sequence: copies of a
 confirmed uplink and its retries from proxies and a relay, with whether each is
-a new transmission (section 4, step 3) and whether it is answered (step 5).
+a new transmission (section 4, step 3) and whether it is answered (step 5), and a
+`join` sequence (section 5.1): the root downlink counter value, the
+`KEY_EXCHANGE` frame and `k_session` for each `JOIN`, including byte-identical
+answers to retransmissions and the stall on the last one.
 The proxy sessions of 05 section 3.2, including a server restart, are in the
 `session` sequence of `vectors/proxy-envelope-v1.json`.

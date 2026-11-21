@@ -30,5 +30,93 @@
       "code": "CS:2:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:C1FB",
       "reason": "unsupported pairing code version"
     }
-  ]
+  ],
+  "root_floor": {
+    "note": "inputs from frame-v1.json; a sensor in JOINING checks each downlink (02 section 10.2)",
+    "sequence": [
+      {
+        "event": "join",
+        "fcnt": 1,
+        "sensor_ephemeral_private": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a1",
+        "frame": "c515000000000000000000000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc35d435b8268bda9a",
+        "note": "first pairing; frame-v1.json join"
+      },
+      {
+        "event": "downlink",
+        "frame": "c518000000000000000000000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e5a9ff021ca714c8b3",
+        "note": "KEY_EXCHANGE, root fcnt_down 1; frame-v1.json downlink_key_exchange",
+        "result": "accept",
+        "root_floor": 1,
+        "k_session": "151466fb0522fa821caffdada6ce9d6c"
+      },
+      {
+        "event": "leave",
+        "note": "LEAVE: keys erased, root floor kept",
+        "root_floor": 1
+      },
+      {
+        "event": "join",
+        "fcnt": 70,
+        "sensor_ephemeral_private": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+        "frame": "c5150000000000000000000000468a233423f5ffeaa03aebe0aee7e4a88ab8f584ff228da88606dfd2e70cf35dbf7c6df22e9a64738325",
+        "note": "paired again with the same server"
+      },
+      {
+        "event": "downlink",
+        "frame": "c51800000000000000000000000211975912d4dc229c2e7348be0e15204d1751562c023a70fbd14d7c3c8a88bb254929641317c9c50cce02e575c707da7b50f01e",
+        "note": "KEY_EXCHANGE, root fcnt_down 2: the server never resets its root counter",
+        "result": "accept",
+        "root_floor": 2,
+        "k_session": "581326f09bdb2cf6d010134eb05c62cb"
+      },
+      {
+        "event": "leave",
+        "note": "LEAVE again",
+        "root_floor": 2
+      },
+      {
+        "event": "join",
+        "fcnt": 75,
+        "sensor_ephemeral_private": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
+        "frame": "c51500000000000000000000004be6578ba3636bbd5a9c3439f700ef24bda33066b6978f327141a758b88f1c7d8ba730f2b989233a1441",
+        "note": "pairing with a server whose root counter rolled back"
+      },
+      {
+        "event": "downlink",
+        "frame": "c518000000000000000000000001ba29baff7b91d2095ddc8fb1ce7204a404ae110389f28f0365f97a3e832f994f89f1d050c8ce971a412890c98805943d50ffea",
+        "note": "KEY_EXCHANGE, root fcnt_down 1: at or below the floor, discarded",
+        "result": "at_or_below_root_floor",
+        "root_floor": 2,
+        "k_session": null
+      },
+      {
+        "event": "downlink",
+        "frame": "c51800000000000000000000000211975912d4dc229c2e7348be0e15204d1751562c023a70fbd14d7c3c8a88bb254929641317c9c50cce02e575c707da7b50f01e",
+        "note": "replayed KEY_EXCHANGE answering an older JOIN",
+        "result": "wrong_reply_to",
+        "root_floor": 2,
+        "k_session": null
+      },
+      {
+        "event": "factory_reset",
+        "note": "factory reset: root floor back to 0",
+        "root_floor": 0
+      },
+      {
+        "event": "join",
+        "fcnt": 140,
+        "sensor_ephemeral_private": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4",
+        "frame": "c51500000000000000000000008c6dd832ddaaa0bdd5c0ba3e06385a425288c72d4d9d2fa37c1e3d91f63cf622f5a39167fa6910bdfa95",
+        "note": "new owner pairs after the reset"
+      },
+      {
+        "event": "downlink",
+        "frame": "c518000000000000000000000001ba29ba387b9289e95ddc8fb1ce7204a404ae110389f28f0365f97a3e832f994f89f1d050c8ce971a412890b7c3e2f7db5c16a8",
+        "note": "KEY_EXCHANGE, root fcnt_down 1 from the new owner's server: accepted",
+        "result": "accept",
+        "root_floor": 1,
+        "k_session": "91184b6a031562d1b50e53d77ab1bbb0"
+      }
+    ]
+  }
 }

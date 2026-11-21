@@ -42,7 +42,7 @@
     {
       "name": "downlink_request",
       "event": {
-        "id": "dc424a17e970c04f7ff2fc261248ef271a7e679641fffe9bf2e3ae3d0224b124",
+        "id": "5b6225f7eba719a36de8ac9a623e0d2a60232d6534a0c86f15551a542da25277",
         "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
         "created_at": 1795226460,
         "kind": 21111,
@@ -52,8 +52,8 @@
             "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
           ]
         ],
-        "content": "AQECAwQFBgcIH8UYYdMG00UiaPQAAAADk6MUhCI1QwcVN5h+uw12HFk=",
-        "sig": "638d7ac026dbd9d1ad67f3a0f630bee6f96c2964b79beb5fb48010f46a70a0ac31244dff12ad233254f76ec07ad145088426d3b0b1616001458e3e82bec8884a"
+        "content": "AQECAwQFBgcIH8UYYdMG00UiaPQAAAACb/1pV+7Zh69Zsi/7cYPS2ik=",
+        "sig": "e28569a21654a80c565d896724c98c46bbb0e14d54ce91f7363b5f54efe616f462f2f4a1e51d161eecca0086dc0ab9cc16cb21ded5eb46769b1fe6c5a612232c"
       }
     },
     {

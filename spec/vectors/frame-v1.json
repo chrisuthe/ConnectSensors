@@ -69,14 +69,14 @@
     },
     {
       "name": "downlink_set_network",
-      "note": "answer to SYNC: network routing key",
+      "note": "answer to SYNC: network routing key; first downlink under this k_session",
       "keys": "session",
       "type": 8,
-      "fcnt": 2,
+      "fcnt": 1,
       "net_tag": "00000000",
       "dev_tag": "00000000",
       "plaintext": "000000026b00fb2300011053e27722471cdf29ebcb23aabc120cfe",
-      "frame": "c5180000000000000000000000026ffd6956eed987d059c0b029705fba1c98cd6be8225f1e914a9e38e86e94c9686a0b63"
+      "frame": "c518000000000000000000000001f54c2bb9e69fd91753948de290111026495c701f21e43c88982389bac6273917831f0e"
     },
     {
       "name": "data_confirmed",
@@ -94,11 +94,11 @@
       "note": "plain acknowledgement of fcnt 3",
       "keys": "session",
       "type": 8,
-      "fcnt": 3,
+      "fcnt": 2,
       "net_tag": "61d306d3",
       "dev_tag": "452268f4",
       "plaintext": "000000036b00fb5c00",
-      "frame": "c51861d306d3452268f40000000393a31484223543071537987ebb0d761c59"
+      "frame": "c51861d306d3452268f4000000026ffd6957eed987af59b22ffb7183d2da29"
     },
     {
       "name": "heartbeat",
