@@ -13,8 +13,8 @@ to its own repository without changes.
 | 02 | [Frame format v1](02-frame-v1.md) | Draft |
 | 03 | [Payload v1](03-payload-v1.md) | Draft |
 | 04 | [Pairing](04-pairing.md) | Draft |
-| 05 | Proxy envelope (proxy to server) | Planned |
-| 06 | `cs_proxy` ESPHome component | Planned |
+| 05 | [Proxy envelope](05-proxy-envelope.md) | Draft |
+| 06 | [`cs_proxy` ESPHome component](06-cs-proxy-component.md) | Draft |
 | 07 | Network server behavior | Planned |
 | 08 | Sensor behavior | Planned |
 | 09 | Federation relay | Planned |
@@ -25,7 +25,7 @@ to its own repository without changes.
 - [`vectors/`](vectors/) - test vectors. An implementation that does not
   reproduce them byte for byte is not conformant.
 - [`tools/csframe.py`](tools/csframe.py) - informative reference implementation
-  of frames, payloads, pairing codes and the key exchange. It generates and
+  of frames, payloads, pairing codes, the key exchange and the proxy envelope. It generates and
   checks the vectors.
 
 ```

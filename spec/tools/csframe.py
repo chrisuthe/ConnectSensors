@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Reference implementation of the ConnectSensors v1 encodings.
 
-Covers spec 02 (frame format), 03 (payload) and 04 (pairing codes and key
-exchange). This module is informative. Where it disagrees with the spec, the spec
+Covers spec 02 (frame format), 03 (payload), 04 (pairing codes and key
+exchange) and 05 (proxy envelope). This module is informative. Where it disagrees with the spec, the spec
 wins and this file has a bug.
 
 Usage:
@@ -274,6 +274,66 @@ def qr_parse(code: str) -> dict:
     return {"dev_eui": dev_eui.hex(), "k_root": k_root.hex(), "region": parts[4], "profile": parts[5]}
 
 
+# ======================================================================== 05
+
+ENV_VERSION = 1
+ENV_HEADER = 18
+ENV_MAC = 16
+
+M_UPLINK = 0x01
+M_HELLO = 0x02
+M_TX_RESULT = 0x03
+M_SERVER_STATUS = 0x81
+M_DOWNLINK = 0x82
+
+UPF_TS_UNCERTAIN = 0x01
+
+CAP_DOWNLINK = 0x01
+CAP_FEDERATION = 0x02
+
+
+def envelope(key: bytes, msg_type: int, proxy_id: bytes, boot_id: int, seq: int, body: bytes) -> bytes:
+    assert len(key) == 16 and len(proxy_id) == 8
+    head = bytes([ENV_VERSION, msg_type]) + proxy_id + struct.pack(">II", boot_id, seq)
+    msg = head + body
+    return msg + hmac.new(key, msg, hashlib.sha256).digest()[:ENV_MAC]
+
+
+def open_envelope(key: bytes, data: bytes) -> dict:
+    if len(data) < ENV_HEADER + ENV_MAC or data[0] != ENV_VERSION:
+        raise ValueError("not a v1 envelope")
+    msg, mac = data[:-ENV_MAC], data[-ENV_MAC:]
+    if not hmac.compare_digest(hmac.new(key, msg, hashlib.sha256).digest()[:ENV_MAC], mac):
+        raise ValueError("bad MAC")
+    boot_id, seq = struct.unpack(">II", msg[10:18])
+    return {"type": msg[1], "proxy_id": msg[2:10].hex(), "boot_id": boot_id, "seq": seq,
+            "body": msg[ENV_HEADER:].hex()}
+
+
+def uplink_body(rx_time_us: int, rssi: float, snr: float, flags: int, frame: bytes) -> bytes:
+    return struct.pack(">Qhhb", rx_time_us, round(rssi * 10), round(snr * 10), flags) + bytes([len(frame)]) + frame
+
+
+def hello_body(caps: int, region: str, freq_hz: int, sf: int, bw_khz: int, uptime_s: int,
+               counters: list[int], max_loop_gap_ms: int, fw: str) -> bytes:
+    assert len(counters) == 7
+    return (bytes([caps, len(region)]) + region.encode() + struct.pack(">IBHI", freq_hz, sf, bw_khz, uptime_s)
+            + struct.pack(">7I", *counters) + struct.pack(">H", max_loop_gap_ms)
+            + bytes([len(fw)]) + fw.encode())
+
+
+def server_status_body(server_time: int, tags: list[bytes]) -> bytes:
+    return struct.pack(">IB", server_time, len(tags)) + b"".join(tags)
+
+
+def downlink_msg_body(ref_rx_time_us: int, tx_offset_us: int, frame: bytes) -> bytes:
+    return struct.pack(">QI", ref_rx_time_us, tx_offset_us) + bytes([len(frame)]) + frame
+
+
+def tx_result_body(downlink_seq: int, result: int, offset_us: int) -> bytes:
+    return struct.pack(">IBi", downlink_seq, result, offset_us)
+
+
 # ======================================================================== airtime
 
 
@@ -385,9 +445,43 @@ def pairing_vectors() -> dict:
     }
 
 
+PROXY_KEY = bytes.fromhex("5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a")
+PROXY_ID = bytes.fromhex("3485180000fffe01")  # EUI-64 from MAC 34:85:18:00:00:01
+
+
+def envelope_vectors() -> dict:
+    fv = frame_vectors()
+    frames = {f["name"]: bytes.fromhex(f["frame"]) for f in fv["frames"]}
+    route = bytes.fromhex(fv["derived"]["k_net_route"])
+    e = fv["inputs"]["epoch"]
+    boot = 0x1A2B3C4D
+    rx_t = 123_456_789
+    msgs = [
+        ("hello", M_HELLO, boot, 1,
+         hello_body(CAP_DOWNLINK, "US915", 918_500_000, 9, 500, 42, [10, 9, 1, 0, 0, 2, 0], 7, "cs_proxy 0.1.0"),
+         "proxy announces itself after boot"),
+        ("server_status", M_SERVER_STATUS, boot, 1,
+         server_status_body(T0, [net_tag(route, x) for x in (e - 1, e, e + 1)]),
+         "server answers HELLO with its time and the network's tags for epochs e-1..e+1"),
+        ("uplink", M_UPLINK, boot, 2, uplink_body(rx_t, -97.5, 6.3, 0, frames["data_confirmed"]),
+         "proxy forwards the DATA_CONFIRMED frame heard at -97.5 dBm, SNR 6.3 dB"),
+        ("downlink", M_DOWNLINK, boot, 2, downlink_msg_body(rx_t, 1_000_000, frames["downlink_ack"]),
+         "server asks the proxy to transmit the acknowledgement in RX1"),
+        ("tx_result", M_TX_RESULT, boot, 3, tx_result_body(2, 0, 1800),
+         "proxy reports it transmitted downlink seq 2, 1.8 ms after the requested time"),
+    ]
+    return {
+        "spec": "ConnectSensors proxy envelope v1 (05)",
+        "inputs": {"proxy_key": PROXY_KEY.hex(), "proxy_id": PROXY_ID.hex()},
+        "messages": [{"name": n, "note": note, "type": t, "boot_id": b, "seq": q, "body": body.hex(),
+                      "message": envelope(PROXY_KEY, t, PROXY_ID, b, q, body).hex()}
+                     for n, t, b, q, body, note in msgs],
+    }
+
+
 def write_vectors(d: str) -> None:
     for fname, data in (("frame-v1.json", frame_vectors()), ("payload-v1.json", payload_vectors()),
-                        ("pairing-v1.json", pairing_vectors())):
+                        ("pairing-v1.json", pairing_vectors()), ("proxy-envelope-v1.json", envelope_vectors())):
         with open(os.path.join(d, fname), "w") as f:
             json.dump(data, f, indent=2)
             f.write("\n")
@@ -435,6 +529,22 @@ def verify(d: str) -> int:
         except ValueError as ex:
             ok = str(ex) == c["reason"]
         print(f"{'ok  ' if ok else 'FAIL'} pairing invalid ({c['reason']})")
+        bad += not ok
+    with open(os.path.join(d, "proxy-envelope-v1.json")) as f:
+        ev = json.load(f)
+    key = bytes.fromhex(ev["inputs"]["proxy_key"])
+    for c in ev["messages"]:
+        m = open_envelope(key, bytes.fromhex(c["message"]))
+        ok = (m["type"], m["proxy_id"], m["boot_id"], m["seq"], m["body"]) == (
+            c["type"], ev["inputs"]["proxy_id"], c["boot_id"], c["seq"], c["body"])
+        tampered = bytearray(bytes.fromhex(c["message"]))
+        tampered[20] ^= 1
+        try:
+            open_envelope(key, bytes(tampered))
+            ok = False
+        except ValueError:
+            pass
+        print(f"{'ok  ' if ok else 'FAIL'} envelope {c['name']}")
         bad += not ok
     print("all vectors pass" if bad == 0 else f"{bad} failures")
     return 1 if bad else 0

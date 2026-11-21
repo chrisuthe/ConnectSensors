@@ -119,103 +119,37 @@ Summary:
 
 ## 6. ESPHome proxy: `cs_proxy`
 
-An ESPHome external component that attaches to an existing radio component. It
-registers as a packet listener on `sx126x`/`sx127x` (the same hook
-`packet_transport` uses), so the radio YAML stays standard.
+The normative definitions are
+[spec/05-proxy-envelope.md](../spec/05-proxy-envelope.md) (messages between
+proxy and server) and
+[spec/06-cs-proxy-component.md](../spec/06-cs-proxy-component.md) (the ESPHome
+component). Summary:
 
-### 6.1 Configuration
+- An ESPHome external component that registers as a listener on an existing
+  `sx126x` or `sx127x` radio and never changes its configuration. Compile-time
+  validation rejects radio settings that do not match the region profile.
+- Pipeline: keyless checks, dedupe on a hash of the frame bytes, token-bucket
+  rate limits, then an `UPLINK` message to the server.
+- Messages to and from the server use one binary envelope over UDP (port 47800)
+  or MQTT, authenticated with a per-proxy key (HMAC-SHA256), with boot IDs and
+  sequence numbers against replay.
+- Downlinks need no clock sync: the server hands back the proxy's own receive
+  timestamp plus an offset (1 s for RX1, 3 s for RX2), and the proxy reports
+  each result with its timing error.
+- Because ESPHome delivers packets from the main loop, the proxy flags uplinks
+  whose timestamp may be late and withdraws its downlink capability when the
+  loop is unhealthy.
+- Airtime budget of 2% per hour for downlinks, enforced by the proxy.
+- Diagnostic entities for traffic, signal strength, loop health, airtime and
+  server connection.
 
-```yaml
-external_components:
-  - source: github://chrisuthe/ConnectSensors@main
-    components: [cs_proxy]
+### 6.1 Upstreaming
 
-sx126x:
-  id: radio
-  hw_version: sx1262
-  cs_pin: GPIO8
-  rst_pin: GPIO12
-  busy_pin: GPIO13
-  dio1_pin: GPIO14
-  rf_switch: true
-  tcxo_voltage: 1_8V
-  modulation: LORA
-  frequency: 918.5MHz
-  bandwidth: 500_0kHz
-  spreading_factor: 9
-  coding_rate: CR_4_5
-  sync_value: [0x14, 0x24]
-  preamble_size: 8
-  crc_enable: true
-  pa_power: 14
-
-cs_proxy:
-  radio_id: radio
-  region: US915
-  server:                     # local Home Assistant
-    transport: udp            # udp | mqtt
-    host: homeassistant.local
-    port: 47800
-    key: !secret cs_proxy_key # authenticates proxy <-> server on the LAN
-  dedupe_window: 30s
-  max_forward_rate: 20/s
-  downlink: true              # allow this proxy to transmit ACK/COMMAND
-  federation:
-    enabled: false            # opt in to carry neighbors' frames
-    relays:
-      - wss://relay1.connectsensors.example
-      - wss://relay2.connectsensors.example
-```
-
-Diagnostic entities created automatically: frames heard, frames forwarded,
-duplicates dropped, foreign frames relayed, last RSSI, downlinks sent.
-
-### 6.2 Receive path
-
-1. Radio delivers `(bytes, rssi, snr)`.
-2. Apply the keyless checks in spec/02 section 12: length 23-86, magic, version,
-   uplink type only.
-3. Dedupe on the exact frame bytes within `dedupe_window`.
-4. Rate-limit per `dev_tag` and globally.
-5. Send every frame to the local server, which ignores frames it does not own.
-6. If federation is enabled and `net_tag` is not in the local tag set (pushed by
-   the server, 6.4), also publish to relays (Section 8).
-
-### 6.3 Proxy-to-server envelope (UDP)
-
-```
-0   1   envelope version = 1
-1   1   msg type: 0x01 uplink, 0x02 tag-set request, 0x81 downlink, 0x82 tag-set
-2   8   proxy_id (from ESPHome MAC / name hash)
-10  4   seq
-14  8   rx_time_us (proxy uptime clock)
-22  2   rssi x10 (int16)
-24  2   snr x10 (int16)
-26  2   freq_err_hz (int16)
-28  N   raw LoRa frame
-28+N 16 HMAC-SHA256-128(proxy_key, bytes 0..27+N)
-```
-
-Downlink messages (0x81) carry the frame plus a transmit deadline relative to the
-proxy's `rx_time_us` of the triggering uplink, so the proxy can hit RX1 without
-clock sync.
-
-MQTT transport uses the same binary envelope on `connectsensors/<proxy_id>/up` and
-`.../down`.
-
-### 6.4 Local tag set
-
-The server sends each proxy the set of `net_tag`s it owns for epochs
-`e-1..e+1` (normally one tag per epoch, more if the home runs several networks)
-on connect and at every epoch boundary. That is how a proxy decides "local or
-foreign" without keys.
-
-### 6.5 Upstreaming
-
-External components cannot add new ESPHome native API messages. v1 therefore uses
-UDP/MQTT. Once the protocol is stable, propose a `lora_proxy` component upstream
-that forwards raw frames over the native API, like `bluetooth_proxy` does for BLE
-advertisements. ConnectSensors would then become one decoder on top of it.
+External components cannot add new ESPHome native API messages, so v1 uses
+UDP/MQTT. Once the protocol is stable, propose a generic `lora_proxy` component
+upstream that forwards raw frames over the native API, like `bluetooth_proxy`
+does for BLE advertisements, plus a receive timestamp in the radio listener
+interface. `cs_proxy` would then become a thin filter on top of it.
 
 ---
 
