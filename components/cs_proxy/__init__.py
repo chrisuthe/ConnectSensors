@@ -132,9 +132,10 @@ CONFIG_SCHEMA = cv.All(
                     ),
                 }
             ),
-            cv.Optional(CONF_DEDUPE_WINDOW, default="30s"): cv.All(
+            # Below the sensor's earliest retry (4 s), so retransmissions get through (06 section 6).
+            cv.Optional(CONF_DEDUPE_WINDOW, default="2s"): cv.All(
                 cv.positive_time_period_milliseconds,
-                cv.Range(min=cv.TimePeriod(seconds=5), max=cv.TimePeriod(seconds=120)),
+                cv.Range(min=cv.TimePeriod(seconds=1), max=cv.TimePeriod(seconds=3)),
             ),
             cv.Optional(CONF_DEDUPE_CACHE_SIZE, default=64): cv.int_range(min=16, max=256),
             cv.Optional(CONF_RATE_LIMIT, default={}): cv.Schema(

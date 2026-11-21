@@ -77,7 +77,7 @@ cs_proxy:
   downlink:
     enabled: true         # default
     airtime_budget: 2%    # default and maximum
-  dedupe_window: 30s
+  dedupe_window: 2s      # default; 1s to 3s, below the sensor's 4 s retry
   dedupe_cache_size: 64
   rate_limit:
     global: 20/s

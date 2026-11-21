@@ -18,6 +18,7 @@ import csframe as cs  # noqa: E402
 
 KEY = bytes.fromhex("5a" * 16)
 PROXY_ID = bytes.fromhex("348518fffe000001")
+PROXY_B = bytes.fromhex("348518fffe000002")
 BOOT = 0x01020304
 
 
@@ -91,8 +92,32 @@ def main() -> int:
         reply_to = struct.unpack(">I", pt[:4])[0]
         check(h.ftype == cs.T_DOWNLINK and reply_to == 3, "downlink decrypts for the device and answers fcnt 3")
 
+        sent_at = time.monotonic()
+        fcnt_down = h.fcnt
+
+        # The same frame from a second proxy right away is a copy of that transmission: no answer.
+        s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_B, BOOT, 1, hello), dest)
+        s.recv(2048)
+        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_B, BOOT, 2, up), dest)
+        try:
+            s.recv(2048)
+            check(False, "copy from a second proxy not answered again")
+        except socket.timeout:
+            check(True, "copy from a second proxy not answered again")
+
+        # The sensor's retry, 4 s or more later, is answered again with a new downlink (07 section 6.4).
+        time.sleep(max(0.0, sent_at + 4.5 - time.monotonic()))
+        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 3, up), dest)
+        m = cs.open_envelope(KEY, s.recv(2048))
+        check(m["type"] == cs.M_DOWNLINK, "retransmission 4.5 s later answered again")
+        body = bytes.fromhex(m["body"])
+        flen = body[12]
+        h, pt = cs.open_frame(device_keys, body[13:13 + flen])
+        check(struct.unpack(">I", pt[:4])[0] == 3 and h.fcnt > fcnt_down,
+              "answer to the retry is a new downlink for fcnt 3")
+
         # A replayed message (same seq) is ignored: no answer.
-        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 2, up), dest)
+        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 3, up), dest)
         try:
             s.recv(2048)
             check(False, "replayed message ignored")
@@ -100,14 +125,14 @@ def main() -> int:
             check(True, "replayed message ignored")
 
         # A message with the wrong key is rejected.
-        s.sendto(cs.envelope(bytes(16), cs.M_HELLO, PROXY_ID, BOOT, 3, hello), dest)
+        s.sendto(cs.envelope(bytes(16), cs.M_HELLO, PROXY_ID, BOOT, 4, hello), dest)
         try:
             s.recv(2048)
             check(False, "wrong key rejected")
         except socket.timeout:
             check(True, "wrong key rejected")
 
-        s.sendto(cs.envelope(KEY, cs.M_TX_RESULT, PROXY_ID, BOOT, 4, cs.tx_result_body(dl_seq, 0, 1500)), dest)
+        s.sendto(cs.envelope(KEY, cs.M_TX_RESULT, PROXY_ID, BOOT, 5, cs.tx_result_body(dl_seq, 0, 1500)), dest)
         time.sleep(0.5)
         out = stop_server(srv)
 
@@ -115,11 +140,11 @@ def main() -> int:
         # instance learns the boot from the next periodic HELLO.
         time.sleep(1.0)
         srv = start_server()
-        s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_ID, BOOT, 5, hello), dest)
+        s.sendto(cs.envelope(KEY, cs.M_HELLO, PROXY_ID, BOOT, 6, hello), dest)
         m = cs.open_envelope(KEY, s.recv(2048))
         check(m["type"] == cs.M_SERVER_STATUS and guard.accept(m),
               "restarted server's SERVER_STATUS accepted by the running proxy")
-        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 6, up), dest)
+        s.sendto(cs.envelope(KEY, cs.M_UPLINK, PROXY_ID, BOOT, 7, up), dest)
         m = cs.open_envelope(KEY, s.recv(2048))
         check(m["type"] == cs.M_DOWNLINK and guard.accept(m),
               "restarted server's DOWNLINK accepted by the running proxy")

@@ -81,10 +81,10 @@ void CSProxy::dump_config() {
                 "  Region: %s (%" PRIu32 " Hz, SF%u, %" PRIu32 " Hz)\n"
                 "  Server: %s:%u\n"
                 "  Downlinks: %s, airtime budget %.1f%%\n"
-                "  Dedupe: %" PRIu32 " s, %u entries",
+                "  Dedupe: %" PRIu32 " ms, %u entries",
                 CS_PROXY_VERSION, id_hex, this->region_, this->frequency_hz_, this->sf_, this->bw_hz_,
                 this->server_host_, this->server_port_, YESNO(this->downlink_enabled_),
-                this->budget_permille_ / 10.0f, uint32_t(this->dedupe_window_us_ / 1000000), this->dedupe_size_);
+                this->budget_permille_ / 10.0f, uint32_t(this->dedupe_window_us_ / 1000), this->dedupe_size_);
 }
 
 // ------------------------------------------------------------------------ receive

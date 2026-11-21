@@ -114,7 +114,8 @@ the uplink is unanswered and the sensor retransmits it.
 | Retry 3 | 30 s plus a random 0-10 s |
 
 - A retry is the identical frame (02 section 8.3). Each retry is followed by RX1
-  and RX2 as usual.
+  and RX2 as usual. Proxies forward it (06 section 6) and the server answers it
+  again (07 section 4, step 5), so a lost answer is recovered by the next retry.
 - If the state changes while retries are pending, the sensor abandons them and
   sends a new confirmed frame (new `fcnt`) with the latest state. The server
   only needs the latest state.

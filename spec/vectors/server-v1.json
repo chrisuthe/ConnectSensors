@@ -92,5 +92,104 @@
         "how": "increase"
       }
     ]
+  },
+  "retransmission": {
+    "merge_window_ms": 2000,
+    "frame_memory_ms": 60000,
+    "max_answers_again": 3,
+    "first_accepted": 2,
+    "frame": "c51261d306d3452268f400000003787421e751d0f9c8ee50da1e",
+    "note": "data_confirmed from frame-v1.json (fcnt 3)",
+    "sequence": [
+      {
+        "arrived_ms": 0,
+        "age_ms": 0,
+        "via": "proxy A",
+        "note": "original",
+        "result": "transmission",
+        "counter": "accept",
+        "answer": true
+      },
+      {
+        "arrived_ms": 60,
+        "age_ms": 0,
+        "via": "proxy B",
+        "note": "second proxy, same transmission",
+        "result": "copy"
+      },
+      {
+        "arrived_ms": 1500,
+        "age_ms": 1350,
+        "via": "relay",
+        "note": "neighbor's copy of the original",
+        "result": "copy"
+      },
+      {
+        "arrived_ms": 2600,
+        "age_ms": 2450,
+        "via": "relay",
+        "note": "late neighbor's copy: received at 150 ms by age_ms",
+        "result": "copy"
+      },
+      {
+        "arrived_ms": 5000,
+        "age_ms": 0,
+        "via": "proxy A",
+        "note": "retry 1: answered again",
+        "result": "transmission",
+        "counter": "duplicate",
+        "answer": true
+      },
+      {
+        "arrived_ms": 5040,
+        "age_ms": 0,
+        "via": "proxy B",
+        "note": "second proxy, retry 1",
+        "result": "copy"
+      },
+      {
+        "arrived_ms": 13500,
+        "age_ms": 0,
+        "via": "proxy A",
+        "note": "retry 2: answered again",
+        "result": "transmission",
+        "counter": "duplicate",
+        "answer": true
+      },
+      {
+        "arrived_ms": 33000,
+        "age_ms": 0,
+        "via": "proxy A",
+        "note": "retry 3: answered again",
+        "result": "transmission",
+        "counter": "duplicate",
+        "answer": true
+      },
+      {
+        "arrived_ms": 33800,
+        "age_ms": 700,
+        "via": "relay",
+        "note": "neighbor's copy of retry 3",
+        "result": "copy"
+      },
+      {
+        "arrived_ms": 36000,
+        "age_ms": 0,
+        "via": "proxy A",
+        "note": "replay: already answered again 3 times",
+        "result": "transmission",
+        "counter": "duplicate",
+        "answer": false
+      },
+      {
+        "arrived_ms": 70000,
+        "age_ms": 0,
+        "via": "proxy A",
+        "note": "replay after the frame is forgotten",
+        "result": "transmission",
+        "counter": "duplicate",
+        "answer": false
+      }
+    ]
   }
 }

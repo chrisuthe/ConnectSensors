@@ -79,10 +79,13 @@ For each `UPLINK` message:
 1. **Envelope.** Verify it (05 section 3). Discard on failure.
 2. **Header.** Apply the keyless checks of 02 section 12. Discard downlink types.
 3. **Collect.** Compute the dedupe key (the first 8 bytes of SHA-256 over the
-   frame). If the same frame is already being processed or was processed in the
-   last 60 seconds, add this proxy's reception (proxy, `rx_time_us`, RSSI, SNR,
-   flags) to that frame's reception list and stop. Otherwise start a new entry
-   and wait for the collection window (section 4.1) before step 8.
+   frame) and the copy's reception time (section 4.3). If the same frame has an
+   entry whose first copy was received less than 2 seconds before this one, the
+   copy is part of that transmission: add this proxy's reception (proxy,
+   `rx_time_us`, RSSI, SNR, flags) to the entry's reception list and stop.
+   Otherwise this is a new transmission, either a first copy or a sensor's
+   retransmission (02 section 8.3): start a new entry and wait for the
+   collection window (section 4.1) before step 8.
 4. **Identify.** Find the device:
    - normal tags: look up `(net_tag, dev_tag)` in the tag table and try each
      candidate's session key set until a MIC verifies (02 section 6.4);
@@ -93,8 +96,12 @@ For each `UPLINK` message:
    beyond that they are dropped unprocessed. A frame no device verifies is
    counted as foreign and dropped.
 5. **Counter.** Apply 02 section 8.5. A `too_old` frame is dropped. A
-   `duplicate` is not acted on again, but if it is a confirmed type the server
-   answers it again (section 5) so the sensor stops retrying.
+   `duplicate` is not acted on again (steps 6 and 7 are skipped), but if it is a
+   confirmed type the server answers it again (section 5) so the sensor stops
+   retrying. To bound what a replayed frame can cost, the server answers a
+   duplicate only if the frame's first transmission was received less than 60
+   seconds ago, and at most 3 times per frame, one per sensor retry (08 section
+   5).
 6. **Payload.** Decrypt, read `uflags`, decode the readings (03). If the readings
    are invalid (03 section 2), keep the frame for counter and supervision
    purposes, apply no readings, and log a device error.
@@ -112,9 +119,10 @@ For each `UPLINK` message:
 
 ### 4.1 Collection window
 
-The server waits 150 ms after the first copy of a frame arrives, so that copies
-from other proxies can be compared before choosing one to answer through. Copies
-that arrive later are still recorded in the reception history.
+The server waits 150 ms after the first copy of a transmission arrives, so that
+copies from other proxies can be compared before choosing one to answer through.
+Copies of the same transmission that arrive later (step 3) are still recorded in
+the reception history.
 
 ### 4.2 Latency budget (informative)
 
@@ -129,12 +137,33 @@ that arrive later are still recorded in the reception history.
 A `DOWNLINK` for RX1 MUST be sent no later than 800 ms after the first copy of the
 uplink arrived. Later than that, the server uses RX2.
 
+### 4.3 Reception time
+
+Step 3 compares the times at which copies were received over the air, not when
+they reached the server:
+
+- A copy from a proxy counts as received when its `UPLINK` arrived.
+- A federated copy (09 section 6.1) counts as received `age_ms` before its event
+  arrived, so a neighbor's copy of the original that is delayed by the relay is
+  not mistaken for a retransmission.
+
+The server remembers each frame for 60 seconds after the first copy of its first
+transmission, which covers the whole retry schedule (08 section 5): when the
+current transmission's first copy was received (step 3) and how many times the
+frame was answered again (step 5). A frame it no longer remembers is not answered
+again. Copies of one transmission arrive within a few hundred milliseconds of
+each other, while a retransmission comes at least 4 seconds after the original,
+so the 2-second limit separates them with a margin on both sides.
+
+`spec/vectors/server-v1.json` (`retransmission`) has a worked sequence.
+
 ## 5. When and what to answer
 
 The server sends a downlink in reply to an uplink when any of these hold:
 
 - the uplink is a confirmed type (`DATA_CONFIRMED`, `HEARTBEAT_CONFIRMED`,
-  `JOIN`, `SYNC`), including a duplicate of one;
+  `JOIN`, `SYNC`), including a retransmitted duplicate of one within the limits
+  of section 4, step 5;
 - the device has undelivered commands (section 7);
 - the device's clock needs correcting: `TIME_UNSURE` is set, or step 4.7 found
   skew.

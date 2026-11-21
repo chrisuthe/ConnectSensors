@@ -150,7 +150,7 @@ class CSProxy : public Component
   std::vector<uint8_t> proxy_id_override_;
   bool downlink_enabled_{true};
   uint32_t budget_permille_{20};
-  uint64_t dedupe_window_us_{30000000};
+  uint64_t dedupe_window_us_{DEDUPE_WINDOW_DEFAULT_US};
   uint16_t dedupe_size_{64};
   float rate_global_{20};
   float rate_device_{2};

@@ -125,7 +125,9 @@ A server with publishing enabled:
    bootstrap frames that matched none of its devices.
 3. Publishes after its collection window (07 section 4.1), with all its
    receptions in one event.
-4. Publishes each frame at most once, to every relay in its list.
+4. Publishes each transmission of a frame (07 section 4, step 3) at most once,
+   to every relay in its list, so a sensor's retransmission reaches its owner
+   like the original.
 5. Publishes at most 5 events per second; beyond that it drops the newest.
 6. Does not publish frames from proxies whose region settings do not match
    (07 section 6.1).
@@ -153,9 +155,11 @@ A server with subscribing enabled ("Receive my sensors through neighbors"):
   `(publisher pubkey, rx_ref)`. Frames that do not verify for any of its devices
   are dropped without further processing; most frames in a bucket belong to other
   networks.
-- Deduplicates across local and federated copies by frame hash. Federated copies
-  usually arrive after the local decision; they then only add receptions to the
-  history.
+- Deduplicates across local and federated copies by frame hash and reception
+  time, taking a federated copy as received `age_ms` before its event arrived
+  (07 section 4.3). Federated copies usually arrive after the local decision;
+  they then only add receptions to the history. A federated retransmission is a
+  new transmission and is answered again like a local one.
 - Counts federated receptions for supervision (07 section 8) and coverage (07
   section 9), so a device heard only through a neighbor is reachable but
   single-path.
