@@ -397,13 +397,13 @@ def open_envelope(key: bytes, data: bytes) -> dict:
 
 
 def uplink_body(rx_time_us: int, rssi: float, snr: float, flags: int, frame: bytes) -> bytes:
-    return struct.pack(">Qhhb", rx_time_us, round(rssi * 10), round(snr * 10), flags) + bytes([len(frame)]) + frame
+    return struct.pack(">QhhB", rx_time_us, round(rssi * 10), round(snr * 10), flags) + bytes([len(frame)]) + frame
 
 
 def parse_uplink(body: bytes) -> dict:
-    rx_time_us, rssi, snr, flags, n = struct.unpack(">QhhBB", body[:14])
-    if len(body) != 14 + n:
+    if len(body) < 14 or len(body) != 14 + body[13]:
         raise ValueError("bad UPLINK length")
+    rx_time_us, rssi, snr, flags, _ = struct.unpack(">QhhBB", body[:14])
     return {"rx_time_us": rx_time_us, "rssi": rssi / 10, "snr": snr / 10, "flags": flags,
             "frame": body[14:]}
 

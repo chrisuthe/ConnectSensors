@@ -65,6 +65,21 @@ def main(root: str) -> int:
     assert (m["type"], m["seq"], s["hello_seq"], s["tags"]) == (cs.M_SERVER_STATUS, 1, 2, tags)
     print("ok   ServerLink HELLO / SERVER_STATUS")
 
+    # Bodies from a proxy: round trips, and malformed ones raise ValueError.
+    up = cs.uplink_body(123, -97.5, 6.3, 0x81, frame)
+    u = cs.parse_uplink(up)
+    assert (u["rx_time_us"], u["rssi"], u["snr"], u["flags"], u["frame"]) == (123, -97.5, 6.3, 0x81, frame), u
+    tx = cs.tx_result_body(2, 0, -1800)
+    assert cs.parse_tx_result(tx) == {"downlink_seq": 2, "result": 0, "offset_us": -1800}
+    for parse, bad in ((cs.parse_uplink, b""), (cs.parse_uplink, up[:10]), (cs.parse_uplink, up[:-1]),
+                       (cs.parse_uplink, up + b"\x00"), (cs.parse_tx_result, tx[:-1])):
+        try:
+            parse(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"{parse.__name__} accepted {bad.hex()}")
+    print("ok   UPLINK / TX_RESULT bodies")
+
     print(f"connectsensors {cs.__version__}: smoke test passed")
     return 0
 
