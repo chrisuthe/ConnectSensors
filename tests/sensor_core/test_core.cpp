@@ -395,6 +395,24 @@ struct Rig {
     this->core->begin();
   }
 
+  // A deep sleep and wake: RAM goes, the snapshot (RTC memory), storage and both
+  // clocks stay. Returns whether the core resumed; if not, it booted.
+  bool sleep_wake(uint64_t sleep_us, std::initializer_list<Reading> state = {}) {
+    WarmState w;
+    bool snap = this->core->suspend(w);
+    this->clock.now += sleep_us;
+    this->core.reset();
+    this->radio.busy = this->radio.rx = false;
+    this->core.reset(new SensorCore(this->cfg, this->clock, this->radio, this->storage, this->random));
+    this->core->on_event = [this](SensorEvent e) { this->events.push_back(e); };
+    for (const Reading &r : state)
+      CHECK(this->core->set_state(r));
+    if (snap && this->core->resume(w))
+      return true;
+    this->core->begin();
+    return false;
+  }
+
   void tick_to(uint64_t t) {
     while (this->clock.now < t) {
       uint64_t next = this->clock.now + MS;
@@ -1328,6 +1346,128 @@ static void test_factory_reset_without_erase() {
   CHECK(again.session_key() == nullptr);
 }
 
+// A deep-sleep wake is not a boot: the counter, the clock's standing and the
+// heartbeat schedule carry on (components/cs_sensor/README.md, "Deep sleep").
+static void test_deep_sleep_resume() {
+  Rig rig;
+  Server server = pair_with_vectors(rig);
+  CHECK(rig.core->set_state(battery(90)));
+  rig.run(10 * S);
+  CHECK(!rig.core->hold());
+  CHECK(rig.core->time_sure());
+  size_t n = rig.radio.sent.size();
+  uint32_t next = rig.core->next_fcnt();
+  uint32_t reserved = rig.storage.u32(Blob::COUNTER);
+  CHECK(next < reserved);
+  int saves = rig.storage.saves;
+  uint64_t hb_at = rig.core->next_wake_us();
+  CHECK(hb_at != UINT64_MAX && hb_at > rig.clock.now);
+
+  // Asleep until a contact change wakes it: nothing is written, nothing is sent.
+  CHECK(rig.sleep_wake(5 * MIN, {contact(0)}));
+  CHECK(rig.core->state() == PairingState::PAIRED);
+  CHECK(rig.core->time_sure());
+  CHECK(rig.core->next_fcnt() == next);
+  CHECK(rig.storage.saves == saves);
+  CHECK(rig.storage.u32(Blob::COUNTER) == reserved);
+  CHECK(rig.core->next_wake_us() == hb_at);
+  CHECK(!rig.core->hold());
+  rig.run(5 * S);
+  CHECK(rig.radio.sent.size() == n);
+
+  // The contact change goes out with the next counter value, normal tags and no TIME_UNSURE.
+  rig.core->report(true);
+  CHECK(rig.core->hold());
+  WarmState w;
+  CHECK(!rig.core->suspend(w));  // not while there is work
+  const Tx &d = rig.wait_tx(n + 1);
+  Opened o = open_up(server.keys, d.frame);
+  CHECK(o.ok && type_of(d) == T_DATA_CONFIRMED && fcnt_of(d) == next);
+  CHECK(o.pt.size() > 0 && (o.pt[0] & UF_TIME_UNSURE) == 0);
+  CHECK(hex(o.pt) == "00" "000100" "ff075a");  // battery kept from before the sleep
+  CHECK(rig.in_rx1(d, server.downlink(fcnt_of(d), V_TIME + 400)) == DownlinkResult::ACCEPT);
+  rig.run(5 * S);
+
+  // A timer wake for the heartbeat sends it when it was due, with no boot uplink first.
+  uint64_t due = rig.core->next_wake_us();
+  CHECK(due == hb_at);
+  CHECK(rig.sleep_wake(due - rig.clock.now));
+  rig.core->loop();
+  const Tx &hb = rig.wait_tx(n + 2);
+  CHECK(fcnt_of(hb) == next + 1);
+  CHECK(type_of(hb) == T_HEARTBEAT);
+  CHECK(hb.start_us >= due && hb.start_us < due + S);
+  rig.run(10 * S);
+
+  // A snapshot that fails its check, a clock that started over, or a counter
+  // reservation that moved on is a boot.
+  {
+    WarmState snap;
+    rig.run(10 * S);
+    CHECK(rig.core->suspend(snap));
+    snap.next_fcnt++;
+    rig.core.reset(new SensorCore(rig.cfg, rig.clock, rig.radio, rig.storage, rig.random));
+    CHECK(!rig.core->resume(snap));
+    snap.next_fcnt--;
+    rig.clock.now = snap.saved_us - 1;
+    CHECK(!rig.core->resume(snap));
+    rig.clock.now = snap.saved_us + S;
+    rig.storage.set_u32(Blob::COUNTER, snap.reserved + COUNTER_BLOCK);
+    CHECK(!rig.core->resume(snap));
+    rig.storage.set_u32(Blob::COUNTER, snap.reserved);
+    CHECK(rig.core->resume(snap));
+    CHECK(rig.core->next_fcnt() == snap.next_fcnt);
+  }
+
+  // A boot after all: a new counter block and the boot heartbeat with TIME_UNSURE.
+  uint32_t stored = rig.storage.u32(Blob::COUNTER);
+  CHECK(stored > rig.core->next_fcnt());
+  rig.boot({contact(0)});
+  CHECK(rig.storage.u32(Blob::COUNTER) == stored + COUNTER_BLOCK);
+  const Tx &boot = rig.wait_tx(rig.radio.sent.size() + 1);
+  o = open_up(server.keys, boot.frame);
+  CHECK(o.ok && type_of(boot) == T_HEARTBEAT_CONFIRMED && (o.pt[0] & UF_TIME_UNSURE));
+  CHECK(fcnt_of(boot) == stored);
+}
+
+static void test_deep_sleep_unpaired_and_lost_session() {
+  // An unpaired sensor sleeps and wakes unpaired, and can still pair.
+  Rig rig;
+  rig.boot();
+  CHECK(!rig.core->hold());
+  CHECK(rig.core->next_wake_us() == UINT64_MAX);
+  CHECK(rig.sleep_wake(3600 * S));
+  CHECK(rig.core->state() == PairingState::UNPAIRED);
+  rig.random.keys.push_back(Bytes(32, 0x42));
+  rig.core->short_press();
+  CHECK(rig.core->hold());
+  rig.wait_tx(1);
+  CHECK(type_of(rig.radio.sent[0]) == T_JOIN);
+
+  // A paired snapshot whose session storage was wiped (for example a reflash) boots.
+  Rig r2;
+  pair_with_vectors(r2);
+  r2.run(10 * S);
+  WarmState snap;
+  CHECK(r2.core->suspend(snap));
+  r2.storage.erase(Blob::SESSION);
+  r2.core.reset(new SensorCore(r2.cfg, r2.clock, r2.radio, r2.storage, r2.random));
+  CHECK(!r2.core->resume(snap));
+  CHECK(r2.core->state() == PairingState::UNPAIRED);
+  CHECK(r2.core->session_key() == nullptr);
+
+  // A lost RTC across the sleep: resumed, but no longer time-sure, so uplinks are SYNC.
+  Rig r3;
+  pair_with_vectors(r3);
+  r3.run(10 * S);
+  r3.clock.rtc = false;
+  CHECK(r3.sleep_wake(MIN));
+  CHECK(!r3.core->time_sure());
+  r3.core->report(true);
+  const Tx &s = r3.wait_tx(r3.radio.sent.size() + 1);
+  CHECK(type_of(s) == T_SYNC);
+}
+
 static void test_airtime_window_is_an_hour() {
   // A JOIN (95 ms) spent late in a minute against a 100 ms budget.
   Rig rig;
@@ -1376,6 +1516,8 @@ int main() {
   test_firmware_until_delivered();
   test_factory_reset_without_erase();
   test_airtime_window_is_an_hour();
+  test_deep_sleep_resume();
+  test_deep_sleep_unpaired_and_lost_session();
   std::printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

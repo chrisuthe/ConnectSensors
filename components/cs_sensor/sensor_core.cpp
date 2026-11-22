@@ -361,7 +361,11 @@ void SensorCore::load_() {
   this->counter_ok_ = this->reserve_(this->next_fcnt_);
   if (!this->counter_ok_)
     this->emit_(SensorEvent::STORAGE_FAILED);
+  this->load_stored_();
+}
 
+void SensorCore::load_stored_() {
+  uint8_t b[SESSION_BLOB_LEN];
   this->root_floor_ = this->storage_.load(Blob::ROOT_FLOOR, b, 4) ? be32(b) : 0;
 
   this->heartbeat_minutes_ = this->config_.heartbeat_minutes;
@@ -434,6 +438,114 @@ void SensorCore::begin() {
     this->boot_uplink_ = true;
     this->schedule_heartbeat_(this->clock_.now_us());
   }
+}
+
+namespace {
+
+constexpr uint32_t WARM_MAGIC = 0x43535753;  // "CSWS"
+constexpr uint16_t WARM_VERSION = 1;
+constexpr uint8_t WF_TIME_SURE = 0x01, WF_DL_ACK = 0x02, WF_FIRMWARE_SENT = 0x04, WF_ANSWERED_EVER = 0x08,
+                  WF_CONFIRMED_SENT = 0x10, WF_FULL_STATE_SENT = 0x20, WF_HB_ARMED = 0x40, WF_AIR_STARTED = 0x80;
+
+uint32_t warm_check(const WarmState &w) {
+  // FNV-1a: this guards against stale or half-written RTC memory, not an attacker.
+  const auto *p = reinterpret_cast<const uint8_t *>(&w);
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < offsetof(WarmState, check); i++)
+    h = (h ^ p[i]) * 16777619u;
+  return h;
+}
+
+}  // namespace
+
+bool SensorCore::suspend(WarmState &out) const {
+  if (this->hold() || !this->counter_ok_ || this->stopped_ ||
+      (this->state_ != PairingState::UNPAIRED && this->state_ != PairingState::PAIRED))
+    return false;
+  std::memset(static_cast<void *>(&out), 0, sizeof(out));  // padding too, for the check
+  out.magic = WARM_MAGIC;
+  out.version = WARM_VERSION;
+  out.size = uint16_t(sizeof(WarmState));
+  out.saved_us = this->clock_.now_us();
+  out.last_answered_us = this->last_answered_us_;
+  out.last_confirmed_sent_us = this->last_confirmed_sent_us_;
+  out.last_full_state_us = this->last_full_state_us_;
+  out.next_hb_us = this->next_hb_us_;
+  out.tx_blocked_until_us = this->tx_blocked_until_us_;
+  out.air_minute = this->air_minute_;
+  std::memcpy(out.air_buckets, this->air_buckets_, sizeof(out.air_buckets));
+  out.next_fcnt = this->next_fcnt_;
+  out.reserved = this->reserved_;
+  out.state = uint8_t(this->state_);
+  out.flags = uint8_t((this->time_sure_ ? WF_TIME_SURE : 0) | (this->dl_ack_ ? WF_DL_ACK : 0) |
+                      (this->firmware_sent_ ? WF_FIRMWARE_SENT : 0) | (this->answered_ever_ ? WF_ANSWERED_EVER : 0) |
+                      (this->confirmed_sent_ ? WF_CONFIRMED_SENT : 0) |
+                      (this->full_state_sent_ ? WF_FULL_STATE_SENT : 0) | (this->hb_armed_ ? WF_HB_ARMED : 0) |
+                      (this->air_started_ ? WF_AIR_STARTED : 0));
+  out.undelivered = this->undelivered_;
+  out.pending_hb_count = this->pending_hb_count_;
+  out.state_count = uint8_t(this->state_count_);
+  for (size_t i = 0; i < this->state_count_; i++)
+    out.state_readings[i] = this->state_readings_[i];
+  out.check = warm_check(out);
+  return true;
+}
+
+bool SensorCore::resume(const WarmState &in) {
+  if (in.magic != WARM_MAGIC || in.version != WARM_VERSION || in.size != sizeof(WarmState) ||
+      in.check != warm_check(in) || in.state_count > STATE_SLOTS)
+    return false;
+  if (in.state != uint8_t(PairingState::UNPAIRED) && in.state != uint8_t(PairingState::PAIRED))
+    return false;
+  // Every time in the snapshot is on the monotonic clock, so it must not have restarted.
+  if (this->clock_.now_us() < in.saved_us)
+    return false;
+  uint8_t b[4];
+  // The reservation in storage is what a boot would continue from; a mismatch means
+  // storage changed under the snapshot, so boot instead.
+  if (!this->storage_.load(Blob::COUNTER, b, 4) || be32(b) != in.reserved || in.next_fcnt == 0 ||
+      in.next_fcnt > in.reserved)
+    return false;
+  this->load_stored_();
+  if (uint8_t(this->state_) != in.state) {
+    secure_zero(this->k_session_, sizeof(this->k_session_));
+    secure_zero(this->k_net_route_, sizeof(this->k_net_route_));
+    secure_zero(&this->session_keys_, sizeof(this->session_keys_));
+    this->has_session_ = this->has_route_ = false;
+    this->state_ = PairingState::UNPAIRED;
+    return false;
+  }
+  this->reserved_ = in.reserved;
+  this->next_fcnt_ = in.next_fcnt;
+  this->counter_ok_ = true;
+  this->last_answered_us_ = in.last_answered_us;
+  this->last_confirmed_sent_us_ = in.last_confirmed_sent_us;
+  this->last_full_state_us_ = in.last_full_state_us;
+  this->next_hb_us_ = in.next_hb_us;
+  this->tx_blocked_until_us_ = in.tx_blocked_until_us;
+  this->air_minute_ = in.air_minute;
+  std::memcpy(this->air_buckets_, in.air_buckets, sizeof(this->air_buckets_));
+  // 08 section 3.1 is about a clock lost with the power; one kept through the sleep
+  // stays sure, unless the RTC lost it after all.
+  this->time_sure_ = (in.flags & WF_TIME_SURE) && this->clock_known_();
+  this->dl_ack_ = in.flags & WF_DL_ACK;
+  this->firmware_sent_ = in.flags & WF_FIRMWARE_SENT;
+  this->answered_ever_ = in.flags & WF_ANSWERED_EVER;
+  this->confirmed_sent_ = in.flags & WF_CONFIRMED_SENT;
+  this->full_state_sent_ = in.flags & WF_FULL_STATE_SENT;
+  this->hb_armed_ = (in.flags & WF_HB_ARMED) && this->state_ == PairingState::PAIRED;
+  this->air_started_ = in.flags & WF_AIR_STARTED;
+  this->undelivered_ = in.undelivered;
+  this->pending_hb_count_ = in.pending_hb_count;
+  // Readings set before resume() are newer than the snapshot's.
+  for (size_t i = 0; i < in.state_count; i++) {
+    bool newer = false;
+    for (size_t j = 0; j < this->state_count_; j++)
+      newer = newer || this->state_readings_[j].same_key(in.state_readings[i]);
+    if (!newer)
+      this->set_state(in.state_readings[i]);
+  }
+  return true;
 }
 
 bool SensorCore::set_state(const Reading &r) {
