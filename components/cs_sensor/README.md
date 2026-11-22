@@ -18,8 +18,10 @@ switch on GPIO6 and PRG as the pairing button.
 
 1. Make the identity: a `dev_eui` (16 hex digits, unique per device) and a
    `root_key` (`openssl rand -hex 16`). Put them in `secrets.yaml`.
-2. `esphome compile` prints the pairing code (`CS:1:...`). It holds the root
-   key, so treat it like one.
+2. Print the pairing code (`CS:1:...`) with
+   `python3 devtools/cs_pairing_code.py --secrets secrets.yaml`. It holds the root
+   key, so treat it like one; the build never logs it, and `root_key` and
+   `pairing_code` are marked sensitive so ESPHome masks them.
 3. Give the code to the server. For the development server:
    `python3 devtools/cs_testserver.py --key <proxy key> --device CS:1:... --state pairings.json`,
    with a [proxy](../cs_proxy/README.md) running.

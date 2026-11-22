@@ -132,19 +132,15 @@ def _hex_bytes(length):
     return validator
 
 
-def _b32(data):
-    return base64.b32encode(bytes(data)).decode().rstrip("=")
-
-
-def pairing_code(dev_eui, k_root, region, profile):
-    """04 section 3.1; the same string sensor_core's pairing_code() builds."""
-    body = ":".join(["CS", "1", bytes(dev_eui).hex().upper(), _b32(k_root), region, profile])
-    return body + ":" + hashlib.sha256(body.encode()).hexdigest()[:4].upper()
-
-
 def _pairing_code(value):
-    """Parse a CS:1:... pairing code (04 section 3.2)."""
+    """Validate a CS:1:... pairing code (04 section 3.2), keeping it a string so
+    ESPHome can mask it; _identity() parses it."""
     code = cv.string_strict(value).strip().upper()
+    _parse_pairing_code(code)
+    return code
+
+
+def _parse_pairing_code(code):
     if not set(code) <= set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-:"):
         raise cv.Invalid("A pairing code holds only A-Z, 0-9, '.', '-' and ':'")
     parts = code.split(":")
@@ -166,7 +162,8 @@ def _pairing_code(value):
         raise cv.Invalid("Bad profile id in the pairing code")
     return {
         CONF_DEV_EUI: list(dev_eui),
-        CONF_ROOT_KEY: list(k_root),
+        # A masked hex string, like a root_key given directly (cv.bind_key).
+        CONF_ROOT_KEY: cv.sensitive()(k_root.hex().upper()),
         CONF_REGION: parts[4],
         CONF_PROFILE: parts[5],
     }
@@ -242,7 +239,7 @@ def _identity(config):
     if has_code == has_keys:
         raise cv.Invalid(f"Set either {CONF_PAIRING_CODE}, or both {CONF_DEV_EUI} and {CONF_ROOT_KEY}")
     if has_code:
-        code = config.pop(CONF_PAIRING_CODE)
+        code = _parse_pairing_code(config.pop(CONF_PAIRING_CODE))
         if code[CONF_REGION] != config[CONF_REGION]:
             raise cv.Invalid(
                 f"The pairing code is for {code[CONF_REGION]}, the sensor for {config[CONF_REGION]}",
@@ -258,7 +255,7 @@ def _identity(config):
     elif CONF_DEV_EUI not in config or CONF_ROOT_KEY not in config:
         raise cv.Invalid(f"Set both {CONF_DEV_EUI} and {CONF_ROOT_KEY}")
     config.setdefault(CONF_PROFILE, "ESPHOME")
-    if not any(config[CONF_ROOT_KEY]):
+    if not any(bytes.fromhex(config[CONF_ROOT_KEY])):
         raise cv.Invalid("root_key must not be all zeros", path=[CONF_ROOT_KEY])
     return config
 
@@ -300,8 +297,8 @@ CONFIG_SCHEMA = cv.All(
             cv.Required(CONF_RADIO_ID): cv.use_id(cg.Component),
             cv.Required(CONF_REGION): _region,
             cv.Optional(CONF_DEV_EUI): _hex_bytes(8),
-            cv.Optional(CONF_ROOT_KEY): _hex_bytes(16),
-            cv.Optional(CONF_PAIRING_CODE): _pairing_code,
+            cv.Optional(CONF_ROOT_KEY): cv.bind_key(name="root_key"),
+            cv.Optional(CONF_PAIRING_CODE): cv.sensitive(_pairing_code),
             cv.Optional(CONF_PROFILE): _profile,
             cv.Optional(CONF_HEARTBEAT, default="60min"): cv.All(
                 cv.positive_time_period_minutes,
@@ -426,10 +423,11 @@ async def to_code(config):
         )
     )
 
-    cg.add(var.set_identity(config[CONF_DEV_EUI], config[CONF_ROOT_KEY], config[CONF_PROFILE]))
+    cg.add(var.set_identity(config[CONF_DEV_EUI], list(bytes.fromhex(config[CONF_ROOT_KEY])), config[CONF_PROFILE]))
+    # The pairing code holds the root key, so it never goes to the build log.
     _LOGGER.info(
-        "cs_sensor pairing code (secret, it holds the root key): %s",
-        pairing_code(config[CONF_DEV_EUI], config[CONF_ROOT_KEY], config[CONF_REGION], config[CONF_PROFILE]),
+        "cs_sensor dev_eui %s; print its pairing code with devtools/cs_pairing_code.py",
+        bytes(config[CONF_DEV_EUI]).hex(),
     )
     cg.add(var.set_heartbeat_minutes(int(config[CONF_HEARTBEAT].total_minutes)))
     if CONF_FIRMWARE_VERSION in config:

@@ -115,7 +115,7 @@ SERVER_SCHEMA = cv.Schema(
         cv.Optional(CONF_TRANSPORT, default="udp"): _transport,
         cv.Required(CONF_HOST): cv.string_strict,
         cv.Optional(CONF_PORT, default=47800): cv.port,
-        cv.Required(CONF_KEY): _hex_bytes(16),
+        cv.Required(CONF_KEY): cv.bind_key(name="key"),
     }
 )
 
@@ -259,7 +259,7 @@ async def to_code(config):
     server = config[CONF_SERVER]
     socket.require_ipv4_resolve()
     cg.add(var.set_server(server[CONF_HOST], server[CONF_PORT]))
-    cg.add(var.set_key(server[CONF_KEY]))
+    cg.add(var.set_key(list(bytes.fromhex(server[CONF_KEY]))))
     if CONF_PROXY_ID in config:
         cg.add(var.set_proxy_id(config[CONF_PROXY_ID]))
 
