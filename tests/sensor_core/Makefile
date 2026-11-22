@@ -13,9 +13,9 @@ HEADERS := $(COMPONENT)/sensor_core.h $(COMPONENT)/cs_crypto.h $(COMPONENT)/cs_x
 test_core: test_core.cpp vectors.inc $(SOURCES) $(HEADERS)
 	$(CXX) $(CXXFLAGS) -I$(COMPONENT) -o $@ test_core.cpp $(SOURCES)
 
-# cs_sha256 is copied from cs_proxy rather than shared (see components/cs_sensor/README.md).
+# cs_sha256 and cs_clock are copied from cs_proxy rather than shared (see components/cs_sensor/README.md).
 shared-copy:
-	@for f in cs_sha256.h cs_sha256.cpp; do \
+	@for f in cs_sha256.h cs_sha256.cpp cs_clock.h; do \
 	  sed 's/cs_proxy/cs_sensor/g' $(PROXY)/$$f | diff -u - <(grep -v '^// Copy of' $(COMPONENT)/$$f) \
 	    || { echo "$(COMPONENT)/$$f has drifted from $(PROXY)/$$f"; exit 1; }; \
 	done

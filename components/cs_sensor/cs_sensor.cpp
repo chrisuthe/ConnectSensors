@@ -36,7 +36,7 @@ static constexpr uint32_t MIN_VALID_UNIX = 1735689600;
 
 // ======================================================================== platform
 
-uint64_t PlatformClock::now_us() { return uint64_t(esp_timer_get_time()) + this->offset_us_; }
+uint64_t PlatformClock::now_us() { return monotonic_us() + this->offset_us_; }
 
 int64_t PlatformClock::rtc_us() {
   struct timeval tv;
@@ -71,19 +71,23 @@ ESPPreferenceObject &PreferenceStorage::pref_(Blob id, size_t len) {
 bool PreferenceStorage::load(Blob id, uint8_t *buf, size_t len) { return this->pref_(id, len).load(buf, len); }
 
 bool PreferenceStorage::save(Blob id, const uint8_t *buf, size_t len) {
-  // sync() commits to NVS now: the core relies on a true return being durable.
+  // sync() commits to flash on every save: the core relies on a true return being
+  // durable, since a lost counter reservation would let uplink counters repeat
+  // (02 section 8.2). It saves only a few times a day.
   return this->pref_(id, len).save(buf, len) && global_preferences->sync();
 }
 
 void PlatformRandom::seed() {
 #ifdef USE_ESP32
-  // Without Wi-Fi or Bluetooth running, ESP-IDF's RNG is only pseudo-random; the
-  // SAR ADC noise source is. It runs here, in the constructor, before any component
-  // has set up the ADC or the radio.
+  // Without Wi-Fi or Bluetooth running, ESP-IDF's RNG is only pseudo-random; with
+  // the SAR ADC noise source enabled it is not. That source takes over the ADC and
+  // powers it down when disabled, so this must run before any ADC sensor sets up
+  // (CSSensor::get_setup_priority) and never while one samples.
   bootloader_random_enable();
   esp_fill_random(this->seed_, sizeof(this->seed_));
   bootloader_random_disable();
 #endif
+  // On nRF52, random_bytes() is the hardware TRNG, so fill() needs no seed.
 }
 
 void PlatformRandom::fill(uint8_t *buf, size_t len) {
@@ -146,9 +150,9 @@ RTC_NOINIT_ATTR uint64_t s_warm[(sizeof(WarmBlock) + 7) / 8];
 
 uint32_t block_check(const WarmBlock &b) {
   const auto *p = reinterpret_cast<const uint8_t *>(&b);
-  uint32_t h = 2166136261u;
+  uint32_t h = FNV1_OFFSET_BASIS;
   for (size_t i = 0; i < offsetof(WarmBlock, check); i++)
-    h = (h ^ p[i]) * 16777619u;
+    h = fnv1a_hash_extend(h, p[i]);
   return h;
 }
 
@@ -229,8 +233,6 @@ uint32_t PlatformRadio::airtime_us(size_t len) {
 
 // ======================================================================== component
 
-CSSensor::CSSensor() { this->random_.seed(); }
-
 void CSSensor::set_identity(const std::vector<uint8_t> &dev_eui, const std::vector<uint8_t> &k_root,
                             const char *profile) {
   std::copy_n(dev_eui.begin(), std::min<size_t>(dev_eui.size(), 8), this->config_.dev_eui);
@@ -273,9 +275,13 @@ void CSSensor::add_binary_reading(binary_sensor::BinarySensor *s, uint8_t channe
   src.min_interval_ms = min_interval_ms;
   size_t index = this->readings_.size();
   this->readings_.push_back(src);
-  s->add_on_state_callback([this, index](bool v) {
+  // Full-state callbacks, because add_on_state_callback skips a binary sensor's
+  // first state unless trigger_on_initial_state is set, and YAML defaults it off.
+  s->add_full_state_callback([this, index](optional<bool> /*previous*/, optional<bool> current) {
+    if (!current.has_value())
+      return;
     ReadingSource &r = this->readings_[index];
-    r.value = v ? 1.0f : 0.0f;
+    r.value = *current ? 1.0f : 0.0f;
     r.has_value = r.fresh = true;
     this->enable_loop_soon_any_context();
   });
@@ -283,7 +289,12 @@ void CSSensor::add_binary_reading(binary_sensor::BinarySensor *s, uint8_t channe
 
 void CSSensor::set_pairing_button(binary_sensor::BinarySensor *button) {
   this->button_ = button;
-  button->add_on_state_callback([this](bool pressed) {
+  // Full-state callback: a template or API-driven button's first press is its
+  // first state, which add_on_state_callback would skip.
+  button->add_full_state_callback([this](optional<bool> /*previous*/, optional<bool> current) {
+    if (!current.has_value())
+      return;
+    const bool pressed = *current;
     uint64_t now = this->clock_.now_us();
     if (pressed && !this->button_down_) {
       this->button_down_ = true;
@@ -301,7 +312,9 @@ void CSSensor::set_pairing_button(binary_sensor::BinarySensor *button) {
 }
 
 void CSSensor::setup() {
+  this->random_.seed();
   this->started_us_ = this->clock_.now_us();
+  // Only adds to a list, so it is fine before the radio has set up.
 #ifdef USE_CS_SENSOR_SX126X
   if (this->sx126x_ != nullptr)
     this->sx126x_->register_listener(this);
@@ -310,18 +323,9 @@ void CSSensor::setup() {
   if (this->sx127x_ != nullptr)
     this->sx127x_->register_listener(this);
 #endif
-  // The region profile keeps rx_start on (see __init__.py); listen only in RX windows.
-  this->radio_.stop_receive();
 
   this->core_ = std::make_unique<SensorCore>(this->config_, this->clock_, this->radio_, this->storage_, this->random_);
   this->core_->on_event = [this](SensorEvent e) { this->on_event_(e); };
-
-  esp_timer_create_args_t args{};
-  args.callback = &CSSensor::timer_cb_;
-  args.arg = this;
-  args.name = "cs_sensor";
-  if (esp_timer_create(&args, &this->timer_) != ESP_OK)
-    this->timer_ = nullptr;
 
 #ifdef USE_CS_SENSOR_DEEP_SLEEP
   if (this->deep_sleep_ != nullptr) {
@@ -345,7 +349,7 @@ void CSSensor::setup() {
     if (woke && b.magic == WARM_BLOCK_MAGIC && b.size == sizeof(WarmBlock) && b.check == block_check(b) &&
         b.readings == this->readings_.size()) {
       const int64_t rtc_now = PlatformClock::rtc_us();
-      const uint64_t timer_now = uint64_t(esp_timer_get_time());
+      const uint64_t timer_now = monotonic_us();
       if (rtc_now >= b.rtc_us && b.mono_us + uint64_t(rtc_now - b.rtc_us) >= timer_now) {
         this->clock_.set_offset(b.mono_us + uint64_t(rtc_now - b.rtc_us) - timer_now);
         this->started_us_ = this->clock_.now_us();
@@ -472,16 +476,6 @@ bool CSSensor::make_reading_(const ReadingSource &src, Reading &out) const {
   return true;
 }
 
-bool CSSensor::changed_(const ReadingSource &src) const {
-  if (!src.has_value || !src.has_sent || src.delta < 0)
-    return false;
-  if (std::isnan(src.value) || std::isnan(src.sent))
-    return std::isnan(src.value) != std::isnan(src.sent);
-  if (src.delta == 0)  // any change the wire can show
-    return std::round(src.value * src.scale) != std::round(src.sent * src.scale);
-  return std::fabs(src.value - src.sent) >= src.delta;
-}
-
 void CSSensor::take_readings_(uint64_t now) {
   for (auto &src : this->readings_) {
     if (!src.fresh)
@@ -493,16 +487,8 @@ void CSSensor::take_readings_(uint64_t now) {
   }
   bool want = false, confirmed = false;
   for (auto &src : this->readings_) {
-    if (!src.has_value)
-      continue;
-    if (!src.has_sent) {
-      // The first value is the baseline; the boot heartbeat or the next frame carries it.
-      src.has_sent = true;
-      src.sent = src.value;
-      src.sent_us = now;
-      continue;
-    }
-    if (!this->changed_(src) || now - src.sent_us < uint64_t(src.min_interval_ms) * 1000)
+    // A first value after the boot uplink is due too: no frame has carried it.
+    if (!src.due(now))
       continue;
     want = true;
     confirmed = confirmed || src.confirmed;
@@ -511,10 +497,8 @@ void CSSensor::take_readings_(uint64_t now) {
   if (!want)
     return;
   // The frame carries every state reading, so the server sees all current values.
-  for (auto &src : this->readings_) {
-    if (src.has_value)
-      src.sent = src.value;
-  }
+  for (auto &src : this->readings_)
+    src.carried();
   ESP_LOGD(TAG, "State changed; reporting%s", confirmed ? " (confirmed)" : "");
   this->core_->report(confirmed);
 }
@@ -527,8 +511,8 @@ bool CSSensor::readings_ready_() const {
 uint64_t CSSensor::glue_wake_us_() const {
   uint64_t t = UINT64_MAX;
   for (const auto &src : this->readings_) {
-    if (this->changed_(src))
-      t = std::min(t, src.sent_us + uint64_t(src.min_interval_ms) * 1000);
+    if (src.changed())
+      t = std::min(t, src.due_at_us());
   }
   return t;
 }
@@ -573,6 +557,7 @@ void CSSensor::on_packet(const std::vector<uint8_t> &packet, float rssi, float s
   } else if (r != DownlinkResult::NO_WINDOW) {
     ESP_LOGD(TAG, "Downlink rejected: %s", downlink_result_str(r));
   }
+  this->enable_loop_soon_any_context();  // the core moved on; publish and plan the next wake
 }
 
 void CSSensor::on_event_(SensorEvent e) {
@@ -634,24 +619,70 @@ void CSSensor::publish_diagnostics_() {
   }
 }
 
-void CSSensor::timer_cb_(void *arg) { static_cast<CSSensor *>(arg)->enable_loop_soon_any_context(); }
+Component *CSSensor::radio_component_() const {
+#ifdef USE_CS_SENSOR_SX126X
+  if (this->sx126x_ != nullptr)
+    return this->sx126x_;
+#endif
+#ifdef USE_CS_SENSOR_SX127X
+  if (this->sx127x_ != nullptr)
+    return this->sx127x_;
+#endif
+  return nullptr;
+}
 
-void CSSensor::arm_timer_(uint64_t wake_us) {
-  if (this->timer_ == nullptr || wake_us == UINT64_MAX)
+void CSSensor::schedule_wake_(uint64_t wake_us) {
+  if (wake_us == UINT64_MAX) {
+    if (this->wake_pending_)
+      this->cancel_timeout("wake");
+    this->wake_pending_ = false;
     return;
-  esp_timer_stop(this->timer_);
+  }
+  if (this->wake_pending_ && wake_us == this->wake_at_)
+    return;
+  this->wake_pending_ = true;
+  this->wake_at_ = wake_us;
+  // The main loop never sleeps past the next scheduled item, but the scheduler alone
+  // does not run component loops before the loop interval is up, so the callback
+  // asks for a pass now. Rounding down makes a wake early rather than late; an early
+  // pass just schedules the rest.
   const uint64_t now = this->clock_.now_us();
-  esp_timer_start_once(this->timer_, wake_us > now ? wake_us - now : 1);
+  const uint32_t ms = wake_us > now ? uint32_t(std::min<uint64_t>((wake_us - now) / 1000, UINT32_MAX)) : 0;
+  this->set_timeout("wake", ms, [this]() {
+    this->wake_pending_ = false;
+    this->enable_loop_soon_any_context();
+  });
 }
 
 // ---- main loop
 
+// The loop runs while there is work: waiting for the radio to set up, and while the
+// core holds (a transmission, an RX window and its end-of-packet extension, or
+// retries), which it needs polled often. Otherwise it is disabled, and reading,
+// button and radio callbacks or the wake timeout bring it back.
 void CSSensor::loop() {
+  if (!this->radio_up_) {
+    Component *radio = this->radio_component_();
+    if (radio == nullptr || radio->is_failed()) {
+      ESP_LOGE(TAG, "No working radio");
+      this->mark_failed();
+      return;
+    }
+    if (!radio->is_ready())
+      return;
+    // The region profile keeps rx_start on (see __init__.py); listen only in RX windows.
+    this->radio_.stop_receive();
+    this->radio_up_ = true;
+  }
+
   const uint64_t now = this->clock_.now_us();
   if (!this->running_) {
     // Wait briefly for every reading's first value, so the first frame is complete.
-    if (!this->readings_ready_() && now - this->started_us_ < READINGS_WAIT_US)
+    if (!this->readings_ready_() && now - this->started_us_ < READINGS_WAIT_US) {
+      this->schedule_wake_(this->started_us_ + READINGS_WAIT_US);
+      this->disable_loop();
       return;
+    }
     this->running_ = true;
     // The values read now go to the core before begin(), for the boot heartbeat.
     for (auto &src : this->readings_) {
@@ -663,7 +694,7 @@ void CSSensor::loop() {
     this->warm_ = this->restore_warm_();
     if (!this->warm_) {
       for (auto &src : this->readings_)
-        src.has_sent = false;
+        src.boot(now);
       this->core_->begin();
     }
     ESP_LOGI(TAG, "%s, %s", this->warm_ ? "Woke from deep sleep" : "Started",
@@ -676,11 +707,17 @@ void CSSensor::loop() {
   this->publish_diagnostics_();
 
   const uint64_t after = this->clock_.now_us();
-  if (this->core_->hold())
-    this->arm_timer_(this->core_->next_wake_us());
-  else
-    this->arm_timer_(std::min(this->core_->next_wake_us(), this->glue_wake_us_()));
+  uint64_t wake = this->core_->next_wake_us();
+  if (!this->core_->hold())
+    wake = std::min(wake, this->glue_wake_us_());
+  if (this->button_down_ && !this->button_reset_done_)
+    wake = std::min(wake, this->button_down_us_ + BUTTON_RESET_US);
+  if (this->awake_until_us_ > after)
+    wake = std::min(wake, this->awake_until_us_);  // the deep-sleep decision then
+  this->schedule_wake_(wake);
   this->maybe_sleep_(after);
+  if (!this->core_->hold())
+    this->disable_loop();
 }
 
 void CSSensor::maybe_sleep_(uint64_t now) {

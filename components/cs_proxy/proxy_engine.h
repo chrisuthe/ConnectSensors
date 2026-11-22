@@ -23,6 +23,7 @@ static constexpr uint64_t REDISCOVER_AFTER_US = 300000000ULL;  // 06 section 9
 static constexpr uint64_t TS_UNCERTAIN_EXTRA_US = 20000;       // 06 section 7
 static constexpr uint64_t DEGRADED_GAP_US = 100000;            // 06 section 7
 static constexpr uint64_t RSSI_PUBLISH_INTERVAL_US = 10000000ULL;
+static constexpr uint64_t COUNTERS_PUBLISH_INTERVAL_US = 10000000ULL;  // 06 section 10.1
 static constexpr uint64_t TIMER_LEAD_US = 2000;  // 06 section 8.2
 
 // Same numbers as ESPHOME_LOG_LEVEL_*, so the glue passes them straight through.
@@ -52,7 +53,8 @@ class ProxyIo {
   // waiting, TX_RADIO_ERROR otherwise. Completion comes back through
   // ProxyEngine::on_transmit_complete().
   virtual uint8_t start_transmit(const uint8_t *frame, size_t len, uint32_t timeout_ms) = 0;
-  // Wake the main loop at about wake_us, replacing any earlier request.
+  // Run a main-loop pass at about wake_us, replacing any earlier request. Early is
+  // fine: a pass more than TIMER_LEAD_US early only arms the timer again.
   virtual void arm_timer(uint64_t wake_us) = 0;
   // Run the main loop again soon.
   virtual void request_loop() = 0;
@@ -60,8 +62,11 @@ class ProxyIo {
   // Entities.
   virtual void on_connected(bool /*connected*/) {}
   virtual void on_signal(float /*rssi*/, float /*snr*/) {}
-  // A HELLO went out: counters and max_loop_gap_ms are fresh.
+  // A HELLO went out, reporting max_loop_gap_ms for the interval it closes.
   virtual void on_hello(uint16_t /*max_loop_gap_ms*/) {}
+  // Every COUNTERS_PUBLISH_INTERVAL_US, whether or not the server is reachable:
+  // the counters matter most while it is not.
+  virtual void on_counters() {}
 
   virtual bool log_enabled(LogLevel /*level*/) { return true; }
   virtual void vlog(LogLevel /*level*/, const char * /*fmt*/, va_list /*args*/) {}
@@ -124,7 +129,8 @@ class ProxyEngine {
   void handle_hello_request_(const Envelope &e, uint64_t now);
   void run_due_transmissions_();
   void arm_timer_();
-  bool send_(uint8_t type, const std::vector<uint8_t> &body);
+  bool send_(uint8_t type, const std::vector<uint8_t> &body) { return this->send_(type, body.data(), body.size()); }
+  bool send_(uint8_t type, const uint8_t *body, size_t body_len);
   void send_tx_result_(uint32_t seq, uint8_t result, int32_t offset_us);
   void send_hello_();
   void set_connected_(bool connected);
@@ -156,9 +162,14 @@ class ProxyEngine {
   uint64_t max_gap_us_{0};
   bool degraded_{false};
   uint64_t last_rssi_publish_us_{0};
+  bool counters_published_{false};
+  uint64_t last_counters_us_{0};
   std::vector<uint32_t> server_tags_;
 
   ProxyCounters counters_;
+  // Reused for every forwarded frame, so the receive path does not allocate.
+  std::vector<uint8_t> body_buf_;
+  std::vector<uint8_t> msg_buf_;
 };
 
 }  // namespace esphome::cs_proxy

@@ -6,10 +6,20 @@ import logging
 import re
 
 import esphome.codegen as cg
-from esphome.components import binary_sensor, deep_sleep, sensor
+from esphome.components import binary_sensor, deep_sleep, sensor, sx126x
 import esphome.config_validation as cv
-from esphome.const import CONF_BINARY_SENSOR, CONF_CHANNEL, CONF_ID, CONF_SENSOR
-from esphome.core import CORE
+from esphome.const import (
+    CONF_BATTERY_VOLTAGE,
+    CONF_BINARY_SENSOR,
+    CONF_CHANNEL,
+    CONF_DELTA,
+    CONF_HEARTBEAT,
+    CONF_ID,
+    CONF_MULTIPLY,
+    CONF_RUN_DURATION,
+    CONF_SENSOR,
+    CONF_SLEEP_DURATION,
+)
 import esphome.final_validate as fv
 
 CONF_CS_SENSOR_ID = "cs_sensor_id"
@@ -19,9 +29,7 @@ CONF_DEV_EUI = "dev_eui"
 CONF_ROOT_KEY = "root_key"
 CONF_PAIRING_CODE = "pairing_code"
 CONF_PROFILE = "profile"
-CONF_HEARTBEAT = "heartbeat"
 CONF_BATTERY = "battery"
-CONF_BATTERY_VOLTAGE = "battery_voltage"
 CONF_FIRMWARE_VERSION = "firmware_version"
 CONF_PAIRING_BUTTON = "pairing_button"
 CONF_DEEP_SLEEP_ID = "deep_sleep_id"
@@ -31,8 +39,6 @@ CONF_READINGS = "readings"
 CONF_KIND = "kind"
 CONF_CONFIRMED = "confirmed"
 CONF_MIN_INTERVAL = "min_interval"
-CONF_DELTA = "delta"
-CONF_MULTIPLY = "multiply"
 
 AUTO_LOAD = ["sensor", "binary_sensor"]
 
@@ -297,7 +303,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Required(CONF_RADIO_ID): cv.use_id(cg.Component),
             cv.Required(CONF_REGION): _region,
             cv.Optional(CONF_DEV_EUI): _hex_bytes(8),
-            cv.Optional(CONF_ROOT_KEY): cv.bind_key(name="root_key"),
+            cv.Optional(CONF_ROOT_KEY): cv.bind_key(name=CONF_ROOT_KEY),
             cv.Optional(CONF_PAIRING_CODE): cv.sensitive(_pairing_code),
             cv.Optional(CONF_PROFILE): _profile,
             cv.Optional(CONF_HEARTBEAT, default="60min"): cv.All(
@@ -326,15 +332,14 @@ CONFIG_SCHEMA = cv.All(
 
 
 def _find_radio(full_config, radio_id):
-    """Return (kind, radio_config) for the radio with this ID."""
-    for kind in RADIO_KINDS:
-        confs = full_config.get(kind)
-        if confs is None:
-            continue
-        for conf in confs if isinstance(confs, list) else [confs]:
-            if str(conf.get(CONF_ID)) == str(radio_id):
-                return kind, conf
-    return None, None
+    """Return (kind, radio_config) for the radio with this ID, or (None, None)."""
+    try:
+        path = full_config.get_path_for_id(radio_id)
+    except KeyError:
+        return None, None
+    if path[0] not in RADIO_KINDS:
+        return None, None
+    return path[0], full_config.get_config_for_path(path[:-1])
 
 
 def _final_validate(config):
@@ -378,12 +383,9 @@ def _final_validate(config):
         )
 
     if CONF_DEEP_SLEEP_ID in config:
-        sleeps = full.get("deep_sleep")
-        sleeps = sleeps if isinstance(sleeps, list) else [sleeps] if sleeps else []
-        ds = next((d for d in sleeps if str(d.get(CONF_ID)) == str(config[CONF_DEEP_SLEEP_ID])), None)
-        if ds is None:
-            raise cv.Invalid("deep_sleep_id must be the ID of a deep_sleep component", path=[CONF_DEEP_SLEEP_ID])
-        for key in ("run_duration", "sleep_duration"):
+        # cv.use_id(DeepSleepComponent) already checked the type.
+        ds = full.get_config_for_path(full.get_path_for_id(config[CONF_DEEP_SLEEP_ID])[:-1])
+        for key in (CONF_RUN_DURATION, CONF_SLEEP_DURATION):
             if key in ds:
                 raise cv.Invalid(
                     f"deep_sleep: remove {key}. cs_sensor decides when to sleep and for how long, "
@@ -402,9 +404,8 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
-    kind, _ = _find_radio(CORE.config, config[CONF_RADIO_ID])
-    radio = await cg.get_variable(config[CONF_RADIO_ID])
-    if kind == "sx126x":
+    radio_id, radio = await cg.get_variable_with_full_id(config[CONF_RADIO_ID])
+    if radio_id.type.inherits_from(sx126x.SX126x):
         cg.add_define("USE_CS_SENSOR_SX126X")
         cg.add(var.set_sx126x(radio))
     else:

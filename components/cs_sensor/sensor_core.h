@@ -131,6 +131,44 @@ class ReadingWriter {
 // the callback has then seen only the readings before the fault.
 bool decode_readings(const uint8_t *data, size_t len, const std::function<void(const Reading &)> &cb);
 
+// When a new value of a state reading is worth a frame of its own (08 section 4.1).
+// The platform feeds it the values its sensor publishes; the core only sees the
+// frames that result.
+struct ReportedReading {
+  float scale{1};  // to wire units; with delta 0, one wire step is a change
+  bool confirmed{false};
+  uint32_t min_interval_ms{0};
+  float delta{0};  // < 0: rides on frames sent for other reasons, never causes one
+
+  bool has_value{false};
+  float value{0};
+  // The last value a frame carried, if one has since boot.
+  bool has_sent{false};
+  float sent{0};
+  uint64_t sent_us{0};  // min_interval runs from here
+
+  // The value differs from what a frame last carried, or none has carried one.
+  bool changed() const;
+  bool due(uint64_t now_us) const { return this->changed() && now_us - this->sent_us >= this->min_interval_us(); }
+  // When due() turns true if the value stays as it is.
+  uint64_t due_at_us() const { return this->sent_us + this->min_interval_us(); }
+  // A frame with the current value has been queued.
+  void carried() {
+    if (this->has_value) {
+      this->has_sent = true;
+      this->sent = this->value;
+    }
+  }
+  // Boot: the boot uplink carries the values there are now (08 section 9); a value
+  // that first comes later is reported as a change.
+  void boot(uint64_t now_us) {
+    this->has_sent = false;
+    this->sent_us = now_us;
+    this->carried();
+  }
+  uint64_t min_interval_us() const { return uint64_t(this->min_interval_ms) * 1000; }
+};
+
 // ---------------------------------------------------------------- pairing code (04 section 3)
 
 // "CS:1:<DEV_EUI>:<K_ROOT>:<REGION>:<PROFILE>:<CHECK>"; out needs 100 bytes.

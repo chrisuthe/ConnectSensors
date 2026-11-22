@@ -7,10 +7,12 @@ from . import CONF_CS_SENSOR_ID, CSSensor
 
 DEPENDENCIES = ["cs_sensor"]
 
+CONF_PAIRING_STATE = "pairing_state"
+
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_CS_SENSOR_ID): cv.use_id(CSSensor),
-        cv.Optional("pairing_state"): text_sensor.text_sensor_schema(
+        cv.Optional(CONF_PAIRING_STATE): text_sensor.text_sensor_schema(
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             icon="mdi:link-variant",
         ),
@@ -20,6 +22,6 @@ CONFIG_SCHEMA = cv.Schema(
 
 async def to_code(config):
     parent = await cg.get_variable(config[CONF_CS_SENSOR_ID])
-    if "pairing_state" in config:
-        s = await text_sensor.new_text_sensor(config["pairing_state"])
+    if CONF_PAIRING_STATE in config:
+        s = await text_sensor.new_text_sensor(config[CONF_PAIRING_STATE])
         cg.add(parent.set_pairing_state_text_sensor(s))

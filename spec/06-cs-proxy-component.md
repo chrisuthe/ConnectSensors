@@ -82,6 +82,11 @@ A complete board example is in section 13.
 `transport: mqtt` requires ESPHome's `mqtt` component; `host` and `port` are then
 ignored.
 
+The MQTT transport and standalone mode (`federation`) are not implemented yet, so
+the ESPHome component does not accept `server.transport` or `federation` until
+they are; UDP is the only transport. Its `server.host` is required, as an IPv4
+address or a hostname.
+
 ### 3.3 Validation at compile time
 
 The component's final validation MUST fail with a clear message if:
@@ -172,8 +177,8 @@ interrupt, so the component cannot know exactly when a packet finished arriving.
 The listener callback runs soon after the interrupt when the main loop is
 healthy, but a slow component elsewhere can delay it.
 
-- `rx_time_us` MUST be taken from the ESP's monotonic microsecond clock
-  (`esp_timer_get_time()`) at the start of the listener callback.
+- `rx_time_us` MUST be taken from the monotonic microsecond clock
+  (`esp_timer_get_time()` on ESP32) at the start of the listener callback.
 - The component runs its own `loop()` every main-loop pass and records the time
   of each pass. When a packet arrives, if more than the main-loop interval
   (`App.get_loop_interval()`, normally 16 ms) plus 20 ms has passed since the
@@ -207,9 +212,10 @@ Rejections are reported immediately with `TX_RESULT`.
 
 ### 8.2 Transmitting
 
-- A one-shot high-resolution timer (`esp_timer`) fires 2 ms before `tx_at`. Its
-  callback only wakes the main loop (`enable_loop_soon_any_context()`); the main
-  loop waits out the last 2 ms and starts the transmission itself.
+- A one-shot timeout on ESPHome's scheduler (`set_timeout`) is due 2 ms before
+  `tx_at`. The main loop never sleeps past the next scheduled item; the callback
+  only asks for a loop pass at once (`enable_loop_soon_any_context()`), and that
+  pass waits out the last 2 ms and starts the transmission itself.
 - The component transmits if the current time is in `[tx_at, tx_at + 100 ms]`.
   This uses the radio's `start_transmit_async`, which returns once the frame is
   in the radio and reports completion from a later loop pass, so the main loop
@@ -278,8 +284,9 @@ sensor:
 | `max_loop_gap` | ms | measurement | Value reported in the last `HELLO` |
 | `airtime_used` | % | measurement | Transmit time in the last hour, as a percentage |
 
-All are diagnostic entities. Counters publish at every `HELLO`; `last_rssi` and
-`last_snr` publish at most once every 10 seconds.
+All are diagnostic entities. The counters and `airtime_used` publish every 10
+seconds, whether or not the server is reachable; `max_loop_gap` publishes at every
+`HELLO`; `last_rssi` and `last_snr` publish at most once every 10 seconds.
 
 ### 10.2 Binary sensor
 
@@ -423,6 +430,8 @@ be run against a test server built from the reference tool:
 11. A `HELLO_REQUEST` for the proxy's `boot_id` draws a `HELLO` echoing its nonce
     at once; another within 5 seconds draws one 5 seconds after the first; one for
     another `boot_id`, with a nonce of 0, or with a bad MAC draws nothing.
+12. With no server address known, or the network down, the counter sensors still
+    publish every 10 seconds, and `frames_heard` counts the frames heard.
 
 ## 15. Upstream improvements (informative)
 

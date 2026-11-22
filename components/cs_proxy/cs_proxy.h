@@ -2,7 +2,7 @@
 
 // ESPHome glue for the ConnectSensors proxy (spec 06). Behaviour lives in
 // ProxyEngine (proxy_engine.h) on top of proxy_core; this file adapts it to the
-// radio, the UDP socket, address resolution, esp_timer, entities and logging.
+// radio, the UDP socket, address resolution, the scheduler, entities and logging.
 
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
@@ -22,10 +22,10 @@
 #include "esphome/components/sx127x/sx127x.h"
 #endif
 
+#include "cs_clock.h"
 #include "proxy_core.h"
 #include "proxy_engine.h"
 
-#include <esp_timer.h>
 #include <memory>
 #include <string>
 #include <vector>
@@ -116,12 +116,10 @@ class CSProxy : public Component,
 #endif
 
  protected:
-  static void tx_timer_cb_(void *arg);
   void poll_server_address_(uint64_t now);
-  void publish_counters_();
 
   // ProxyIo
-  uint64_t now_us() override { return uint64_t(esp_timer_get_time()); }
+  uint64_t now_us() override { return monotonic_us(); }
   void wait_until(uint64_t t_us) override;
   uint64_t loop_interval_us() override;
   bool server_known() override { return this->socket_ != nullptr && this->server_addr_len_ != 0; }
@@ -130,10 +128,12 @@ class CSProxy : public Component,
   void rediscover() override;
   uint8_t start_transmit(const uint8_t *frame, size_t len, uint32_t timeout_ms) override;
   void arm_timer(uint64_t wake_us) override;
+  // The loop is always enabled; this wakes the main loop for a pass now.
   void request_loop() override { this->enable_loop_soon_any_context(); }
   void on_connected(bool connected) override;
   void on_signal(float rssi, float snr) override;
   void on_hello(uint16_t max_loop_gap_ms) override;
+  void on_counters() override;
   bool log_enabled(LogLevel level) override;
   void vlog(LogLevel level, const char *fmt, va_list args) override;
 
@@ -165,7 +165,6 @@ class CSProxy : public Component,
   // State
   uint8_t proxy_id_[8]{};
   std::unique_ptr<ProxyEngine> engine_;
-  esp_timer_handle_t tx_timer_{nullptr};
 
   std::unique_ptr<socket::UDPSocket> socket_;
   socket::Ipv4Resolve resolver_;
