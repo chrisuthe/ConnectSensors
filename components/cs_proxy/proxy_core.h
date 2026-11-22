@@ -288,7 +288,7 @@ class HelloEchoes {
 
 // ---------------------------------------------------------------- transmit scheduling (06 section 8)
 
-constexpr uint64_t TX_WINDOW_US = 100000;       // late tolerance after tx_at
+constexpr uint64_t TX_WINDOW_US = 40000;        // late tolerance after tx_at (01 section 4.1)
 constexpr uint64_t TX_MAX_AHEAD_US = 5000000;  // tx_at must be within 5 s
 constexpr size_t TX_SLOTS = 4;
 

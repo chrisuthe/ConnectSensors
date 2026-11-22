@@ -275,7 +275,7 @@ struct SensorConfig {
 constexpr uint64_t RX1_DELAY_US = 1000000;
 constexpr uint64_t RX2_DELAY_US = 3000000;
 constexpr uint64_t RX_EARLY_US = 20000;
-constexpr uint64_t RX_LATE_US = 150000;
+constexpr uint64_t RX_LATE_US = 150000;  // W for US915, the only profile built; EU868 needs 200 ms (01 section 4)
 constexpr uint64_t RX_EXTEND_MAX_US = 600000;  // longest frame at the slowest profile, with margin
 constexpr uint64_t TX_TIMEOUT_US = 2000000;
 constexpr uint64_t TX_REFUSED_BACKOFF_US = 100000;

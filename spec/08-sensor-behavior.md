@@ -145,7 +145,9 @@ forget its pairing because of it. Only `LEAVE` or a factory reset (the
 ## 7. Receiving downlinks
 
 - Receive windows follow 01 section 4: RX1 after every uplink, RX2 after a
-  confirmed uplink that RX1 did not answer.
+  confirmed uplink that RX1 did not answer. Each stays open from 20 ms before
+  its delay until the profile's `W` after it (150 ms on `US915`, 200 ms on
+  `EU868`).
 - A received downlink is accepted only under 02 section 10.2. Anything else is
   discarded silently.
 - On acceptance the sensor sets its clock (section 3.2), marks the uplink
@@ -194,8 +196,9 @@ counter used. A wake that lost any of these is a boot.
 
 - Sleep with the radio in its sleep mode and the RTC running; only the RTC and
   input interrupts wake the MCU.
-- RX1 costs about 170 ms of receiver time after every uplink. That is the price
-  of being able to receive commands without confirmed uplinks.
+- RX1 costs about 170 ms of receiver time after every uplink (220 ms on
+  `EU868`, 01 section 4). That is the price of being able to receive commands
+  without confirmed uplinks.
 - Measure the battery under load (just after a transmission) for an honest
   reading.
 - Transmit power: use the profile's maximum only if needed; sensors close to a

@@ -697,14 +697,43 @@ static void test_engine_ts_uncertain() {
   r.hear(g);
   up = r.take(MSG_UPLINK);
   CHECK(up.size() == 1 && up[0].body[12] == UPLINK_TS_UNCERTAIN);
-  // A longer configured loop interval moves the threshold with it.
+  // A longer configured loop interval counts as 16 ms, so the unflagged error stays
+  // within the 36 ms of the timing budget (01 section 4.1).
   r.io.loop_interval = 50000;
   r.loop();
-  r.io.t += 60000;
+  r.io.t += 36000;
   auto h = frame("sync_after_reboot");
   r.hear(h);
   up = r.take(MSG_UPLINK);
   CHECK(up.size() == 1 && up[0].body[12] == 0);
+  r.loop();
+  r.io.t += 36001;
+  auto d = frame("sync_after_exchange");
+  r.hear(d);
+  up = r.take(MSG_UPLINK);
+  CHECK(up.size() == 1 && up[0].body[12] == UPLINK_TS_UNCERTAIN);
+  // A shorter one tightens the threshold.
+  r.io.loop_interval = 8000;
+  r.loop();
+  r.io.t += 28001;
+  auto a = frame("join");
+  r.hear(a);
+  up = r.take(MSG_UPLINK);
+  CHECK(up.size() == 1 && up[0].body[12] == UPLINK_TS_UNCERTAIN);
+}
+
+// 01 section 4.1: the latest detection of a downlink stays inside the sensor's window.
+static void test_timing_budget() {
+  CHECK(TX_WINDOW_US == 40000);
+  const uint64_t ts_error = TS_LOOP_INTERVAL_CAP_US + TS_UNCERTAIN_EXTRA_US;
+  CHECK(ts_error == 36000);
+  const uint64_t radio_start = 5000;
+  // Preamble, sync word and header: 8 + 4.25 + 8 symbols.
+  auto detection = [](uint8_t sf, uint32_t bw_hz) { return uint64_t(20.25 * (1u << sf) * 1e6 / bw_hz); };
+  const uint64_t us915 = ts_error + TX_WINDOW_US + radio_start + detection(9, 500000);
+  const uint64_t eu868 = ts_error + TX_WINDOW_US + radio_start + detection(9, 125000);
+  CHECK(us915 / 100 == 1017 && us915 + 40000 <= 150000);
+  CHECK(eu868 / 100 == 1639 && eu868 + 30000 <= 200000);
 }
 
 static uint8_t hello_caps(Rig &r) {
@@ -911,7 +940,7 @@ static void test_engine_busy_retry() {
   r.io.radio_answers.assign(100, TX_BUSY);
   r.run_until(tx_at + TX_WINDOW_US);
   CHECK(r.take(MSG_TX_RESULT).empty());
-  CHECK(r.io.radio_answers.size() < 100 - 5);  // several attempts inside the window
+  CHECK(r.io.radio_answers.size() <= 100 - 3);  // a retry every 16 ms pass inside the window
   CHECK(r.io.timer <= r.io.t);                  // the timer keeps the loop coming back
   r.run_until(tx_at + TX_WINDOW_US + 1);
   auto out = r.take(MSG_TX_RESULT);
@@ -1143,6 +1172,7 @@ int main() {
   test_engine_dedupe_and_offline();
   test_engine_counters_offline();
   test_engine_ts_uncertain();
+  test_timing_budget();
   test_engine_hello_and_capability();
   test_engine_connection();
   test_engine_envelope_checks();

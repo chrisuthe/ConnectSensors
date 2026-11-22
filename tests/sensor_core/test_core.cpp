@@ -641,13 +641,15 @@ static void test_rx_windows_and_answer_in_rx1() {
   rig.core->report(true);
   const Tx &t = rig.wait_tx(n + 1);
   CHECK(type_of(t) == T_DATA_CONFIRMED);
-  // 01 section 4: receiver on from delay - 20 ms to at least delay + 150 ms.
+  // 01 section 4: receiver on from delay - 20 ms to at least delay + W (150 ms on US915).
+  CHECK(RX_EARLY_US == 20 * MS && RX_LATE_US == 150 * MS);
   rig.tick_to(t.done_us + 979 * MS);
   CHECK(!rig.radio.rx);
   rig.tick_to(t.done_us + 981 * MS);
   CHECK(rig.radio.rx);
   CHECK(rig.core->hold());
-  CHECK(rig.deliver_after(t, RX1_DELAY_US + 50 * MS, server.downlink(fcnt_of(t), V_TIME + 100)) ==
+  // Received at the latest detection the timing budget allows (01 section 4.1).
+  CHECK(rig.deliver_after(t, RX1_DELAY_US + 102 * MS, server.downlink(fcnt_of(t), V_TIME + 100)) ==
         DownlinkResult::ACCEPT);
   CHECK(!rig.radio.rx);
   CHECK(rig.saw(SensorEvent::UPLINK_ANSWERED));

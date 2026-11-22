@@ -123,10 +123,18 @@ on the same channel and spreading factor:
 | RX1 | 1.000 s | Downlinks from a proxy that heard the uplink directly on the LAN path |
 | RX2 | 3.000 s | Downlinks that took longer, for example through a relay |
 
+Each profile sets how long after `delay` the sensor's receiver stays open (`W`).
+Section 4.1 derives it.
+
+| Profile | `W` |
+|---|---|
+| `US915` | 150 ms |
+| `EU868` | 200 ms |
+
 Sensor requirements:
 
 - The sensor MUST have its receiver running from `delay - 20 ms` until at least
-  `delay + 150 ms`. If a preamble is detected in that time, the sensor MUST keep
+  `delay + W`. If a preamble is detected in that time, the sensor MUST keep
   receiving until the frame completes or fails.
 - A sensor MUST open RX1 after every uplink.
 - A sensor MUST open RX2 after a confirmed uplink (02, section 4) when RX1 did not
@@ -136,13 +144,51 @@ Sensor requirements:
 Proxy requirements:
 
 - A proxy transmitting a downlink MUST start transmission no earlier than `delay`
-  and no later than `delay + 100 ms` after the end of the uplink being answered.
+  and no later than `delay + 40 ms` after the end of the uplink being answered.
 - The proxy measures the end of the uplink from its RX-done event. A proxy that
   can only timestamp a packet later than the RX-done event (for example, from a
-  main-loop callback) MUST compensate for that latency or MUST NOT offer
-  downlinks.
+  main-loop callback) MUST either compensate for that latency or flag every
+  reception whose timestamp may be more than 36 ms late (`TS_UNCERTAIN`, 05
+  section 5.1). Otherwise it MUST NOT offer downlinks.
 - A proxy that cannot meet a window MUST drop the downlink rather than transmit
   late.
+
+### 4.1 Timing budget
+
+A downlink is received only if the sensor detects it before its window closes.
+For every profile, the latest detection MUST fall inside `W`:
+
+timestamp error + transmit start tolerance + radio start + detection ≤ `W`
+
+All values are milliseconds after `delay`.
+
+| Term | Source | `US915` | `EU868` |
+|---|---|---|---|
+| Timestamp error, unflagged | 06 section 7: at most 16 ms loop interval + 20 ms | 36 | 36 |
+| Transmit start window | Proxy requirements above; 06 section 8.2 | 40 | 40 |
+| Radio start: frame load, transmit command and ramp-up to the first preamble symbol | Allowance; about 1.8 ms measured to the command (05 section 5.5) | 5 | 5 |
+| Detection: 8 preamble symbols, 4.25 sync symbols, 8 header symbols (20.25 symbols) | Section 2, symbol time from section 3 | 20.7 | 82.9 |
+| Latest detection | Sum | 101.7 | 163.9 |
+| Sensor receive window `W` | Above | 150 | 200 |
+| Margin | | 48.3 | 36.1 |
+
+Notes (informative):
+
+- Detection is counted to the valid header, because that is when the ESPHome
+  `sx126x` component reports a reception in progress. SX127x radios report a
+  signal a few preamble symbols in, so they have more margin.
+- On the early side, a downlink never starts before `delay`: the proxy's timestamp
+  is never early and it does not transmit before `tx_at` (06 section 8.2). The
+  sensor's 20 ms lead covers its own TX-done and receiver-start latency.
+- Crystal drift over 3 s (at most 40 ppm, 0.12 ms) is negligible.
+- `US915` keeps the 150 ms that sensors already use; the margin covers on-air
+  offsets that have not been measured yet. `EU868` needs a longer window because
+  its 4.096 ms symbols make detection four times slower; tightening the proxy
+  further could not cover that without leaving no room for a retry after a
+  `BUSY` radio (06 section 8.2). At 6 mA, the extra 50 ms costs about 0.3 mAs per
+  uplink, small next to `EU868`'s transmit cost.
+- A downlink answering a `TS_UNCERTAIN` reception (RX2 fallback only, 07 section
+  6.3) is outside this budget and best effort.
 
 ## 5. Airtime and fairness limits
 
