@@ -24,7 +24,16 @@ BOOT = 0x01020304
 OLD_BOOT = 0x0BADB007
 
 
-PORT = 47999
+def free_port() -> int:
+    """A UDP port the OS reports free, so parallel runs don't collide (#67)."""
+    if os.environ.get("CS_TEST_PORT"):
+        return int(os.environ["CS_TEST_PORT"])
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("", 0))  # the server binds 0.0.0.0
+        return probe.getsockname()[1]
+
+
+PORT = free_port()
 
 
 def start_server(*extra: str) -> subprocess.Popen:
