@@ -195,10 +195,10 @@ healthy, but a slow component elsewhere can delay it.
   which puts it last in the pass, so it usually delivers a packet just after this
   component's pass. The packet can then have arrived any time after the previous
   pass began, and that pass began after this component's pass before it. Its
-  wait can therefore span three gaps, the one still open and the two before it, and a stall
-  in any of them (in the scheduler, which runs `interval` and `set_timeout` work
-  ahead of the component loops, or in a component earlier in the pass) may have
-  delayed it. Each gap is held to the limit separately, so several shorter delays
+  wait can therefore span three gaps, the one still open and the two before it,
+  and a stall in any of them (in the scheduler, which runs `interval` and
+  `set_timeout` work ahead of the component loops, or in a component earlier in
+  the pass) may have delayed it. Each gap is held to the limit separately, so several shorter delays
   that together pass 36 ms are not caught.
 - The component tracks the longest gap between its own loop passes and reports it
   in `HELLO` as `max_loop_gap_ms`, then resets it. This is for reporting only.
@@ -471,10 +471,10 @@ be run against a test server built from the reference tool:
     when either of the two gaps between the component's passes before it was over
     36 ms.
 14. After a single main-loop stall over 100 ms, `DOWNLINK`s are rejected with
-    `NOT_CAPABLE` for 10 seconds and accepted again after that; a `HELLO` sent
+    `NOT_CAPABLE` for 10 seconds and accepted again after that. A `HELLO` sent
     in those 10 seconds clears the downlink-capable bit and one sent after sets
-    it, while both report the stall in `max_loop_gap_ms` until the next `HELLO`
-    resets it.
+    it; the first `HELLO` after the stall reports it in `max_loop_gap_ms` either
+    way.
 
 ## 15. Upstream improvements (informative)
 
