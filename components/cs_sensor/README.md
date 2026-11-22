@@ -101,22 +101,33 @@ Where the spec is silent or ambiguous, the core takes the conservative reading:
 - Only `PAIRED` is stored. A restart in `JOINING` or `SESSION` returns to
   `UNPAIRED` with the root floor kept, so the user presses the button again.
 - A `SYNC` in `SESSION` that gets no answer after its retries returns the
-  sensor to `UNPAIRED`, keeping the root floor, like an unanswered `JOIN`.
+  sensor to `UNPAIRED`, keeping the root floor, like an unanswered `JOIN`. A
+  `SYNC` answered without `SET_NETWORK` is sent again, up to 4 times in all,
+  and then pairing fails the same way.
 - After 3 undelivered confirmed uplinks, every confirmed attempt is a `SYNC`
   until a downlink is accepted, not only the next one (08 section 6).
-- A state change abandons pending retries and counts the abandoned uplink as
-  undelivered. A frame carrying an event (a button press) is never abandoned,
-  because the new frame would deliver the event again under a new counter.
+- A state change abandons pending retries. The abandoned uplink does not count
+  as undelivered, because 08 section 5 reserves that for an uplink whose last
+  retry went unanswered. A frame carrying an event (a button press) is never
+  abandoned, because the new frame would deliver the event again under a new
+  counter.
+- Heartbeats are scheduled at `h` plus or minus 10% (08 section 4.2), but never
+  more than 24 hours after the last confirmed uplink (08 section 3.3). With `h`
+  near 1440 minutes the two conflict, and the 24-hour MUST wins.
+- `firmware_version` rides on heartbeats until one carrying it is answered.
 - Without a clock, unconfirmed frames are sent as `SYNC` too, since normal tags
   cannot be computed (08 section 3.2).
-- On `LEAVE`, the final `HEARTBEAT` opens no RX1: its keys are erased when it
-  finishes transmitting. Commands after `LEAVE` in the same downlink are not
-  executed. A `LEAVE` received in `SESSION` erases the keys without the final
-  heartbeat, which would need normal tags.
+- On `LEAVE`, the keys are erased when the final `HEARTBEAT` finishes
+  transmitting. Its RX1 still opens, but nothing in it can verify. Commands
+  after `LEAVE` in the same downlink still run, in order. A `LEAVE` received in
+  `SESSION` erases the keys without the final heartbeat, which would need
+  normal tags.
 - A truncated command ends command processing for that downlink.
 - Downlink tags are not checked: the MIC covers them, and 02 section 10.2 does
   not list them.
 - The uplink counter never uses `0xFFFFFFFF`.
+- A storage that cannot erase gets the blob overwritten with zeros, which load
+  as absent, so a factory reset still forgets the keys.
 
 ## Not done yet
 

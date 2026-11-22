@@ -141,6 +141,7 @@ void ccm_mac(const Aes128 &aes, const uint8_t nonce[CCM_NONCE_LEN], const uint8_
     aes.encrypt_block(x, x);
   }
   std::memcpy(tag, x, 16);
+  secure_zero(x, sizeof(x));
 }
 
 void ccm_ctr(const Aes128 &aes, const uint8_t nonce[CCM_NONCE_LEN], const uint8_t *in, size_t len, uint8_t *out) {
@@ -160,6 +161,7 @@ void ccm_tag_mask(const Aes128 &aes, const uint8_t nonce[CCM_NONCE_LEN], uint8_t
   ccm_counter_block(nonce, 0, a);
   aes.encrypt_block(a, s0);
   xor_block(tag, s0, CCM_TAG_LEN);
+  secure_zero(s0, sizeof(s0));
 }
 
 }  // namespace
@@ -172,6 +174,7 @@ void ccm_seal(const uint8_t key[16], const uint8_t nonce[CCM_NONCE_LEN], const u
   ccm_tag_mask(aes, nonce, tag);
   ccm_ctr(aes, nonce, plaintext, len, out);
   std::memcpy(out + len, tag, CCM_TAG_LEN);
+  secure_zero(tag, sizeof(tag));
 }
 
 bool ccm_open(const uint8_t key[16], const uint8_t nonce[CCM_NONCE_LEN], const uint8_t *aad, size_t aad_len,
@@ -181,11 +184,11 @@ bool ccm_open(const uint8_t key[16], const uint8_t nonce[CCM_NONCE_LEN], const u
   uint8_t tag[16];
   ccm_mac(aes, nonce, aad, aad_len, out, len, tag);
   ccm_tag_mask(aes, nonce, tag);
-  if (!ct_equal(tag, in + len, CCM_TAG_LEN)) {
+  bool ok = ct_equal(tag, in + len, CCM_TAG_LEN);
+  secure_zero(tag, sizeof(tag));
+  if (!ok)
     secure_zero(out, len);
-    return false;
-  }
-  return true;
+  return ok;
 }
 
 // ---------------------------------------------------------------- HKDF

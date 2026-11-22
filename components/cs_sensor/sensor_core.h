@@ -229,7 +229,7 @@ struct SensorConfig {
   // 1% of an hour (01 section 5).
   uint32_t airtime_budget_us{36000000};
   // A paired sensor sends a confirmed heartbeat if none was answered for this long
-  // (08 section 4.2, at most 24 hours).
+  // (08 section 4.2); values above 24 hours are treated as 24 (08 section 3.3).
   uint32_t confirm_interval_s{4 * 3600};
 };
 
@@ -247,6 +247,8 @@ constexpr uint64_t RETRY_JITTER_US[MAX_RETRIES] = {2000000, 4000000, 10000000};
 constexpr uint8_t SYNC_AFTER_UNDELIVERED = 3;
 constexpr uint64_t LOST_CONTACT_BACKOFF_US[4] = {60000000ULL, 300000000ULL, 900000000ULL, 3600000000ULL};
 constexpr uint8_t MAX_PENDING_HEARTBEATS = 4;
+constexpr uint8_t MAX_SESSION_SYNCS = 4;
+constexpr uint64_t MAX_CONFIRMED_GAP_US = 24ULL * 3600 * 1000000;
 constexpr uint32_t COUNTER_BLOCK = 64;
 constexpr size_t STATE_SLOTS = 16;
 constexpr size_t EVENT_SLOTS = 4;
@@ -312,6 +314,7 @@ class SensorCore {
     uint8_t type{0};
     bool confirmed{false};
     bool has_event{false};
+    bool has_firmware{false};
     uint32_t fcnt{0};
     uint8_t attempts{0};  // transmissions so far
     uint64_t first_done_us{0};
@@ -328,18 +331,20 @@ class SensorCore {
   bool save_u32_(Blob id, uint32_t v);
   bool save_session_();
   void erase_session_();
+  void erase_blob_(Blob id, size_t len);
   void wipe_ephemeral_();
   bool clock_known_();
 
   void start_next_(uint64_t now);
   bool build_(Purpose purpose, bool confirmed, uint64_t now);
-  void encode_state_(ReadingWriter &w, bool events, bool firmware, bool &took_events);
+  void encode_state_(ReadingWriter &w, bool events, bool firmware, bool &took_events, bool &took_firmware);
   void transmit_(uint64_t now);
   void window_closed_(uint64_t now);
   void finish_answered_(uint64_t now);
   void finish_undelivered_(uint64_t now);
   void finish_unconfirmed_();
   void schedule_heartbeat_(uint64_t now);
+  uint64_t cap_heartbeat_(uint64_t at) const;
   uint64_t jitter_(uint64_t range);
   bool budget_allows_(uint32_t airtime, uint64_t now);
   void budget_spend_(uint32_t airtime, uint64_t now);
@@ -413,13 +418,16 @@ class SensorCore {
   uint8_t undelivered_{0};
   bool answered_ever_{false};
   uint64_t last_answered_us_{0};
+  bool confirmed_sent_{false};
+  uint64_t last_confirmed_sent_us_{0};
+  uint8_t session_syncs_{0};
   bool full_state_sent_{false};
   uint64_t last_full_state_us_{0};
   bool stopped_{false};  // counter exhausted
   DownlinkResult last_result_{DownlinkResult::NO_WINDOW};
 
-  // Airtime: one bucket per minute over the last hour (08 section 4.4).
-  uint32_t air_buckets_[60]{};
+  // Airtime: one bucket per minute; 61 so the sum always covers a whole hour (08 section 4.4).
+  uint32_t air_buckets_[61]{};
   uint64_t air_minute_{0};
   bool air_started_{false};
 };

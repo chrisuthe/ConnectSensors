@@ -1061,11 +1061,18 @@ static void test_leave() {
   CHECK(hex(o.pt) == "01" "000101" "ff075a");
   CHECK(rig.core->state() == PairingState::UNPAIRED);
   CHECK(rig.saw(SensorEvent::LEFT));
+  // RX1 still opens after it (01 section 4); nothing in it verifies any more.
+  rig.tick_to(last.done_us + RX1_DELAY_US);
+  CHECK(rig.radio.rx);
+  CHECK(rig.in_rx1(last, server.downlink(fcnt_of(last), V_TIME + 200)) == DownlinkResult::NO_KEYS);
+  rig.tick_to(last.done_us + RX1_DELAY_US + RX_LATE_US + MS);
+  CHECK(!rig.radio.rx);
+  CHECK(!rig.core->hold());
   CHECK(rig.core->session_key() == nullptr);
   CHECK(!rig.storage.has(Blob::SESSION));
   CHECK(rig.core->root_floor() == 1 && rig.storage.u32(Blob::ROOT_FLOOR) == 1);
   CHECK(rig.storage.u32(Blob::COUNTER) == counter);
-  CHECK(rig.core->heartbeat_minutes() == 30);  // nothing after LEAVE applies
+  CHECK(rig.core->heartbeat_minutes() == 9);  // commands run in order, after LEAVE too (02 section 10.2)
   // 04 section 6.1: silent until the button.
   rig.core->report(true);
   rig.run(3 * 3600 * S);
@@ -1112,7 +1119,9 @@ static void test_abandon_retries() {
   CHECK(type_of(next) == T_DATA_CONFIRMED);
   CHECK(hex(open_up(server.keys, next.frame).pt) == "00000100");
   CHECK(next.start_us < first.done_us + 4 * S);
-  CHECK(rig.core->undelivered() == 1);
+  // Abandoned is not undelivered (08 section 5).
+  CHECK(rig.core->undelivered() == 0);
+  CHECK(!rig.saw(SensorEvent::UPLINK_UNDELIVERED));
 
   // A frame carrying an event finishes its retries first.
   CHECK(rig.in_rx1(next, server.downlink(fcnt_of(next), V_TIME + 100)) == DownlinkResult::ACCEPT);
@@ -1214,6 +1223,135 @@ static void test_state_limits_and_hints() {
   paired.radio.preamble = false;
 }
 
+static void test_confirmed_every_24h() {
+  // 08 section 3.3 caps 08 section 4.2's h + 10% at 24 hours.
+  Rig rig;
+  rig.cfg.confirm_interval_s = 48 * 3600;  // clamped to 24 h
+  Server server = pair_with_vectors(rig);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(true);
+  Tx t = rig.wait_tx(n + 1);
+  CHECK(rig.in_rx1(t, server.downlink(fcnt_of(t), V_TIME + 100, 0, {CMD_SET_HEARTBEAT, 2, 0x05, 0xA0})) ==
+        DownlinkResult::ACCEPT);
+  CHECK(rig.core->heartbeat_minutes() == 1440);
+  uint64_t last_confirmed = t.start_us;
+  int confirmed = 0;
+  for (size_t i = 0; confirmed < 3 && i < 8; i++) {
+    Tx hb = rig.wait_tx(n + 2 + i, 30 * 3600 * S);
+    if (type_of(hb) != T_HEARTBEAT_CONFIRMED)
+      continue;
+    CHECK(hb.start_us <= last_confirmed + 24 * 3600 * S + MS);
+    CHECK(rig.in_rx1(hb, server.downlink(fcnt_of(hb), V_TIME + 100)) == DownlinkResult::ACCEPT);
+    last_confirmed = hb.start_us;
+    confirmed++;
+  }
+  CHECK(confirmed == 3);
+}
+
+static void test_session_resync() {
+  // A SYNC answered without SET_NETWORK is sent again, a bounded number of times.
+  Rig rig;
+  rig.boot();
+  rig.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
+  rig.core->short_press();
+  Tx join = rig.wait_tx(1);
+  CHECK(rig.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
+  Server server;
+  server.keys = session_keys(rig.core->session_key());
+  for (uint8_t i = 0; i < MAX_SESSION_SYNCS; i++) {
+    Tx sync = rig.wait_tx(2 + i, 10 * S);
+    CHECK(type_of(sync) == T_SYNC);
+    CHECK(rig.in_rx1(sync, server.downlink(fcnt_of(sync), V_TIME, DF_PENDING, {CMD_SET_HEARTBEAT, 2, 0, 7})) ==
+          DownlinkResult::ACCEPT);
+  }
+  CHECK(rig.core->state() == PairingState::UNPAIRED);
+  CHECK(rig.saw(SensorEvent::PAIRING_FAILED));
+  rig.run(60 * S);
+  CHECK(rig.radio.sent.size() == 1 + MAX_SESSION_SYNCS);
+  CHECK(!rig.core->hold());
+
+  // One stray answer, then SET_NETWORK: paired as usual.
+  Rig r2;
+  r2.boot();
+  r2.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
+  r2.core->short_press();
+  join = r2.wait_tx(1);
+  CHECK(r2.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
+  server.fcnt = 0;
+  Tx s1 = r2.wait_tx(2);
+  CHECK(r2.in_rx1(s1, server.downlink(fcnt_of(s1), V_TIME)) == DownlinkResult::ACCEPT);
+  Tx s2 = r2.wait_tx(3, 10 * S);
+  Bytes route = unhex(V_K_NET_ROUTE), cmd = {CMD_SET_NETWORK, 16};
+  cmd.insert(cmd.end(), route.begin(), route.end());
+  CHECK(r2.in_rx1(s2, server.downlink(fcnt_of(s2), V_TIME, 0, cmd)) == DownlinkResult::ACCEPT);
+  CHECK(r2.core->state() == PairingState::PAIRED);
+}
+
+static void test_firmware_until_delivered() {
+  Rig rig;
+  Server server = pair_with_vectors(rig);
+  rig.cfg.has_firmware_version = true;
+  rig.cfg.firmware_version[0] = 3;
+  size_t n = rig.radio.sent.size();
+  rig.boot({contact(1)});
+  rig.run(60 * S);  // boot heartbeat with firmware_version, never answered
+  CHECK(rig.radio.sent.size() == n + 4);
+  CHECK(hex(open_up(server.keys, rig.radio.sent[n].frame).pt) == "02" "000101" "ffc203030000");
+  // The next heartbeat carries it again.
+  Tx hb = rig.wait_tx(n + 5);
+  CHECK(hex(open_up(server.keys, hb.frame).pt) == "02" "000101" "ffc203030000");
+  CHECK(rig.in_rx1(hb, server.downlink(fcnt_of(hb), V_TIME + 100)) == DownlinkResult::ACCEPT);
+  rig.core->report(false);
+  CHECK(hex(open_up(server.keys, rig.wait_tx(n + 6).frame).pt) == "00" "000101");
+  Tx hb2 = rig.wait_tx(n + 7);
+  CHECK(hex(open_up(server.keys, hb2.frame).pt) == "00" "000101");
+}
+
+struct NoEraseStorage : FakeStorage {
+  bool erase(Blob) override { return false; }
+};
+
+static void test_factory_reset_without_erase() {
+  // A store that cannot erase gets zeros, which load as absent.
+  Rig rig;
+  pair_with_vectors(rig);
+  NoEraseStorage store;
+  store.blobs = rig.storage.blobs;
+  SensorCore core(rig.cfg, rig.clock, rig.radio, store, rig.random);
+  core.begin();
+  CHECK(core.state() == PairingState::PAIRED);
+  core.factory_reset();
+  SensorCore again(rig.cfg, rig.clock, rig.radio, store, rig.random);
+  again.begin();
+  CHECK(again.state() == PairingState::UNPAIRED);
+  CHECK(again.root_floor() == 0);
+  CHECK(again.session_key() == nullptr);
+}
+
+static void test_airtime_window_is_an_hour() {
+  Rig rig;
+  rig.cfg.airtime_budget_us = 70000;  // one 66 ms frame per hour
+  rig.boot();
+  rig.clock.now = 59 * S;  // late in a minute
+  rig.random.keys.push_back(Bytes(32, 0x11));
+  rig.core->short_press();  // JOIN: 95 ms, over budget
+  rig.run(2 * S);
+  CHECK(rig.radio.sent.empty());
+  rig.cfg.airtime_budget_us = 100000;
+  rig.boot();
+  rig.clock.now = 3600 * S + 59 * S;
+  rig.random.keys.push_back(Bytes(32, 0x11));
+  rig.core->short_press();
+  Tx j = rig.wait_tx(1, 2 * S);
+  rig.run(60 * S);  // retries are postponed: the budget is spent
+  CHECK(rig.radio.sent.size() == 1);
+  // Not before a whole hour after the spend.
+  rig.tick_to(j.start_us + 3600 * S - S);
+  CHECK(rig.radio.sent.size() == 1);
+  rig.tick_to(j.start_us + 3600 * S + 70 * S);
+  CHECK(rig.radio.sent.size() >= 2);
+}
+
 int main() {
   test_crypto();
   test_frame_vectors();
@@ -1239,6 +1377,11 @@ int main() {
   test_abandon_retries();
   test_airtime_budget();
   test_state_limits_and_hints();
+  test_confirmed_every_24h();
+  test_session_resync();
+  test_firmware_until_delivered();
+  test_factory_reset_without_erase();
+  test_airtime_window_is_an_hour();
   std::printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

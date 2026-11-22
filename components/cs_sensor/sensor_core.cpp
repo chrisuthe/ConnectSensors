@@ -392,14 +392,21 @@ void SensorCore::wipe_ephemeral_() {
   this->has_ephemeral_ = false;
 }
 
+// Zeros load as "absent" for every blob, so they stand in for an erase that failed.
+void SensorCore::erase_blob_(Blob id, size_t len) {
+  static const uint8_t ZEROS[SESSION_BLOB_LEN] = {0};
+  if (!this->storage_.erase(id) && !this->storage_.save(id, ZEROS, len))
+    this->emit_(SensorEvent::STORAGE_FAILED);
+}
+
 void SensorCore::erase_session_() {
   secure_zero(this->k_session_, sizeof(this->k_session_));
   secure_zero(this->k_net_route_, sizeof(this->k_net_route_));
   secure_zero(&this->session_keys_, sizeof(this->session_keys_));
   this->has_session_ = this->has_route_ = false;
   this->session_floor_ = 0;
-  this->storage_.erase(Blob::SESSION);
-  this->storage_.erase(Blob::SESSION_FLOOR);
+  this->erase_blob_(Blob::SESSION, SESSION_BLOB_LEN);
+  this->erase_blob_(Blob::SESSION_FLOOR, 4);
   this->state_ = PairingState::UNPAIRED;
   this->want_join_ = this->want_session_sync_ = this->want_state_ = this->want_state_confirmed_ = false;
   this->want_leave_heartbeat_ = this->boot_uplink_ = this->want_pending_hb_ = false;
@@ -409,6 +416,7 @@ void SensorCore::erase_session_() {
   this->dl_ack_ = false;
   this->undelivered_ = 0;
   this->pending_hb_count_ = 0;
+  this->session_syncs_ = 0;
 }
 
 bool SensorCore::clock_known_() {
@@ -495,8 +503,8 @@ void SensorCore::factory_reset() {
   this->erase_session_();
   // 04 section 6.2: floors and settings go; dev_eui, k_root and the counter stay.
   this->root_floor_ = 0;
-  this->storage_.erase(Blob::ROOT_FLOOR);
-  this->storage_.erase(Blob::SETTINGS);
+  this->erase_blob_(Blob::ROOT_FLOOR, 4);
+  this->erase_blob_(Blob::SETTINGS, 2);
   this->heartbeat_minutes_ = this->config_.heartbeat_minutes;
   this->emit_(SensorEvent::FACTORY_RESET);
 }
@@ -581,8 +589,9 @@ void SensorCore::loop() {
                          (this->cur_.purpose == Purpose::STATE || this->cur_.purpose == Purpose::HEARTBEAT);
       if (can_abandon && this->want_state_) {
         // 08 section 5: newer state replaces pending retries, as a new confirmed frame.
+        // Abandoned is not undelivered: that needs the last retry to go unanswered.
         this->want_state_confirmed_ = true;
-        this->finish_undelivered_(now);
+        this->phase_ = Phase::IDLE;
         this->start_next_(now);
       } else if (now >= this->retry_at_us_) {
         if (!this->budget_allows_(this->radio_.airtime_us(this->cur_.len), now)) {
@@ -639,8 +648,11 @@ void SensorCore::start_next_(uint64_t now) {
   }
   if (this->hb_armed_ && now >= this->next_hb_us_) {
     uint64_t confirm_us = uint64_t(this->config_.confirm_interval_s) * 1000000;
+    if (confirm_us > MAX_CONFIRMED_GAP_US)
+      confirm_us = MAX_CONFIRMED_GAP_US;
     bool confirmed = !this->answered_ever_ || now - this->last_answered_us_ >= confirm_us ||
-                     this->undelivered_ >= SYNC_AFTER_UNDELIVERED;
+                     this->undelivered_ >= SYNC_AFTER_UNDELIVERED ||
+                     (this->confirmed_sent_ && now + 60000000 >= this->last_confirmed_sent_us_ + MAX_CONFIRMED_GAP_US);
     uint64_t half = uint64_t(this->heartbeat_minutes_) * 30000000;
     if (!confirmed && this->full_state_sent_ && now - this->last_full_state_us_ < half) {
       this->schedule_heartbeat_(now);  // 08 section 4.2: MAY skip
@@ -651,8 +663,10 @@ void SensorCore::start_next_(uint64_t now) {
   }
 }
 
-void SensorCore::encode_state_(ReadingWriter &w, bool events, bool firmware, bool &took_events) {
+void SensorCore::encode_state_(ReadingWriter &w, bool events, bool firmware, bool &took_events,
+                               bool &took_firmware) {
   took_events = false;
+  took_firmware = false;
   if (events) {
     // Events first; one whose (channel, kind) is already in the frame waits for the next.
     size_t keep = 0;
@@ -680,8 +694,7 @@ void SensorCore::encode_state_(ReadingWriter &w, bool events, bool firmware, boo
   if (firmware && this->config_.has_firmware_version) {
     Reading fw;
     Reading::make(0xFF, 0xC2, this->config_.firmware_version, 3, fw);
-    if (w.add(fw))
-      this->firmware_sent_ = true;
+    took_firmware = w.add(fw);
   }
 }
 
@@ -692,7 +705,7 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
   uint8_t type;
   uint32_t ntag = ZERO_TAG, dtag = ZERO_TAG;
   uint8_t uflags = this->time_sure_ ? 0 : UF_TIME_UNSURE;
-  bool took_events = false;
+  bool took_events = false, took_firmware = false;
 
   // Taking readings out of the queue is undone if the frame cannot go out yet; it
   // is then rebuilt with the latest state.
@@ -700,8 +713,7 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
   size_t saved_count = this->event_count_;
   for (size_t i = 0; i < saved_count; i++)
     saved_events[i] = this->events_[i];
-  bool saved_events_confirmed = this->events_confirmed_, saved_full = this->full_state_sent_,
-       saved_fw = this->firmware_sent_;
+  bool saved_events_confirmed = this->events_confirmed_, saved_full = this->full_state_sent_;
   uint64_t saved_full_us = this->last_full_state_us_;
   auto undo = [&]() {
     for (size_t i = 0; i < saved_count; i++)
@@ -709,7 +721,6 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
     this->event_count_ = saved_count;
     this->events_confirmed_ = saved_events_confirmed;
     this->full_state_sent_ = saved_full;
-    this->firmware_sent_ = saved_fw;
     this->last_full_state_us_ = saved_full_us;
     this->tx_blocked_until_us_ = now + 1000000;
     secure_zero(pt, sizeof(pt));
@@ -762,7 +773,7 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
     pt[0] = uflags;
     ReadingWriter w;
     bool firmware = purpose == Purpose::HEARTBEAT && !this->firmware_sent_;
-    this->encode_state_(w, purpose == Purpose::STATE, firmware, took_events);
+    this->encode_state_(w, purpose == Purpose::STATE, firmware, took_events, took_firmware);
     std::memcpy(pt + 1, w.data(), w.size());
     pt_len = 1 + w.size();
   }
@@ -779,7 +790,12 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
   u.type = type;
   u.confirmed = confirmed;
   u.has_event = took_events;
+  u.has_firmware = took_firmware;
   u.fcnt = fcnt;
+  if (confirmed) {
+    this->confirmed_sent_ = true;
+    this->last_confirmed_sent_us_ = now;
+  }
   size_t len = 0;
   seal_frame(*keys, type, ntag, dtag, fcnt, pt, pt_len, u.frame, len);
   u.len = uint8_t(len);
@@ -812,10 +828,8 @@ void SensorCore::on_tx_done(uint64_t at_us) {
   u.attempts++;
   u.last_done_us = at_us;
   if (u.purpose == Purpose::LEAVE_HEARTBEAT) {
-    // The keys go now; a window under them could carry nothing we may act on.
-    this->phase_ = Phase::IDLE;
+    // The keys go now; RX1 still opens (01 section 4), though nothing in it can verify.
     this->leave_now_();
-    return;
   }
   this->rx_index_ = 1;
   this->rx_open_us_ = at_us + RX1_DELAY_US - RX_EARLY_US;
@@ -847,11 +861,17 @@ void SensorCore::window_closed_(uint64_t now) {
   this->finish_undelivered_(now);
 }
 
-void SensorCore::finish_unconfirmed_() { this->phase_ = Phase::IDLE; }
+void SensorCore::finish_unconfirmed_() {
+  this->phase_ = Phase::IDLE;
+  if (this->cur_.has_firmware)
+    this->firmware_sent_ = true;
+}
 
 void SensorCore::finish_answered_(uint64_t now) {
   (void) now;
   this->phase_ = Phase::IDLE;
+  if (this->cur_.has_firmware)
+    this->firmware_sent_ = true;
   if (this->cur_.confirmed && (this->cur_.purpose == Purpose::STATE || this->cur_.purpose == Purpose::HEARTBEAT))
     this->emit_(SensorEvent::UPLINK_ANSWERED);
 }
@@ -880,7 +900,7 @@ void SensorCore::finish_undelivered_(uint64_t now) {
     // 08 section 6: confirmed heartbeats 1, 5, 15 and 60 minutes after the last failure, then every h.
     size_t i = this->undelivered_ - SYNC_AFTER_UNDELIVERED;
     uint64_t h = uint64_t(this->heartbeat_minutes_) * 60000000;
-    this->next_hb_us_ = now + (i < 4 ? LOST_CONTACT_BACKOFF_US[i] : h);
+    this->next_hb_us_ = this->cap_heartbeat_(now + (i < 4 ? LOST_CONTACT_BACKOFF_US[i] : h));
     this->hb_armed_ = true;
   }
 }
@@ -888,8 +908,15 @@ void SensorCore::finish_undelivered_(uint64_t now) {
 void SensorCore::schedule_heartbeat_(uint64_t now) {
   // 08 section 4.2: h after the previous one, +-10% at random.
   uint64_t h = uint64_t(this->heartbeat_minutes_) * 60000000;
-  this->next_hb_us_ = now + h - h / 10 + this->jitter_(h / 5);
+  this->next_hb_us_ = this->cap_heartbeat_(now + h - h / 10 + this->jitter_(h / 5));
   this->hb_armed_ = true;
+}
+
+// 08 section 3.3: a confirmed uplink at least every 24 hours, whatever h is.
+uint64_t SensorCore::cap_heartbeat_(uint64_t at) const {
+  if (this->confirmed_sent_ && at > this->last_confirmed_sent_us_ + MAX_CONFIRMED_GAP_US)
+    return this->last_confirmed_sent_us_ + MAX_CONFIRMED_GAP_US;
+  return at;
 }
 
 uint64_t SensorCore::jitter_(uint64_t range) {
@@ -918,11 +945,12 @@ void SensorCore::budget_spend_(uint32_t airtime, uint64_t now) {
     this->air_minute_ = minute;
   }
   // Clear the minutes that rolled out of the hour.
-  for (uint64_t m = this->air_minute_ + 1; m <= minute && m <= this->air_minute_ + 60; m++)
-    this->air_buckets_[m % 60] = 0;
+  constexpr uint64_t N = sizeof(this->air_buckets_) / sizeof(this->air_buckets_[0]);
+  for (uint64_t m = this->air_minute_ + 1; m <= minute && m <= this->air_minute_ + N; m++)
+    this->air_buckets_[m % N] = 0;
   if (minute > this->air_minute_)
     this->air_minute_ = minute;
-  this->air_buckets_[minute % 60] += airtime;
+  this->air_buckets_[minute % N] += airtime;
 }
 
 // ---- receiving
@@ -952,6 +980,10 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
 
   FrameHeader h;
   uint8_t pt[PAYLOAD_MAX];
+  struct Wipe {
+    uint8_t *p;
+    ~Wipe() { secure_zero(this->p, PAYLOAD_MAX); }
+  } wipe{pt};
   size_t pt_len;
   OpenResult o = open_frame(keys, data, len, h, pt, pt_len);
   if (o == OpenResult::BAD_FRAME)
@@ -1004,6 +1036,7 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
     this->session_floor_ = 0;
     this->state_ = PairingState::SESSION;
     this->want_session_sync_ = true;
+    this->session_syncs_ = 0;
     this->dl_ack_ = true;
   } else {
     this->session_floor_ = h.fcnt;
@@ -1032,8 +1065,16 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
     } else if (!(dflags & DF_PENDING)) {
       this->pending_hb_count_ = 0;
     }
+    // Answered without SET_NETWORK: ask again, a few times, rather than wait for ever.
+    if (this->state_ == PairingState::SESSION) {
+      if (++this->session_syncs_ < MAX_SESSION_SYNCS) {
+        this->want_session_sync_ = true;
+      } else {
+        this->erase_session_();
+        this->emit_(SensorEvent::PAIRING_FAILED);
+      }
+    }
   }
-  secure_zero(pt, sizeof(pt));
   return DownlinkResult::ACCEPT;
 }
 
@@ -1048,7 +1089,7 @@ void SensorCore::execute_commands_(const uint8_t *cmds, size_t len, bool &had_co
     had_command = true;
     switch (id) {
       case CMD_SET_NETWORK:
-        if (n != 16)
+        if (n != 16 || !this->has_session_)
           break;
         std::memcpy(this->k_net_route_, args, 16);
         this->has_route_ = true;
@@ -1077,7 +1118,7 @@ void SensorCore::execute_commands_(const uint8_t *cmds, size_t len, bool &had_co
         } else {
           this->leave_now_();
         }
-        return;  // nothing after LEAVE applies to a device that is leaving
+        break;
       case CMD_KEY_EXCHANGE:
         break;  // only valid in JOINING, under the root key set (08 section 8)
       case CMD_SET_VALUE: {
