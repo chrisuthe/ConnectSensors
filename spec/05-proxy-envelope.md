@@ -366,13 +366,17 @@ All messages fit in one UDP datagram with no fragmentation on any normal network
 ## 8. Test vectors
 
 `vectors/proxy-envelope-v1.json` has one message of each type, built with a fixed
-key and `proxy_id`. The `UPLINK` and `DOWNLINK` carry frames from
-`vectors/frame-v1.json`. The reference tool also checks that a one-bit change to
-any message fails the MAC check.
+key and `proxy_id`, and further `UPLINK` and `TX_RESULT` messages: an `UPLINK` with
+`TS_UNCERTAIN`, a `SENT` with a negative `offset_us`, and every other result with
+`offset_us` 0. The `UPLINK`s carry frames from `vectors/frame-v1.json`. The
+reference tool also checks that a one-bit change to any message fails the MAC
+check. Its `invalid` messages must be discarded (section 3: a bad MAC, version 2,
+33 bytes) or have a body that does not parse (sections 5.1 and 5.5).
 
 Its `session` sequence walks section 3.2 from both ends: a boot handshake, a
 replayed `HELLO` from an earlier boot, a server restart recovered by
-`HELLO_REQUEST` and the `SERVER_STATUS` echo, and replays of each kind of
-message. Each step gives the time, the message, which side receives it and that
+`HELLO_REQUEST` and the `SERVER_STATUS` echo, replays of each kind of message,
+and two `DOWNLINK`s arriving out of order, the late one held to the proxy's
+floor. The server steps never rely on its optional reorder tolerance. Each step gives the time, the message, which side receives it and that
 side's result. Its nonces are fixed so the sequence is reproducible; real nonces
 are random.

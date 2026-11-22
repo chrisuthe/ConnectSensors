@@ -358,7 +358,11 @@ session, the owner re-pairs it.
 ## 9. Test vectors
 
 - `vectors/pairing-v1.json`: pairing codes that MUST parse, with their fields,
-  and codes that MUST be rejected, with the reason.
+  including lowercase and surrounding whitespace (section 3.2 step 1), and codes
+  that MUST be rejected, with the reason and the step of section 3.2: wrong field
+  count or prefix (2), version (3), checksum (4), and each malformed field (5).
+  Every code rejected at step 5 has a correct checksum. `region_check` gives the
+  step 6 warning for a code parsed on a network of another region.
 - `vectors/pairing-v1.json` (`root_floor`): a sensor's root floor across a
   re-pairing with the same server, a `KEY_EXCHANGE` from a server whose counter
   rolled back (discarded), a replayed one (discarded), and a factory reset after

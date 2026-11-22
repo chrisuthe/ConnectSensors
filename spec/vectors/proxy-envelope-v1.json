@@ -67,6 +67,115 @@
       "seq": 4,
       "body": "000000020000000708",
       "message": "0103348518fffe0000011a2b3c4d000000040000000200000007080b78f85b4c4836b65a5558d0809c6e6e"
+    },
+    {
+      "name": "uplink_ts_uncertain",
+      "note": "HEARTBEAT heard after a long main-loop gap: TS_UNCERTAIN set, so the server keeps it out of RX1",
+      "type": 1,
+      "boot_id": 439041101,
+      "seq": 5,
+      "body": "0000000009259095fbf0ffe7011dc51361d306d3452268f400000004bba7002d94c1c391408357c83bf8e7",
+      "message": "0101348518fffe0000011a2b3c4d000000050000000009259095fbf0ffe7011dc51361d306d3452268f400000004bba7002d94c1c391408357c83bf8e78e5d608ccbcebff1330ced23efd1fcf6"
+    },
+    {
+      "name": "tx_result_early",
+      "note": "SENT with a negative offset_us: the radio was commanded 0.35 ms before tx_at",
+      "type": 3,
+      "boot_id": 439041101,
+      "seq": 6,
+      "body": "0000000300fffffea2",
+      "message": "0103348518fffe0000011a2b3c4d000000060000000300fffffea2a3d7a9ef03fe21763ba47cb42209c619"
+    },
+    {
+      "name": "tx_result_too_late",
+      "note": "downlink seq 4 not transmitted: TOO_LATE, offset_us 0",
+      "type": 3,
+      "boot_id": 439041101,
+      "seq": 7,
+      "body": "000000040100000000",
+      "message": "0103348518fffe0000011a2b3c4d00000007000000040100000000dd32d1508fb6975b488a0839d47cd989"
+    },
+    {
+      "name": "tx_result_busy",
+      "note": "downlink seq 5 not transmitted: BUSY, offset_us 0",
+      "type": 3,
+      "boot_id": 439041101,
+      "seq": 8,
+      "body": "000000050200000000",
+      "message": "0103348518fffe0000011a2b3c4d0000000800000005020000000023ff0722fd636c207a35e4d020db16d2"
+    },
+    {
+      "name": "tx_result_duty_cycle",
+      "note": "downlink seq 6 not transmitted: DUTY_CYCLE, offset_us 0",
+      "type": 3,
+      "boot_id": 439041101,
+      "seq": 9,
+      "body": "000000060300000000",
+      "message": "0103348518fffe0000011a2b3c4d0000000900000006030000000012d77c13b611fe8f6f2cb48d3f06219a"
+    },
+    {
+      "name": "tx_result_not_capable",
+      "note": "downlink seq 7 not transmitted: NOT_CAPABLE, offset_us 0",
+      "type": 3,
+      "boot_id": 439041101,
+      "seq": 10,
+      "body": "000000070400000000",
+      "message": "0103348518fffe0000011a2b3c4d0000000a0000000704000000008341a6dabbe052f860d8d3cfa3863485"
+    },
+    {
+      "name": "tx_result_invalid",
+      "note": "downlink seq 8 not transmitted: INVALID, offset_us 0",
+      "type": 3,
+      "boot_id": 439041101,
+      "seq": 11,
+      "body": "000000080500000000",
+      "message": "0103348518fffe0000011a2b3c4d0000000b000000080500000000f4b0d7601db95e2c5438cdb000017579"
+    },
+    {
+      "name": "tx_result_radio_error",
+      "note": "downlink seq 9 not transmitted: RADIO_ERROR, offset_us 0",
+      "type": 3,
+      "boot_id": 439041101,
+      "seq": 12,
+      "body": "000000090600000000",
+      "message": "0103348518fffe0000011a2b3c4d0000000c000000090600000000ca873571519dc2db1f8a3e04b0256eb6"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "bad_mac",
+      "note": "one bit changed",
+      "rule": "05 section 3",
+      "message": "0101348518fffe0000011a2b3c4d0000000300000100075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da1e9565c4fa443141e53e611f0d363eaee9",
+      "reason": "bad MAC"
+    },
+    {
+      "name": "version_2",
+      "note": "version 2, with a valid MAC",
+      "rule": "05 section 3",
+      "message": "0201348518fffe0000011a2b3c4d0000000300000000075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da1eb60e5278c6c6c94a55146ce7476b4e52",
+      "reason": "not a v1 envelope"
+    },
+    {
+      "name": "too_short",
+      "note": "33 bytes, one under the minimum",
+      "rule": "05 section 3",
+      "message": "0183348518fffe0000011a2b3c4d00000000877aacedd0b0b0349d1ae2952e45f3",
+      "reason": "not a v1 envelope"
+    },
+    {
+      "name": "uplink_frame_len",
+      "note": "frame_len one more than the bytes that follow; valid MAC",
+      "rule": "05 section 5.1",
+      "message": "0101348518fffe0000011a2b3c4d0000000400000000075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da7b7f899d718ea5c6e81e04f4d1b114f2",
+      "reason": "bad UPLINK length"
+    },
+    {
+      "name": "tx_result_length",
+      "note": "8-byte body; valid MAC",
+      "rule": "05 section 5.5",
+      "message": "0103348518fffe0000011a2b3c4d00000005000000020000000021a952fd8b0f422e1f87f1535030280b",
+      "reason": "bad TX_RESULT length"
     }
   ],
   "session": {
@@ -140,10 +249,32 @@
         "result": "ignored"
       },
       {
+        "t_ms": 1100,
+        "to": "server",
+        "from": "replay",
+        "note": "the same UPLINK replayed: seq not above the highest",
+        "message": "0101348518fffe0000011a2b3c4d000000030086c3cb52329e629cca2dcee4a00419ba",
+        "result": "ignored"
+      },
+      {
+        "t_ms": 1200,
+        "to": "proxy",
+        "note": "DOWNLINK overtaking the one sent before it",
+        "message": "0182348518fffe0000011a2b3c4d0000000400f19920e8a001d13a978e266d631a909c",
+        "result": "accepted"
+      },
+      {
+        "t_ms": 1210,
+        "to": "proxy",
+        "note": "the earlier DOWNLINK arriving late: not above the floor (a proxy has no reorder window)",
+        "message": "0182348518fffe0000011a2b3c4d0000000300c45b6e72a580f400e096666dc69dd32e",
+        "result": "ignored"
+      },
+      {
         "t_ms": 3000,
         "to": "proxy",
         "note": "unsolicited SERVER_STATUS at an epoch boundary",
-        "message": "0181348518fffe0000011a2b3c4d000000036b00fb2000000000008c217070933a42d1d71105ac6ed0387f",
+        "message": "0181348518fffe0000011a2b3c4d000000056b00fb200000000000aaadf44d56007a5651f6df9f54b59648",
         "result": "accepted"
       },
       {

@@ -122,5 +122,70 @@
       "plaintext": "02000101",
       "frame": "c5160000000000000000000000415c68aba1d3bb3299d4db9184"
     }
+  ],
+  "invalid": [
+    {
+      "name": "bad_mic",
+      "note": "data_confirmed from the valid frames with the last MIC bit flipped",
+      "rule": "02 section 7",
+      "keys": "session",
+      "frame": "c51261d306d3452268f400000003787421e751d0f9c8ee50da1f",
+      "reason": "MIC check failed",
+      "proxy_discards": false
+    },
+    {
+      "name": "wrong_direction",
+      "note": "uplink type sealed with the downlink direction byte in the nonce",
+      "rule": "02 section 7",
+      "keys": "session",
+      "frame": "c51261d306d3452268f400000005c8f47b171d77527872b6fcae",
+      "reason": "MIC check failed",
+      "proxy_discards": false
+    },
+    {
+      "name": "length_22",
+      "note": "empty payload: 22 bytes, one short of the minimum, with a valid MIC",
+      "rule": "02 section 3",
+      "keys": "session",
+      "frame": "c51261d306d3452268f400000006e3886dd95b229b09",
+      "reason": "frame length out of range",
+      "proxy_discards": true
+    },
+    {
+      "name": "length_87",
+      "note": "65-byte payload: 87 bytes, one over the maximum, with a valid MIC",
+      "rule": "02 section 3",
+      "keys": "session",
+      "frame": "c51261d306d3452268f4000000073f424f3f13e508cb15bec31e0cb393a10279997cac5dbb2f71ea6e547ea0a0e31f25f4ed0cb83644ee9b4d49460a662b9039f347100666ac077af121ef221dca9238abbbbb70cf7333",
+      "reason": "frame length out of range",
+      "proxy_discards": true
+    },
+    {
+      "name": "bad_magic",
+      "note": "magic 0xC4, with a valid MIC",
+      "rule": "02 section 3",
+      "keys": "session",
+      "frame": "c41261d306d3452268f40000000879c259094f22847b5d498988",
+      "reason": "bad magic",
+      "proxy_discards": true
+    },
+    {
+      "name": "version_2",
+      "note": "version 2, with a valid MIC",
+      "rule": "02 section 3",
+      "keys": "session",
+      "frame": "c52261d306d3452268f40000000944149d7fdd4417048ea00857",
+      "reason": "unsupported version",
+      "proxy_discards": true
+    },
+    {
+      "name": "type_0",
+      "note": "reserved type 0x0, with a valid MIC",
+      "rule": "02 sections 4 and 12",
+      "keys": "session",
+      "frame": "c51061d306d3452268f40000000a4024b5b00e7d2fbc0eb193b0",
+      "reason": "reserved frame type",
+      "proxy_discards": true
+    }
   ]
 }

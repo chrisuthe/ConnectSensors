@@ -462,6 +462,13 @@ tags for three epochs, and eight frames covering the whole pairing sequence
 `KEY_EXCHANGE` is root downlink 1; `SET_NETWORK` and the acknowledgement are
 session downlinks 1 and 2 (8.4).
 
+Its `invalid` frames, all under the session keys, must be discarded: a flipped MIC
+bit and an uplink sealed with the downlink direction byte (section 7), lengths 22
+and 87, a wrong magic and version 2 (section 3), and type `0x0` (section 4). Apart
+from the first two, each carries a valid MIC for its own header, so only the
+named rule rejects it. `proxy_discards` says whether a proxy's keyless checks
+(section 12) catch it; the MIC failures it forwards.
+
 Inputs:
 
 ```

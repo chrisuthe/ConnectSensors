@@ -29,6 +29,8 @@ jobs:
           git diff --exit-code spec/vectors
       - name: Test transmitter frames match the vectors
         run: python3 -I tests/esphome/check_transmitter_frames.py
+      - name: Frames match an independent AES-CCM and HKDF
+        run: python3 -I tests/spec/test_independent_crypto.py
 
   proxy-core:
     name: Proxy core unit tests

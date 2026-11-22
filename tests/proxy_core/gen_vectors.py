@@ -30,6 +30,11 @@ def main():
     for f in frames["frames"]:
         out.append(f'  {{"{f["name"]}", {f["type"]}, "{f["frame"]}"}},')
     out.append("};")
+    out.append("struct InvalidFrameVector { const char *name; bool proxy_discards; const char *hex; };")
+    out.append("static const InvalidFrameVector INVALID_FRAME_VECTORS[] = {")
+    for f in frames["invalid"]:
+        out.append(f'  {{"{f["name"]}", {"true" if f["proxy_discards"] else "false"}, "{f["frame"]}"}},')
+    out.append("};")
     out.append("")
 
     out.append(f'static const char *PROXY_KEY_HEX = "{env["inputs"]["proxy_key"]}";')

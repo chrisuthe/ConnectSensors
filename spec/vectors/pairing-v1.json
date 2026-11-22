@@ -19,18 +19,107 @@
         "profile": "CS.CONTACT-1"
       },
       "note": "lowercase input accepted"
+    },
+    {
+      "code": "  CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:C1FB\n",
+      "parsed": {
+        "dev_eui": "c5c5000000000001",
+        "k_root": "000102030405060708090a0b0c0d0e0f",
+        "region": "US915",
+        "profile": "CS.CONTACT-1"
+      },
+      "note": "surrounding whitespace removed (step 1)"
     }
   ],
   "invalid": [
     {
-      "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:C1F0",
-      "reason": "checksum mismatch"
+      "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:F20A",
+      "reason": "not a ConnectSensors pairing code",
+      "rule": "04 section 3.2 step 2",
+      "note": "6 fields"
+    },
+    {
+      "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:X:6270",
+      "reason": "not a ConnectSensors pairing code",
+      "rule": "04 section 3.2 step 2",
+      "note": "8 fields"
+    },
+    {
+      "code": "CX:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:3E76",
+      "reason": "not a ConnectSensors pairing code",
+      "rule": "04 section 3.2 step 2",
+      "note": "prefix CX"
     },
     {
       "code": "CS:2:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:C1FB",
-      "reason": "unsupported pairing code version"
+      "reason": "unsupported pairing code version",
+      "rule": "04 section 3.2 step 3",
+      "note": "version 2"
+    },
+    {
+      "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:C1F0",
+      "reason": "checksum mismatch",
+      "rule": "04 section 3.2 step 4",
+      "note": "last CHECK digit changed"
+    },
+    {
+      "code": "CS:1:C5C500000000000:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:C776",
+      "reason": "bad DEV_EUI",
+      "rule": "04 section 3.2 step 5",
+      "note": "DEV_EUI of 15 digits"
+    },
+    {
+      "code": "CS:1:C5C500000000000G:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:360A",
+      "reason": "bad DEV_EUI",
+      "rule": "04 section 3.2 step 5",
+      "note": "DEV_EUI not hex"
+    },
+    {
+      "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB:US915:CS.CONTACT-1:97B4",
+      "reason": "bad K_ROOT",
+      "rule": "04 section 3.2 step 5",
+      "note": "K_ROOT of 25 characters"
+    },
+    {
+      "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB1:US915:CS.CONTACT-1:3156",
+      "reason": "bad K_ROOT",
+      "rule": "04 section 3.2 step 5",
+      "note": "K_ROOT with 1, not in the base32 alphabet"
+    },
+    {
+      "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915::9E38",
+      "reason": "bad profile id",
+      "rule": "04 section 3.2 step 5",
+      "note": "empty PROFILE"
+    },
+    {
+      "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX:B3E4",
+      "reason": "bad profile id",
+      "rule": "04 section 3.2 step 5",
+      "note": "PROFILE of 33 characters"
+    },
+    {
+      "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS_CONTACT-1:9B4D",
+      "reason": "invalid character",
+      "rule": "04 section 3.2 step 5 (03 section 9.1)",
+      "note": "_ is not allowed in PROFILE"
     }
   ],
+  "region_check": {
+    "rule": "04 section 3.2 step 6",
+    "code": "CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:C1FB",
+    "cases": [
+      {
+        "network_region": "US915",
+        "warn": false
+      },
+      {
+        "network_region": "EU868",
+        "warn": true,
+        "note": "parses, but the server warns and asks for confirmation"
+      }
+    ]
+  },
   "root_floor": {
     "note": "inputs from frame-v1.json; a sensor in JOINING checks each downlink (02 section 10.2)",
     "sequence": [

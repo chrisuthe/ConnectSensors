@@ -268,7 +268,11 @@ profiles are published and shared is defined in 10 (Control plane).
 
 `vectors/payload-v1.json` has encoded reading lists with their decoded values,
 including a negative temperature, an unknown value, diagnostics on channel
-`0xFF`, a variable-length reading, and an unassigned kind that the decoder skips.
+`0xFF`, a variable-length reading, an unassigned kind that the decoder skips, and
+one kind on two channels. Its `invalid` payloads break section 2: truncated in a
+reading header, a length byte or a value, kind `0x00`, and a repeated
+`(channel, kind)`, also for an unassigned kind. A server applies no reading from
+any of them.
 For example, temperature 21.53 C and humidity 45.20 % on channel 0:
 
 ```
