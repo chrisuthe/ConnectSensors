@@ -16,8 +16,8 @@ jobs:
     name: Spec vectors
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install cryptography
@@ -34,8 +34,8 @@ jobs:
     name: Proxy core unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install cryptography
@@ -45,8 +45,8 @@ jobs:
     name: Sensor core unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install cryptography
@@ -56,8 +56,8 @@ jobs:
     name: Test server smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install cryptography
@@ -69,8 +69,8 @@ jobs:
     outputs:
       commit: ${{ steps.resolve.outputs.commit }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # The component needs 2026.12 (asynchronous radio transmit); until it is
@@ -114,8 +114,8 @@ jobs:
           - name: proxy-sx127x
             config: tests/esphome/proxy-sx127x.yaml
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install "esphome @ git+https://github.com/esphome/esphome@${{ needs.esphome-config.outputs.commit }}"
