@@ -28,6 +28,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.hazmat.primitives.hashes import SHA256
@@ -146,20 +147,40 @@ class ParsedHeader:
     fcnt: int
 
 
+def header_error(frame: bytes) -> str | None:
+    """Why a frame fails the keyless checks (02 sections 3 and 4), or None."""
+    if not MIN_FRAME <= len(frame) <= MAX_FRAME:
+        return "frame length out of range"
+    if frame[0] != MAGIC:
+        return "bad magic"
+    if frame[1] >> 4 != VERSION:
+        return "unsupported version"
+    if frame[1] & 0x0F == 0:
+        return "reserved frame type"
+    return None
+
+
 def parse_header(frame: bytes) -> ParsedHeader | None:
     """Keyless structural checks, as a proxy does them (02 section 12)."""
-    if not MIN_FRAME <= len(frame) <= MAX_FRAME or frame[0] != MAGIC or frame[1] >> 4 != VERSION:
+    if header_error(frame) is not None:
         return None
     (fcnt,) = struct.unpack(">I", frame[10:14])
     return ParsedHeader(frame[1] & 0x0F, frame[2:6], frame[6:10], fcnt)
 
 
 def open_frame(keys: DeviceKeys, frame: bytes) -> tuple[ParsedHeader, bytes]:
+    """Raises ValueError, with the reason, for a frame that fails the checks or the MIC."""
+    err = header_error(frame)
+    if err is not None:
+        raise ValueError(err)
     h = parse_header(frame)
-    if h is None:
-        raise ValueError("not a v1 frame")
+    assert h is not None
     d = DIR_DOWN if is_downlink(h.ftype) else DIR_UP
-    pt = AESCCM(keys.k_enc, tag_length=MIC_LEN).decrypt(nonce(keys.dev_eui, h.fcnt, d), frame[HEADER_LEN:], frame[:HEADER_LEN])
+    try:
+        pt = AESCCM(keys.k_enc, tag_length=MIC_LEN).decrypt(nonce(keys.dev_eui, h.fcnt, d), frame[HEADER_LEN:],
+                                                            frame[:HEADER_LEN])
+    except InvalidTag:
+        raise ValueError("MIC check failed") from None
     return h, pt
 
 
@@ -203,14 +224,20 @@ def encode_reading(channel: int, kind: int, value: int | float | bytes) -> bytes
 
 
 def decode_readings(data: bytes) -> list[dict[str, Any]]:
-    """Decode a reading list; unknown kinds are kept as raw bytes (03 section 3)."""
-    out, i = [], 0
+    """Decode a reading list; unknown kinds are kept as raw bytes (03 section 3).
+
+    Raises ValueError for a payload that 03 section 2 makes invalid: a truncated
+    reading, kind 0x00, or a repeated (channel, kind)."""
+    out, i, seen = [], 0, set()
     while i < len(data):
         if i + 2 > len(data):
             raise ValueError("truncated reading header")
         channel, kind = data[i], data[i + 1]
         if kind == 0x00:
             raise ValueError("kind 0x00 is reserved")
+        if (channel, kind) in seen:
+            raise ValueError("duplicate (channel, kind)")
+        seen.add((channel, kind))
         cls = kind >> 6
         i += 2
         if cls == 3:
@@ -257,6 +284,8 @@ def qr_encode(dev_eui: bytes, k_root: bytes, region: str, profile: str) -> str:
 
 
 QR_ALLOWED = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-:")
+QR_HEX = set("0123456789ABCDEF")
+QR_BASE32 = set("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567")
 
 
 def qr_parse(code: str) -> dict[str, Any]:
@@ -271,12 +300,13 @@ def qr_parse(code: str) -> dict[str, Any]:
     body, check = ":".join(parts[:6]), parts[6]
     if hashlib.sha256(body.encode()).hexdigest()[:4].upper() != check:
         raise ValueError("checksum mismatch")
-    dev_eui, k_root = bytes.fromhex(parts[2]), unb32(parts[3])
-    if len(dev_eui) != 8 or len(k_root) != 16 or len(parts[3]) != 26:
-        raise ValueError("bad field length")
-    if not 1 <= len(parts[5]) <= 32:
+    if len(parts[2]) != 16 or not set(parts[2]) <= QR_HEX:
+        raise ValueError("bad DEV_EUI")
+    if len(parts[3]) != 26 or not set(parts[3]) <= QR_BASE32:
+        raise ValueError("bad K_ROOT")
+    if not 1 <= len(parts[5]) <= 32:  # QR_ALLOWED already limits it to 03 section 9.1's characters
         raise ValueError("bad profile id")
-    return {"dev_eui": dev_eui.hex(), "k_root": k_root.hex(), "region": parts[4], "profile": parts[5]}
+    return {"dev_eui": parts[2].lower(), "k_root": unb32(parts[3]).hex(), "region": parts[4], "profile": parts[5]}
 
 
 JOIN_STALL_RETRANSMISSIONS = 3  # the sensor's last retry of a JOIN (08 section 5), answered and still repeated
@@ -419,6 +449,8 @@ M_DOWNLINK = 0x82
 M_HELLO_REQUEST = 0x83
 
 UPF_TS_UNCERTAIN = 0x01
+
+TX_RESULTS = ("SENT", "TOO_LATE", "BUSY", "DUTY_CYCLE", "NOT_CAPABLE", "INVALID", "RADIO_ERROR")  # 05 section 5.5
 
 CAP_DOWNLINK = 0x01
 
@@ -826,11 +858,20 @@ def nostr_event(sk: bytes, created_at: int, kind: int, tags: list, content: str)
             "content": content, "sig": schnorr_sign(eid, sk).hex()}
 
 
-def nostr_verify(ev: dict) -> bool:
+def nostr_error(ev: dict) -> str | None:
+    """Why a subscriber drops an event before decoding it (09 section 6.1, NIP-01), or None."""
     ser = json.dumps([0, ev["pubkey"], ev["created_at"], ev["kind"], ev["tags"], ev["content"]],
                      separators=(",", ":"), ensure_ascii=False)
     eid = hashlib.sha256(ser.encode()).digest()
-    return eid.hex() == ev["id"] and schnorr_verify(eid, bytes.fromhex(ev["pubkey"]), bytes.fromhex(ev["sig"]))
+    if eid.hex() != ev["id"]:
+        return "id mismatch"
+    if not schnorr_verify(eid, bytes.fromhex(ev["pubkey"]), bytes.fromhex(ev["sig"])):
+        return "bad signature"
+    return None
+
+
+def nostr_verify(ev: dict) -> bool:
+    return nostr_error(ev) is None
 
 
 def fed_uplink_content(frame: bytes, age_ms: int, receptions: list[tuple[bytes, float, float, int]]) -> str:
@@ -838,6 +879,27 @@ def fed_uplink_content(frame: bytes, age_ms: int, receptions: list[tuple[bytes, 
     for rx_ref, rssi, snr, flags in receptions:
         body += rx_ref + struct.pack(">hhB", round(rssi * 10), round(snr * 10), flags)
     return base64.b64encode(body).decode()
+
+
+def parse_fed_uplink(content: str) -> dict[str, Any]:
+    """Decode an uplink event's content (09 section 4.1); raises ValueError if malformed."""
+    body = base64.b64decode(content, validate=True)
+    if len(body) < 2 or body[0] != FED_VERSION:
+        raise ValueError("unsupported version")
+    p = 2 + body[1]
+    if len(body) < p + 3:
+        raise ValueError("bad length")
+    age_ms, n = struct.unpack(">HB", body[p:p + 3])
+    if not 1 <= n <= 8:
+        raise ValueError("bad n_rx")
+    p += 3
+    if len(body) != p + 13 * n:
+        raise ValueError("bad length")
+    rx = []
+    for i in range(n):
+        rssi, snr, flags = struct.unpack(">hhB", body[p + 13 * i + 8:p + 13 * i + 13])
+        rx.append((body[p + 13 * i:p + 13 * i + 8], rssi / 10, snr / 10, flags))
+    return {"frame": body[2:2 + body[1]], "age_ms": age_ms, "receptions": rx}
 
 
 def fed_downlink_content(rx_ref: bytes, frame: bytes) -> str:
@@ -941,7 +1003,43 @@ def frame_vectors() -> dict:
             case("sync_after_reboot", "session", sess, T_SYNC, z, z, 65, bytes([UF_TIME_UNSURE]) + contact_open,
                  "clock lost on battery change; fcnt jumped to the next reserved block"),
         ],
+        "invalid": invalid_frames(sess, nt, dt, bytes([UF_DL_ACK]) + contact_open),
     }
+
+
+def seal_raw(keys: DeviceKeys, magic: int, ver_type: int, ntag: bytes, dtag: bytes, fcnt: int,
+             plaintext: bytes, direction: int) -> bytes:
+    """seal() without its checks, for frames a receiver must reject."""
+    hdr = bytes([magic, ver_type]) + ntag + dtag + struct.pack(">I", fcnt)
+    return hdr + AESCCM(keys.k_enc, tag_length=MIC_LEN).encrypt(nonce(keys.dev_eui, fcnt, direction), plaintext, hdr)
+
+
+def invalid_frames(sess: DeviceKeys, nt: bytes, dt: bytes, pt: bytes) -> list[dict[str, Any]]:
+    """Frames under the session keys that a receiver must discard. Each carries a valid
+    MIC for its own header unless the MIC is the point, so only the named rule rejects it.
+    Counters 5 and up are unused by the valid frames."""
+    vt = (VERSION << 4) | T_DATA_CONFIRMED
+    good = seal(sess, T_DATA_CONFIRMED, nt, dt, 3, pt)
+    bad_mic = good[:-1] + bytes([good[-1] ^ 0x01])
+    cases = [
+        ("bad_mic", bad_mic, "MIC check failed", "02 section 7", False,
+         "data_confirmed from the valid frames with the last MIC bit flipped"),
+        ("wrong_direction", seal_raw(sess, MAGIC, vt, nt, dt, 5, pt, DIR_DOWN), "MIC check failed", "02 section 7",
+         False, "uplink type sealed with the downlink direction byte in the nonce"),
+        ("length_22", seal_raw(sess, MAGIC, vt, nt, dt, 6, b"", DIR_UP), "frame length out of range",
+         "02 section 3", True, "empty payload: 22 bytes, one short of the minimum, with a valid MIC"),
+        ("length_87", seal_raw(sess, MAGIC, vt, nt, dt, 7, pt + bytes(MAX_PAYLOAD + 1 - len(pt)), DIR_UP),
+         "frame length out of range", "02 section 3", True,
+         "65-byte payload: 87 bytes, one over the maximum, with a valid MIC"),
+        ("bad_magic", seal_raw(sess, 0xC4, vt, nt, dt, 8, pt, DIR_UP), "bad magic", "02 section 3", True,
+         "magic 0xC4, with a valid MIC"),
+        ("version_2", seal_raw(sess, MAGIC, (2 << 4) | T_DATA_CONFIRMED, nt, dt, 9, pt, DIR_UP),
+         "unsupported version", "02 section 3", True, "version 2, with a valid MIC"),
+        ("type_0", seal_raw(sess, MAGIC, VERSION << 4, nt, dt, 10, pt, DIR_UP), "reserved frame type",
+         "02 sections 4 and 12", True, "reserved type 0x0, with a valid MIC"),
+    ]
+    return [{"name": n, "note": note, "rule": rule, "keys": "session", "frame": f.hex(), "reason": reason,
+             "proxy_discards": keyless} for n, f, reason, rule, keyless, note in cases]
 
 
 def payload_vectors() -> dict:
@@ -962,18 +1060,74 @@ def payload_vectors() -> dict:
     out.append({"name": "unknown_kind_skipped", "encoded": "00590102" + "000101",
                 "decoded": decode_readings(bytes.fromhex("00590102000101")),
                 "note": "kind 0x59 is unassigned (2-byte class); receivers skip it and keep parsing"})
-    return {"spec": "ConnectSensors payload v1 (03)", "readings": out}
+    out.append({"name": "same_kind_two_channels", "encoded": "000101" + "010100",
+                "decoded": decode_readings(bytes.fromhex("000101010100")),
+                "note": "the same kind on two channels is not a duplicate"})
+    invalid = [
+        ("truncated_value", "004008", "a 2-byte temperature with one value byte"),
+        ("truncated_header", "000101" + "00", "a complete reading, then a lone channel byte"),
+        ("truncated_length", "02c1", "a variable-length kind with no length byte"),
+        ("truncated_variable", "02c1056869", "text of length 5 with 2 bytes"),
+        ("reserved_kind", "000101" + "000001", "kind 0x00 after a valid reading"),
+        ("duplicate_reading", "000101" + "000100", "(channel 0, contact) twice"),
+        ("duplicate_unknown_kind", "00590102" + "00590304", "an unassigned kind is still a (channel, kind) pair"),
+    ]
+    bad = []
+    for name, enc, note in invalid:
+        try:
+            decode_readings(bytes.fromhex(enc))
+            raise AssertionError(name)
+        except ValueError as ex:
+            bad.append({"name": name, "encoded": enc, "reason": str(ex), "rule": "03 section 2", "note": note})
+    return {"spec": "ConnectSensors payload v1 (03)", "readings": out, "invalid": bad}
+
+
+def qr_checked(*fields: str) -> str:
+    """A code from arbitrary fields with a correct CHECK, so only the field under test is wrong."""
+    body = ":".join(fields)
+    return body + ":" + hashlib.sha256(body.encode()).hexdigest()[:4].upper()
 
 
 def pairing_vectors() -> dict:
     good = qr_encode(DEV_EUI, K_ROOT, "US915", "CS.CONTACT-1")
     bad_check = good[:-1] + ("0" if good[-1] != "0" else "1")
+    eui, key = DEV_EUI.hex().upper(), b32(K_ROOT)
+    step = "04 section 3.2 step "
+    invalid = [
+        (qr_checked("CS", "1", eui, key, "US915"), step + "2", "6 fields"),
+        (qr_checked("CS", "1", eui, key, "US915", "CS.CONTACT-1", "X"), step + "2", "8 fields"),
+        (qr_checked("CX", "1", eui, key, "US915", "CS.CONTACT-1"), step + "2", "prefix CX"),
+        (qr_checked("CS", "2", eui, key, "US915", "CS.CONTACT-1"), step + "3", "version 2, correct CHECK"),
+        (bad_check, step + "4", "last CHECK digit changed"),
+        (qr_checked("CS", "1", eui[:-1], key, "US915", "CS.CONTACT-1"), step + "5", "DEV_EUI of 15 digits"),
+        (qr_checked("CS", "1", eui[:-1] + "G", key, "US915", "CS.CONTACT-1"), step + "5", "DEV_EUI not hex"),
+        (qr_checked("CS", "1", eui, key[:-1], "US915", "CS.CONTACT-1"), step + "5", "K_ROOT of 25 characters"),
+        (qr_checked("CS", "1", eui, key[:-1] + "1", "US915", "CS.CONTACT-1"), step + "5",
+         "K_ROOT with 1, not in the base32 alphabet"),
+        (qr_checked("CS", "1", eui, key, "US915", ""), step + "5", "empty PROFILE"),
+        (qr_checked("CS", "1", eui, key, "US915", "CS." + "X" * 30), step + "5", "PROFILE of 33 characters"),
+        (qr_checked("CS", "1", eui, key, "US915", "CS_CONTACT-1"), step + "5 (03 section 9.1)",
+         "_ is not allowed in PROFILE"),
+    ]
+    bad = []
+    for code, rule, note in invalid:
+        try:
+            qr_parse(code)
+            raise AssertionError(note)
+        except ValueError as ex:
+            bad.append({"code": code, "reason": str(ex), "rule": rule, "note": note})
+    spaced = "  " + good + "\n"
     return {
         "spec": "ConnectSensors pairing codes (04)",
         "valid": [{"code": good, "parsed": qr_parse(good)},
-                  {"code": good.lower(), "parsed": qr_parse(good.lower()), "note": "lowercase input accepted"}],
-        "invalid": [{"code": bad_check, "reason": "checksum mismatch"},
-                    {"code": good.replace("CS:1:", "CS:2:", 1), "reason": "unsupported pairing code version"}],
+                  {"code": good.lower(), "parsed": qr_parse(good.lower()), "note": "lowercase input accepted"},
+                  {"code": spaced, "parsed": qr_parse(spaced), "note": "surrounding whitespace removed (step 1)"}],
+        "invalid": bad,
+        "region_check": {
+            "rule": step + "6", "code": good,
+            "cases": [{"network_region": "US915", "warn": False},
+                      {"network_region": "EU868", "warn": True,
+                       "note": "parses, but the server warns and asks for confirmation"}]},
         "root_floor": root_floor_vectors(),
     }
 
@@ -1085,15 +1239,58 @@ def envelope_vectors() -> dict:
          "server asks the proxy to transmit the acknowledgement in RX1"),
         ("tx_result", M_TX_RESULT, boot, 4, tx_result_body(2, 0, 1800),
          "proxy reports it transmitted downlink seq 2, 1.8 ms after the requested time"),
+        ("uplink_ts_uncertain", M_UPLINK, boot, 5,
+         uplink_body(rx_t + 30_000_000, -104.0, -2.5, UPF_TS_UNCERTAIN, frames["heartbeat"]),
+         "HEARTBEAT heard after a long main-loop gap: TS_UNCERTAIN set, so the server keeps it out of RX1"),
+        ("tx_result_early", M_TX_RESULT, boot, 6, tx_result_body(3, 0, -350),
+         "SENT with a negative offset_us: the radio was commanded 0.35 ms before tx_at"),
     ]
+    msgs += [(f"tx_result_{name.lower()}", M_TX_RESULT, boot, 6 + code, tx_result_body(3 + code, code, 0),
+              f"downlink seq {3 + code} not transmitted: {name}, offset_us 0")
+             for code, name in enumerate(TX_RESULTS) if code]
     return {
         "spec": "ConnectSensors proxy envelope v1 (05)",
         "inputs": {"proxy_key": PROXY_KEY.hex(), "proxy_id": PROXY_ID.hex()},
         "messages": [{"name": n, "note": note, "type": t, "boot_id": b, "seq": q, "body": body.hex(),
                       "message": envelope(PROXY_KEY, t, PROXY_ID, b, q, body).hex()}
                      for n, t, b, q, body, note in msgs],
+        "invalid": invalid_envelopes(boot, frames["data_confirmed"]),
         "session": session_vectors(),
     }
+
+
+def invalid_envelopes(boot: int, frame: bytes) -> list[dict[str, Any]]:
+    """Messages a receiver must discard (05 section 3), or whose body it must reject (05 section 5)."""
+    up = envelope(PROXY_KEY, M_UPLINK, PROXY_ID, boot, 3, uplink_body(123_456_789, -97.5, 6.3, 0, frame))
+    v2 = bytes([2]) + up[1:-ENV_MAC]
+    v2 += hmac.new(PROXY_KEY, v2, hashlib.sha256).digest()[:ENV_MAC]
+    short_body = uplink_body(123_456_789, -97.5, 6.3, 0, frame)[:-1]
+    cases = [
+        ("bad_mac", up[:20] + bytes([up[20] ^ 1]) + up[21:], "bad MAC", "05 section 3", "one bit changed"),
+        ("version_2", v2, "not a v1 envelope", "05 section 3", "version 2, with a valid MAC"),
+        ("too_short", envelope(PROXY_KEY, M_HELLO_REQUEST, PROXY_ID, boot, 0, b"")[:-1], "not a v1 envelope",
+         "05 section 3", "33 bytes, one under the minimum"),
+        ("uplink_frame_len", envelope(PROXY_KEY, M_UPLINK, PROXY_ID, boot, 4, short_body), "bad UPLINK length",
+         "05 section 5.1", "frame_len one more than the bytes that follow; valid MAC"),
+        ("tx_result_length", envelope(PROXY_KEY, M_TX_RESULT, PROXY_ID, boot, 5, tx_result_body(2, 0, 0)[:8]),
+         "bad TX_RESULT length", "05 section 5.5", "8-byte body; valid MAC"),
+    ]
+    return [{"name": n, "note": note, "rule": rule, "message": m.hex(), "reason": reason}
+            for n, m, reason, rule, note in cases]
+
+
+def envelope_error(key: bytes, data: bytes) -> str | None:
+    """Why a receiver rejects a message or its body, or None."""
+    try:
+        m = open_envelope(key, data)
+        body = bytes.fromhex(m["body"])
+        if m["type"] == M_UPLINK:
+            parse_uplink(body)
+        elif m["type"] == M_TX_RESULT:
+            parse_tx_result(body)
+    except ValueError as ex:
+        return str(ex)
+    return None
 
 
 SESSION_NONCES = [0x5EED0001, 0x5EED0002, 0x5EED0003, 0x5EED0004, 0x5EED0005]
@@ -1145,10 +1342,16 @@ def session_vectors() -> dict:
     up(20, first_hello, "HELLO echoing the nonce: the server switches to this boot")
     first_status = status(pseq)
     down(40, first_status, "SERVER_STATUS answering that HELLO")
-    up(1000, env(M_UPLINK, boot, nxt(), b"\x00"), "UPLINK")
+    uplink = env(M_UPLINK, boot, nxt(), b"\x00")
+    up(1000, uplink, "UPLINK")
     dl = env(M_DOWNLINK, boot, server.next_seq(), b"\x00")
     down(1050, dl, "DOWNLINK")
     down(1060, dl, "the same DOWNLINK replayed")
+    up(1100, uplink, "the same UPLINK replayed: seq not above the highest", "replay")
+    dl_a = env(M_DOWNLINK, boot, server.next_seq(), b"\x00")
+    dl_b = env(M_DOWNLINK, boot, server.next_seq(), b"\x00")
+    down(1200, dl_b, "DOWNLINK overtaking the one sent before it")
+    down(1210, dl_a, "the earlier DOWNLINK arriving late: not above the floor (a proxy has no reorder window)")
     down(3000, status(0), "unsolicited SERVER_STATUS at an epoch boundary")
     old = hello(9, b=old_boot)
     n_old = up(5000, old, "HELLO from an earlier boot, replayed: no switch, only a HELLO_REQUEST", "replay")["nonce"]
@@ -1311,12 +1514,31 @@ def federation_vectors() -> dict:
                         fed_downlink_content(rx_ref, frames["downlink_ack"]))
     ev_res = nostr_event(PUBLISHER_SK, t + 3, KIND_DOWNLINK_RESULT, [["p", schnorr_pub(OWNER_SK).hex()]],
                          fed_result_content(rx_ref, 0, 2100))
+    multi_rx = [(bytes.fromhex("1112131415161718"), -88.0, 9.5, 0),
+                (bytes.fromhex("2122232425262728"), -101.3, 2.0, 0),
+                (bytes.fromhex("3132333435363738"), -117.9, -9.8, UPF_TS_UNCERTAIN)]
+    hb = frames["heartbeat"]
+    ev_multi = nostr_event(PUBLISHER_SK, t + 30, KIND_UPLINK, [["h", hb[2:3].hex()], ["r", "US915"]],
+                           fed_uplink_content(hb, 410, multi_rx))
+    bad_sig = dict(ev_up, sig=ev_up["sig"][:-2] + f"{int(ev_up['sig'][-2:], 16) ^ 1:02x}")
+    edited = dict(ev_up, content=fed_uplink_content(up, 181, [(rx_ref, -112.5, -4.0, 0)]))
+    no_rx = nostr_event(PUBLISHER_SK, t, KIND_UPLINK, [["h", bucket], ["r", "US915"]], fed_uplink_content(up, 180, []))
     return {"spec": "ConnectSensors federation events (09)",
             "bip340_check": BIP340_V0,
             "inputs": {"publisher_sk": PUBLISHER_SK.hex(), "owner_sk": OWNER_SK.hex(),
                        "aux_rand": "00" * 32, "note": "frames from frame-v1.json"},
             "events": [{"name": "uplink", "event": ev_up}, {"name": "downlink_request", "event": ev_dl},
-                       {"name": "downlink_result", "event": ev_res}]}
+                       {"name": "downlink_result", "event": ev_res},
+                       {"name": "uplink_multi_reception", "event": ev_multi,
+                        "note": "HEARTBEAT heard by three of the publisher's proxies, one TS_UNCERTAIN"}],
+            "invalid": [
+                {"name": "bad_signature", "event": bad_sig, "reason": "bad signature", "rule": "09 section 6.1",
+                 "note": "the uplink event with one bit of sig changed"},
+                {"name": "edited_content", "event": edited, "reason": "id mismatch", "rule": "09 section 6.1",
+                 "note": "the uplink event with age_ms changed after signing"},
+                {"name": "no_receptions", "event": no_rx, "reason": "bad n_rx", "rule": "09 section 4.1",
+                 "note": "validly signed, but n_rx is 0"},
+            ]}
 
 
 def write_vectors(d: str) -> None:
@@ -1325,6 +1547,15 @@ def write_vectors(d: str) -> None:
         with open(os.path.join(d, fname), "w") as f:
             json.dump(data, f, indent=2)
             f.write("\n")
+
+
+def rejects(reason: str, fn: Callable[..., Any], *args: Any) -> bool:
+    """fn(*args) raises ValueError with exactly reason."""
+    try:
+        fn(*args)
+    except ValueError as ex:
+        return str(ex) == reason
+    return False
 
 
 def verify(d: str) -> int:
@@ -1351,11 +1582,22 @@ def verify(d: str) -> int:
               and h.net_tag.hex() == c["net_tag"] and h.dev_tag.hex() == c["dev_tag"])
         print(f"{'ok  ' if ok else 'FAIL'} frame   {c['name']}")
         bad += not ok
+    for c in v["invalid"]:
+        frame = bytes.fromhex(c["frame"])
+        ok = rejects(c["reason"], open_frame, sets[c["keys"]], frame)
+        ok = ok and (parse_header(frame) is None) == c["proxy_discards"]
+        print(f"{'ok  ' if ok else 'FAIL'} frame   invalid {c['name']} ({c['reason']}, {c['rule']})")
+        bad += not ok
     with open(os.path.join(d, "payload-v1.json")) as f:
-        for c in json.load(f)["readings"]:
-            ok = decode_readings(bytes.fromhex(c["encoded"])) == c["decoded"]
-            print(f"{'ok  ' if ok else 'FAIL'} payload {c['name']}")
-            bad += not ok
+        pv = json.load(f)
+    for c in pv["readings"]:
+        ok = decode_readings(bytes.fromhex(c["encoded"])) == c["decoded"]
+        print(f"{'ok  ' if ok else 'FAIL'} payload {c['name']}")
+        bad += not ok
+    for c in pv["invalid"]:
+        ok = rejects(c["reason"], decode_readings, bytes.fromhex(c["encoded"]))
+        print(f"{'ok  ' if ok else 'FAIL'} payload invalid {c['name']} ({c['reason']}, {c['rule']})")
+        bad += not ok
     with open(os.path.join(d, "pairing-v1.json")) as f:
         p = json.load(f)
     for c in p["valid"]:
@@ -1363,12 +1605,13 @@ def verify(d: str) -> int:
         print(f"{'ok  ' if ok else 'FAIL'} pairing valid {c['code']}")
         bad += not ok
     for c in p["invalid"]:
-        try:
-            qr_parse(c["code"])
-            ok = False
-        except ValueError as ex:
-            ok = str(ex) == c["reason"]
-        print(f"{'ok  ' if ok else 'FAIL'} pairing invalid ({c['reason']})")
+        ok = rejects(c["reason"], qr_parse, c["code"])
+        print(f"{'ok  ' if ok else 'FAIL'} pairing invalid {c['note']} ({c['reason']}, {c['rule']})")
+        bad += not ok
+    rc = p["region_check"]
+    for c in rc["cases"]:
+        ok = (qr_parse(rc["code"])["region"] != c["network_region"]) == c["warn"]
+        print(f"{'ok  ' if ok else 'FAIL'} pairing region on a {c['network_region']} network -> warn {c['warn']}")
         bad += not ok
     vframes = {c["name"]: c["frame"] for c in v["frames"]}
     sensor = SensorPairing(k_root, eui)
@@ -1412,7 +1655,12 @@ def verify(d: str) -> int:
         elif c["type"] == M_TX_RESULT:
             t = parse_tx_result(body)
             ok = ok and tx_result_body(t["downlink_seq"], t["result"], t["offset_us"]) == body
+            ok = ok and t["result"] < len(TX_RESULTS) and (t["result"] == 0 or t["offset_us"] == 0)
         print(f"{'ok  ' if ok else 'FAIL'} envelope {c['name']}")
+        bad += not ok
+    for c in ev["invalid"]:
+        ok = envelope_error(key, bytes.fromhex(c["message"])) == c["reason"]
+        print(f"{'ok  ' if ok else 'FAIL'} envelope invalid {c['name']} ({c['reason']}, {c['rule']})")
         bad += not ok
     bad += verify_session(ev["session"])
     with open(os.path.join(d, "server-v1.json")) as f:
@@ -1482,13 +1730,23 @@ def verify(d: str) -> int:
           and schnorr_verify(bytes.fromhex(b["msg"]), bytes.fromhex(b["pub"]), bytes.fromhex(b["sig"])))
     print(f"{'ok  ' if ok else 'FAIL'} BIP-340 official vector 0")
     bad += not ok
-    sks = {"uplink": fd["inputs"]["publisher_sk"], "downlink_request": fd["inputs"]["owner_sk"],
-           "downlink_result": fd["inputs"]["publisher_sk"]}
+    sks = {schnorr_pub(bytes.fromhex(k)).hex(): bytes.fromhex(k)
+           for k in (fd["inputs"]["publisher_sk"], fd["inputs"]["owner_sk"])}
     for c in fd["events"]:
         ev = c["event"]
-        rebuilt = nostr_event(bytes.fromhex(sks[c["name"]]), ev["created_at"], ev["kind"], ev["tags"], ev["content"])
+        rebuilt = nostr_event(sks[ev["pubkey"]], ev["created_at"], ev["kind"], ev["tags"], ev["content"])
         ok = nostr_verify(ev) and rebuilt == ev
+        if ev["kind"] == KIND_UPLINK:
+            u = parse_fed_uplink(ev["content"])
+            ok = ok and fed_uplink_content(u["frame"], u["age_ms"], u["receptions"]) == ev["content"]
+            ok = ok and parse_header(u["frame"]) is not None
         print(f"{'ok  ' if ok else 'FAIL'} federation {c['name']}")
+        bad += not ok
+    for c in fd["invalid"]:
+        ev = c["event"]
+        ok = nostr_error(ev) == c["reason"] or (nostr_verify(ev) and rejects(
+            c["reason"], parse_fed_uplink, ev["content"]))
+        print(f"{'ok  ' if ok else 'FAIL'} federation invalid {c['name']} ({c['reason']}, {c['rule']})")
         bad += not ok
     print("all vectors pass" if bad == 0 else f"{bad} failures")
     return 1 if bad else 0

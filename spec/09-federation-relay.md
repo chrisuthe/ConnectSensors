@@ -279,4 +279,8 @@ own.
 - a signed uplink event carrying the `DATA_CONFIRMED` frame from
   `vectors/frame-v1.json`, a downlink request carrying the matching `DOWNLINK`,
   and a downlink result, all with fixed keys and the BIP-340 auxiliary random
-  value set to zeros so the signatures are reproducible.
+  value set to zeros so the signatures are reproducible;
+- an uplink event with three receptions of one frame, one with `TS_UNCERTAIN`;
+- `invalid` events a subscriber drops: a changed signature and content changed
+  after signing (section 6.1), and a validly signed uplink with `n_rx` 0
+  (section 4.1).

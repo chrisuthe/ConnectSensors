@@ -185,6 +185,17 @@ static void test_frame_vectors() {
   size_t pt_len;
   Bytes short_frame(22, 0xC5);
   CHECK(open_frame(root, short_frame.data(), short_frame.size(), h, big.data(), pt_len) == OpenResult::BAD_FRAME);
+
+  // open_frame leaves the type to its caller: type 0 opens, and the downlink path
+  // drops everything but T_DOWNLINK before opening.
+  for (const auto &v : INVALID_FRAME_VECTORS) {
+    Bytes wire = unhex(v.frame), back(FRAME_MAX);
+    OpenResult r = open_frame(session, wire.data(), wire.size(), h, back.data(), pt_len);
+    if (std::strcmp(v.reason, "reserved frame type") == 0)
+      CHECK(r == OpenResult::OK && h.type == 0);
+    else
+      CHECK(r != OpenResult::OK);
+  }
 }
 
 // ---------------------------------------------------------------- payload-v1.json
@@ -245,6 +256,14 @@ static void test_payload_vectors() {
   Bytes kind0 = unhex("000101000001");
   CHECK(!decode_readings(kind0.data(), kind0.size(), [&](const Reading &) { seen++; }));
   CHECK(seen == 1);
+
+  // decode_readings does not check for a repeated (channel, kind) (03 section 2); a
+  // sensor only decodes payloads it built with ReadingWriter, which refuses one.
+  for (const auto &v : INVALID_PAYLOAD_VECTORS) {
+    Bytes enc = unhex(v.encoded);
+    bool ok = decode_readings(enc.data(), enc.size(), [](const Reading &) {});
+    CHECK(ok == (std::strcmp(v.reason, "duplicate (channel, kind)") == 0));
+  }
 }
 
 static void test_pairing_code() {

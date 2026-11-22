@@ -38,7 +38,9 @@ The size of `value` follows from the top two bits of `kind`:
   of two temperature probes). Channels `0x00`-`0xFE` are defined by the device's
   profile. Channel `0xFF` is the device itself and carries diagnostics: battery,
   firmware version, uptime.
-- A payload MUST NOT contain the same `(channel, kind)` pair twice.
+- A payload MUST NOT contain the same `(channel, kind)` pair twice. A receiver
+  that meets a repeated pair MUST treat the whole payload as invalid, since it
+  cannot tell which value is current.
 - A truncated reading (the payload ends inside one) makes the whole payload
   invalid. A server MUST NOT apply any reading from an invalid payload.
 
@@ -268,7 +270,12 @@ profiles are published and shared is defined in 10 (Control plane).
 
 `vectors/payload-v1.json` has encoded reading lists with their decoded values,
 including a negative temperature, an unknown value, diagnostics on channel
-`0xFF`, a variable-length reading, and an unassigned kind that the decoder skips.
+`0xFF`, a variable-length reading, an unassigned kind that the decoder skips, and
+one kind on two channels. Its `invalid` payloads break section 2: truncated in a
+reading header, a length byte or a value, and a repeated `(channel, kind)`, also
+for an unassigned kind, from which a server applies no reading; and kind `0x00`
+after a valid reading, where it discards the rest. The reference decoder raises
+on all of them and returns no readings, stricter than section 2 requires for `0x00`.
 For example, temperature 21.53 C and humidity 45.20 % on channel 0:
 
 ```

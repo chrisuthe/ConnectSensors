@@ -133,6 +133,76 @@
         }
       ],
       "note": "kind 0x59 is unassigned (2-byte class); receivers skip it and keep parsing"
+    },
+    {
+      "name": "same_kind_two_channels",
+      "encoded": "000101010100",
+      "decoded": [
+        {
+          "channel": 0,
+          "kind": 1,
+          "name": "contact",
+          "value": 1
+        },
+        {
+          "channel": 1,
+          "kind": 1,
+          "name": "contact",
+          "value": 0
+        }
+      ],
+      "note": "the same kind on two channels is not a duplicate"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "truncated_value",
+      "encoded": "004008",
+      "reason": "truncated value",
+      "rule": "03 section 2",
+      "note": "a 2-byte temperature with one value byte"
+    },
+    {
+      "name": "truncated_header",
+      "encoded": "00010100",
+      "reason": "truncated reading header",
+      "rule": "03 section 2",
+      "note": "a complete reading, then a lone channel byte"
+    },
+    {
+      "name": "truncated_length",
+      "encoded": "02c1",
+      "reason": "truncated length",
+      "rule": "03 section 2",
+      "note": "a variable-length kind with no length byte"
+    },
+    {
+      "name": "truncated_variable",
+      "encoded": "02c1056869",
+      "reason": "truncated value",
+      "rule": "03 section 2",
+      "note": "text of length 5 with 2 bytes"
+    },
+    {
+      "name": "reserved_kind",
+      "encoded": "000101000001",
+      "reason": "kind 0x00 is reserved",
+      "rule": "03 section 2",
+      "note": "kind 0x00 after a valid reading"
+    },
+    {
+      "name": "duplicate_reading",
+      "encoded": "000101000100",
+      "reason": "duplicate (channel, kind)",
+      "rule": "03 section 2",
+      "note": "(channel 0, contact) twice"
+    },
+    {
+      "name": "duplicate_unknown_kind",
+      "encoded": "0059010200590304",
+      "reason": "duplicate (channel, kind)",
+      "rule": "03 section 2",
+      "note": "an unassigned kind is still a (channel, kind) pair"
     }
   ]
 }

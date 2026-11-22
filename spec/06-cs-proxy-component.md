@@ -414,7 +414,9 @@ be run against a test server built from the reference tool:
    4 seconds after the first copy (a sensor's earliest retry, 08 section 5) is
    forwarded again.
 3. Packets with a wrong magic byte, wrong version, type `0x0`, or a length outside
-   23-86 bytes are counted as `invalid` and not forwarded.
+   23-86 bytes are counted as `invalid` and not forwarded. The `invalid` frames of
+   `vectors/frame-v1.json` with `proxy_discards` give one of each; those without
+   it (MIC failures) are forwarded.
 4. The `UPLINK`, `HELLO` and `TX_RESULT` messages it produces parse and pass the
    MAC check with the reference tool (`open_envelope`) and the configured key, and
    their layout matches `vectors/proxy-envelope-v1.json`.

@@ -68,3 +68,15 @@ Sections marked *informative* contain no requirements.
 Normative documents that define encodings MUST have test vectors in `vectors/`.
 When the prose and the vectors disagree, the disagreement is a specification bug
 and MUST be resolved before the document leaves Draft.
+
+Where an encoding has inputs a receiver must reject, its vector file has an
+`invalid` array. Each entry gives the input, the `reason` the reference tool
+reports and the `rule` (document and section) it breaks. Entries are built so
+that only the named rule fails: a frame with a bad version still carries a valid
+MIC, a pairing code with a bad field still has a correct checksum. The reference
+tool's `verify` command checks that it rejects each one for that reason.
+
+The vectors are generated and verified by the same reference implementation, so
+`tests/spec/test_independent_crypto.py` also checks the key schedule and every
+frame with AES-CCM, HKDF and X25519 called directly, without the reference
+tool's helpers.

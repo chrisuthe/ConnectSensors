@@ -119,6 +119,12 @@ static void test_frames() {
   big.resize(86);
   CHECK(check_uplink(big.data(), big.size()) == FrameCheck::OK);
 
+  // A proxy has no keys: it drops the structurally invalid frames and forwards the bad MICs.
+  for (const auto &v : INVALID_FRAME_VECTORS) {
+    auto inv = unhex(v.hex);
+    CHECK((check_uplink(inv.data(), inv.size()) != FrameCheck::OK) == v.proxy_discards);
+  }
+
   CHECK(frame_key(f.data(), f.size()) != frame_key(j.data(), j.size()));
   CHECK(frame_key(f.data(), f.size()) == frame_key(f.data(), f.size()));
 }

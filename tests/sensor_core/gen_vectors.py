@@ -80,6 +80,19 @@ def main():
     out.append("};")
     out.append("")
 
+    out.append("struct InvalidFrameVector { const char *name; const char *reason; const char *frame; };")
+    out.append("static const InvalidFrameVector INVALID_FRAME_VECTORS[] = {")
+    for f in frames["invalid"]:
+        assert f["keys"] == "session"
+        out.append(f'  {{"{f["name"]}", "{f["reason"]}", "{f["frame"]}"}},')
+    out.append("};")
+    out.append("struct InvalidPayloadVector { const char *name; const char *reason; const char *encoded; };")
+    out.append("static const InvalidPayloadVector INVALID_PAYLOAD_VECTORS[] = {")
+    for p in payload["invalid"]:
+        out.append(f'  {{"{p["name"]}", "{p["reason"]}", "{p["encoded"]}"}},')
+    out.append("};")
+    out.append("")
+
     good = pairing["valid"][0]
     out.append(f'static const char *V_PAIRING_CODE = "{good["code"]}";')
     out.append(f'static const char *V_PAIRING_REGION = "{good["parsed"]["region"]}";')
