@@ -206,8 +206,12 @@ On a `DOWNLINK` message that passes the envelope checks (05 section 3), the
 component applies the rejection rules of 05 section 5.4, then:
 
 1. Computes the frame's airtime from the radio settings (01 section 5.1 formula).
-2. Checks the airtime budget: the sum of transmit time in the last 60 one-minute
-   buckets plus this frame MUST NOT exceed `airtime_budget` of an hour.
+2. Checks the airtime budget: the transmit time spent in the last 60 one-minute
+   buckets, plus the airtime of every downlink already scheduled or in flight,
+   plus this frame MUST NOT exceed `airtime_budget` of an hour. A downlink's
+   airtime is thus reserved when it is accepted, and is either spent once the
+   radio has had the frame (section 8.2) or freed if it is never handed to the
+   radio (`TOO_LATE`, `BUSY`, or a radio that refuses it outright).
 3. Checks the schedule: at most 4 downlinks may be scheduled, and none may
    overlap another one's `[tx_at, tx_at + airtime + 40 ms]`.
 4. Schedules the transmission for `tx_at`.
@@ -233,8 +237,11 @@ Rejections are reported immediately with `TX_RESULT`.
   frame is in the radio's FIFO and the transmit command has been issued.
   `offset_us` is that time minus `tx_at`, as defined in 05 section 5.5; it excludes
   the radio's own ramp-up to the preamble.
-- On transmit completion it reports `SENT` with that `offset_us`, and adds the
-  airtime to the budget. On a radio error it reports `RADIO_ERROR`.
+- On transmit completion it reports `SENT` with that `offset_us`. A radio error
+  or timeout after `start_transmit_async` accepted the frame is reported as
+  `RADIO_ERROR`. Either way the frame's airtime is added to the budget: the radio
+  may have sent part or all of it. A frame the radio refused outright never went
+  on air and spends nothing.
 - The radio cannot receive while it transmits. Frames sent by sensors during that
   time are lost to this proxy; other proxies and sensor retransmissions cover
   that.
@@ -422,7 +429,9 @@ be run against a test server built from the reference tool:
    uplink-type frame is not transmitted.
 6. A `DOWNLINK` for RX1 is transmitted with `offset_us` (05 section 5.5) between
    0 and 40 000 when the main loop is healthy.
-7. Downlinks that would exceed the airtime budget are rejected with `DUTY_CYCLE`.
+7. Downlinks that would exceed the airtime budget are rejected with `DUTY_CYCLE`,
+   counting the airtime of downlinks already scheduled but not yet sent. A
+   downlink the radio accepted and then failed (`RADIO_ERROR`) spends its airtime.
 8. A configuration whose radio settings differ from the region profile fails to
    compile.
 9. A frame heard while the network is down or no server address is known is not

@@ -348,8 +348,10 @@ void ProxyEngine::on_transmit_complete(bool ok) {
   if (slot == nullptr)
     return;
   this->tx_in_flight_ = nullptr;
+  // The radio accepted the frame, so it may have sent some or all of it whatever the
+  // result: the airtime counts either way (06 section 8.2).
+  this->budget_.spend(slot->airtime_us, this->io_.now_us());
   if (ok) {
-    this->budget_.spend(slot->airtime_us, this->io_.now_us());
     this->counters_.tx_ok++;
     this->log_(LogLevel::Debug, "Downlink seq %" PRIu32 " sent, TX commanded %.2f ms after target", slot->seq,
                slot->offset_us / 1000.0f);

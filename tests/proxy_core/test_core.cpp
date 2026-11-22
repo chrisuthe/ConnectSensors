@@ -389,6 +389,17 @@ static void test_scheduler() {
   TxScheduler s2;
   tiny.spend(3600000 - air / 2, now);
   CHECK(s2.admit(1, now + 1000000, f.data(), f.size(), air, now, true, tiny) == TX_DUTY_CYCLE);
+
+  // Airtime is reserved at admit: a downlink still waiting for its tx_at counts against
+  // the budget although nothing is spent yet, and a released slot frees it (06 section 8.1).
+  AirtimeBudget room(1);
+  room.spend(3600000 - air - air / 2, now);  // room for one more frame
+  TxScheduler s3;
+  CHECK(s3.admit(1, now + 1000000, f.data(), f.size(), air, now, true, room) == TX_SENT);
+  CHECK(room.used_us(now) == 3600000 - air - air / 2);
+  CHECK(s3.admit(2, now + 3000000, f.data(), f.size(), air, now, true, room) == TX_DUTY_CYCLE);
+  s3.release(s3.due(now + 1000000));
+  CHECK(s3.admit(2, now + 3000000, f.data(), f.size(), air, now, true, room) == TX_SENT);
 }
 
 static void test_eui64() {
@@ -998,7 +1009,8 @@ static void test_engine_in_flight_and_errors() {
   r.engine->on_transmit_complete(false);  // and it failed
   auto out = r.take(MSG_TX_RESULT);
   CHECK(out.size() == 1 && tx_res(out[0]).result == TX_RADIO_ERROR && tx_res(out[0]).offset_us == 0);
-  CHECK(r.engine->airtime_used_us() == 0);  // a failed transmission spends no budget
+  // The radio had the frame and may have sent it: the airtime is spent (06 section 8.2).
+  CHECK(r.engine->airtime_used_us() == air);
   r.loop();
   out = r.take(MSG_TX_RESULT);
   CHECK(out.size() == 1 && tx_res(out[0]).seq == second && tx_res(out[0]).result == TX_TOO_LATE);
@@ -1014,6 +1026,7 @@ static void test_engine_in_flight_and_errors() {
   q.run_until(base + 1000000);
   out = q.take(MSG_TX_RESULT);
   CHECK(out.size() == 1 && tx_res(out[0]).result == TX_RADIO_ERROR);
+  CHECK(q.engine->airtime_used_us() == 0);  // never accepted, so nothing went on air
   CHECK(q.io.timer == base + 2000000 - TIMER_LEAD_US);
   q.run_until(base + 2000000);
   CHECK(q.io.transmits.size() == 1);
