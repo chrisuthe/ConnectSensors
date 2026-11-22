@@ -1,0 +1,45 @@
+name: Release
+
+# Publishes the connectsensors package to PyPI on a version tag, with trusted
+# publishing: PyPI trusts this workflow file in the `pypi` environment, so no token is
+# stored. See python/README.md, "Releasing", for the one-time PyPI setup.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+      - name: Tag matches the package version
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' python/connectsensors/__init__.py)
+          echo "package version $version, tag $GITHUB_REF_NAME"
+          test "v$version" = "$GITHUB_REF_NAME"
+      - run: tests/package/check.sh dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: connectsensors-dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/connectsensors
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: connectsensors-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
