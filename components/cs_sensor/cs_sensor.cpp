@@ -275,9 +275,13 @@ void CSSensor::add_binary_reading(binary_sensor::BinarySensor *s, uint8_t channe
   src.min_interval_ms = min_interval_ms;
   size_t index = this->readings_.size();
   this->readings_.push_back(src);
-  s->add_on_state_callback([this, index](bool v) {
+  // Full-state callbacks, because add_on_state_callback skips a binary sensor's
+  // first state unless trigger_on_initial_state is set, and YAML defaults it off.
+  s->add_full_state_callback([this, index](optional<bool> /*previous*/, optional<bool> current) {
+    if (!current.has_value())
+      return;
     ReadingSource &r = this->readings_[index];
-    r.value = v ? 1.0f : 0.0f;
+    r.value = *current ? 1.0f : 0.0f;
     r.has_value = r.fresh = true;
     this->enable_loop_soon_any_context();
   });
@@ -285,7 +289,12 @@ void CSSensor::add_binary_reading(binary_sensor::BinarySensor *s, uint8_t channe
 
 void CSSensor::set_pairing_button(binary_sensor::BinarySensor *button) {
   this->button_ = button;
-  button->add_on_state_callback([this](bool pressed) {
+  // Full-state callback: a template or API-driven button's first press is its
+  // first state, which add_on_state_callback would skip.
+  button->add_full_state_callback([this](optional<bool> /*previous*/, optional<bool> current) {
+    if (!current.has_value())
+      return;
+    const bool pressed = *current;
     uint64_t now = this->clock_.now_us();
     if (pressed && !this->button_down_) {
       this->button_down_ = true;
