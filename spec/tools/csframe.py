@@ -1097,7 +1097,7 @@ def pairing_vectors() -> dict:
         (qr_checked("CS", "1", eui, key, "US915"), step + "2", "6 fields"),
         (qr_checked("CS", "1", eui, key, "US915", "CS.CONTACT-1", "X"), step + "2", "8 fields"),
         (qr_checked("CX", "1", eui, key, "US915", "CS.CONTACT-1"), step + "2", "prefix CX"),
-        (good.replace("CS:1:", "CS:2:", 1), step + "3", "version 2"),
+        (qr_checked("CS", "2", eui, key, "US915", "CS.CONTACT-1"), step + "3", "version 2, correct CHECK"),
         (bad_check, step + "4", "last CHECK digit changed"),
         (qr_checked("CS", "1", eui[:-1], key, "US915", "CS.CONTACT-1"), step + "5", "DEV_EUI of 15 digits"),
         (qr_checked("CS", "1", eui[:-1] + "G", key, "US915", "CS.CONTACT-1"), step + "5", "DEV_EUI not hex"),

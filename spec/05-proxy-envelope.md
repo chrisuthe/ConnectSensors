@@ -377,6 +377,6 @@ Its `session` sequence walks section 3.2 from both ends: a boot handshake, a
 replayed `HELLO` from an earlier boot, a server restart recovered by
 `HELLO_REQUEST` and the `SERVER_STATUS` echo, replays of each kind of message,
 and two `DOWNLINK`s arriving out of order, the late one held to the proxy's
-floor. The server steps never rely on its optional reorder tolerance. Each step gives the time, the message, which side receives it and that
-side's result. Its nonces are fixed so the sequence is reproducible; real nonces
+floor. The server steps never rely on its optional reorder tolerance. Each step
+gives the time, the message, which side receives it and that side's result. Its nonces are fixed so the sequence is reproducible; real nonces
 are random.

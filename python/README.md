@@ -37,8 +37,9 @@ downlinks it sent through a proxy in the last hour to stay under the proxy's.
 `k_session`. `seal(keys, ftype, net_tag, dev_tag, fcnt, plaintext)` builds a frame;
 `open_frame(keys, frame)` checks its MIC and returns `(ParsedHeader, plaintext)`, or
 raises `ValueError` with the reason. `parse_header(frame)` does a proxy's keyless
-checks and returns `None` for anything that isn't a v1 frame, including type `0x0`. Tags: `derive_net_route(k_net)`, `epoch_of(unix)`,
-`net_tag(k_net_route, epoch)`, `dev_tag(keys.k_dev_tag, epoch)`. Downlinks:
+checks and returns `None` for anything that isn't a v1 frame, including type `0x0`.
+Tags: `derive_net_route(k_net)`, `epoch_of(unix)`, `net_tag(k_net_route, epoch)`,
+`dev_tag(keys.k_dev_tag, epoch)`. Downlinks:
 `downlink_payload(reply_to, server_time, flags, commands)` and `command(cmd_id, args)`.
 Key exchange: `x25519_pub(priv)`, `derive_session(...)`. Constants: frame types
 `T_*`, uplink and downlink flags `UF_*` and `DF_*`, commands `CMD_*`, sizes
@@ -46,8 +47,8 @@ Key exchange: `x25519_pub(priv)`, `derive_session(...)`. Constants: frame types
 
 **Payloads (03).** `decode_readings(data)` returns one dict per reading (`channel`,
 `kind`, `name`, `value`) and keeps unknown kinds as hex. It raises `ValueError` for
-an invalid payload: truncated, kind `0x00`, or a repeated `(channel, kind)`; `encode_reading(channel,
-kind, value)` encodes one. `KINDS` maps kind codes to names. `unwrap(...)` unwraps
+an invalid payload: truncated, kind `0x00`, or a repeated `(channel, kind)`.
+`encode_reading(channel, kind, value)` encodes one. `KINDS` maps kind codes to names. `unwrap(...)` unwraps
 16-bit counters.
 
 **Pairing (04).** `qr_parse(code)` returns `dev_eui`, `k_root` (hex), `region` and
