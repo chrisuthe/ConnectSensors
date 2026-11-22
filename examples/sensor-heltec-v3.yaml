@@ -4,8 +4,9 @@
 # Needs secrets: wifi_ssid, wifi_password (Wi-Fi only carries logs and the
 # diagnostic entities; the sensor itself talks LoRa), cs_dev_eui (16 hex digits)
 # and cs_root_key (32 hex digits). Make a root key with `openssl rand -hex 16`.
-# `esphome compile` prints the sensor's pairing code; give it to the server, for
-# example `devtools/cs_testserver.py --device CS:1:...`, then press PRG.
+# Print the pairing code with `devtools/cs_pairing_code.py --secrets secrets.yaml`
+# and give it to the server, for example `devtools/cs_testserver.py --device CS:1:...`,
+# then press PRG.
 #
 # Wiring: a reed switch between GPIO6 and GND (closed when the magnet is near,
 # that is, when the door is shut). PRG (GPIO0) is the pairing button: a short
