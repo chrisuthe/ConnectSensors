@@ -176,7 +176,7 @@ frame       frame_len bytes, the LoRa frame unchanged
 
 | Bit | Name | Meaning |
 |---|---|---|
-| 0 | `TS_UNCERTAIN` | `rx_time_us` may be late by more than 20 ms (06 section 7) |
+| 0 | `TS_UNCERTAIN` | `rx_time_us` may be late by more than 36 ms (01 section 4, 06 section 7) |
 | 1-7 | reserved | 0 |
 
 `rx_time_us` comes from a clock that starts at boot and never jumps. The server
@@ -262,7 +262,7 @@ A proxy MUST reject a `DOWNLINK`, with the result code given, if:
 | The proxy is not downlink capable | `NOT_CAPABLE` |
 | The frame fails the keyless checks or its type is not a downlink type (`0x8`-`0xF`) | `INVALID` |
 | `tx_at` is more than 5 s in the future | `INVALID` |
-| `tx_at` is already more than 100 ms in the past when the message arrives | `TOO_LATE` |
+| `tx_at` is already more than 40 ms in the past when the message arrives | `TOO_LATE` |
 | Transmitting would exceed the proxy's airtime budget (01 section 5) | `DUTY_CYCLE` |
 | It overlaps a downlink already scheduled | `BUSY` |
 
@@ -283,7 +283,7 @@ the proxy's main loop, and the time to load the frame and command the radio. It
 excludes the radio's own ramp-up from that command to the first preamble symbol on
 air, so it is not an on-air time. Because the window check (06 section 8.2) runs
 before the radio is loaded, a `SENT` close to the window's end can report slightly
-more than 100 000.
+more than 40 000.
 
 For scale (informative): a Heltec WiFi LoRa 32 V3 (SX1262 with TCXO) on a healthy
 main loop reports a steady `offset_us` of about 1 800, most of it the frame load and

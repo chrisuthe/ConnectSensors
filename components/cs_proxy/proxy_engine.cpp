@@ -1,5 +1,6 @@
 #include "proxy_engine.h"
 
+#include <algorithm>
 #include <cinttypes>
 
 namespace esphome::cs_proxy {
@@ -61,7 +62,8 @@ void ProxyEngine::on_packet(const uint8_t *data, size_t len, float rssi, float s
     this->log_(LogLevel::Debug, "No server address or network; frame fcnt %" PRIu32 " dropped", h.fcnt);
     return;
   }
-  const uint8_t flags = gap > this->io_.loop_interval_us() + TS_UNCERTAIN_EXTRA_US ? UPLINK_TS_UNCERTAIN : 0;
+  const uint64_t allowed = std::min(this->io_.loop_interval_us(), TS_LOOP_INTERVAL_CAP_US) + TS_UNCERTAIN_EXTRA_US;
+  const uint8_t flags = gap > allowed ? UPLINK_TS_UNCERTAIN : 0;
   uplink_body(this->body_buf_, now, rssi, snr, flags, data, len);
   this->send_(MSG_UPLINK, this->body_buf_.data(), this->body_buf_.size());
   this->counters_.forwarded++;

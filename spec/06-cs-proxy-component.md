@@ -181,11 +181,14 @@ healthy, but a slow component elsewhere can delay it.
   (`esp_timer_get_time()` on ESP32) at the start of the listener callback.
 - The component runs its own `loop()` every main-loop pass and records the time
   of each pass. When a packet arrives, if more than the main-loop interval
-  (`App.get_loop_interval()`, normally 16 ms) plus 20 ms has passed since the
-  component's previous pass, the main loop was stalled and the packet may have
-  waited. The component MUST then set `TS_UNCERTAIN` in the `UPLINK`. The loop
-  interval is allowed for because an idle main loop sleeps between passes; the
-  radio interrupt wakes it, so sleeping does not delay packet delivery.
+  (`App.get_loop_interval()`, normally 16 ms, counted as at most 16 ms) plus
+  20 ms has passed since the component's previous pass, the main loop was stalled
+  and the packet may have waited. The component MUST then set `TS_UNCERTAIN` in
+  the `UPLINK`. The loop interval is allowed for because an idle main loop sleeps
+  between passes; the radio interrupt wakes it, so sleeping does not delay packet
+  delivery. The cap keeps the unflagged error within 36 ms, the figure in the
+  timing budget (01 section 4.1); a node configured with a longer loop interval
+  flags more receptions instead.
 - The component tracks the longest gap between its own loop passes and reports it
   in `HELLO` as `max_loop_gap_ms`, then resets it.
 - If `max_loop_gap_ms` for the last interval exceeded 100 ms, the component MUST
@@ -205,7 +208,7 @@ component applies the rejection rules of 05 section 5.4, then:
 2. Checks the airtime budget: the sum of transmit time in the last 60 one-minute
    buckets plus this frame MUST NOT exceed `airtime_budget` of an hour.
 3. Checks the schedule: at most 4 downlinks may be scheduled, and none may
-   overlap another one's `[tx_at, tx_at + airtime + 100 ms]`.
+   overlap another one's `[tx_at, tx_at + airtime + 40 ms]`.
 4. Schedules the transmission for `tx_at`.
 
 Rejections are reported immediately with `TX_RESULT`.
@@ -216,12 +219,14 @@ Rejections are reported immediately with `TX_RESULT`.
   `tx_at`. The main loop never sleeps past the next scheduled item; the callback
   only asks for a loop pass at once (`enable_loop_soon_any_context()`), and that
   pass waits out the last 2 ms and starts the transmission itself.
-- The component transmits if the current time is in `[tx_at, tx_at + 100 ms]`.
+- The component transmits if the current time is in `[tx_at, tx_at + 40 ms]`,
+  the start tolerance of the timing budget (01 section 4.1). That leaves room for
+  one or two retries after a `BUSY` radio on a healthy main loop.
   This uses the radio's `start_transmit_async`, which returns once the frame is
   in the radio and reports completion from a later loop pass, so the main loop
   is not held for the frame's airtime (about 60 to 125 ms on US915). A radio
   answer of `BUSY` (a received packet is waiting) is retried on the next loop
-  pass until `tx_at + 100 ms`, then reported as `BUSY`.
+  pass until `tx_at + 40 ms`, then reported as `BUSY`.
 - If the window has passed, it reports `TOO_LATE` and does not transmit.
 - It samples `offset_us` as soon as `start_transmit_async` accepts the frame: the
   frame is in the radio's FIFO and the transmit command has been issued.
@@ -414,7 +419,7 @@ be run against a test server built from the reference tool:
 5. A `DOWNLINK` with a bad MAC, a stale server `seq`, a different `boot_id`, or an
    uplink-type frame is not transmitted.
 6. A `DOWNLINK` for RX1 is transmitted with `offset_us` (05 section 5.5) between
-   0 and 100 000 when the main loop is healthy.
+   0 and 40 000 when the main loop is healthy.
 7. Downlinks that would exceed the airtime budget are rejected with `DUTY_CYCLE`.
 8. A configuration whose radio settings differ from the region profile fails to
    compile.

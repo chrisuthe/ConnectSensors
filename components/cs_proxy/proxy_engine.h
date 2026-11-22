@@ -21,6 +21,9 @@ static constexpr uint64_t HELLO_REQUEST_GAP_US = 5000000ULL;   // 05 section 5.6
 static constexpr uint64_t CONNECT_TIMEOUT_US = 180000000ULL;   // 06 section 9
 static constexpr uint64_t REDISCOVER_AFTER_US = 300000000ULL;  // 06 section 9
 static constexpr uint64_t TS_UNCERTAIN_EXTRA_US = 20000;       // 06 section 7
+// A longer configured loop interval would let the unflagged timestamp error grow past
+// the 36 ms in the timing budget (01 section 4.1).
+static constexpr uint64_t TS_LOOP_INTERVAL_CAP_US = 16000;
 static constexpr uint64_t DEGRADED_GAP_US = 100000;            // 06 section 7
 static constexpr uint64_t RSSI_PUBLISH_INTERVAL_US = 10000000ULL;
 static constexpr uint64_t COUNTERS_PUBLISH_INTERVAL_US = 10000000ULL;  // 06 section 10.1

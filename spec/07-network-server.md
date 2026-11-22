@@ -253,7 +253,7 @@ A proxy is a candidate for answering a frame if all of these hold:
 
 For RX1 the server excludes receptions flagged `TS_UNCERTAIN` and proxies whose
 timing record shows, among their last 20 results, any `SENT` with `offset_us`
-above 80 000 or more than 2 `TOO_LATE` or `BUSY`. Among the rest it picks the
+above 30 000 or more than 2 `TOO_LATE` or `BUSY`. Among the rest it picks the
 reception with the highest SNR. On equal SNR (within 1 dB) it prefers higher
 RSSI, then the proxy with fewer recent failures.
 
