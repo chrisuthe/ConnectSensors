@@ -122,6 +122,23 @@ state), or an RTC that went backwards. The core then runs `begin()` as after a
 power-on. Spec 08 section 9 states the rule. `tests/sensor_core` covers resume,
 each rejection, and a lost RTC across the sleep.
 
+**What a boot sends.** A boot reserves the next block of 64 uplink counters, so
+the counter jumps. A paired sensor then sends one confirmed uplink with
+`TIME_UNSURE` set (08 section 9):
+
+- `HEARTBEAT_CONFIRMED`, with the full state, battery and `firmware_version`, if
+  the RTC still holds a valid clock, for example after a software reset;
+- `SYNC`, with the same readings, if the clock is gone. On an ESP32 that is any
+  power loss, a hard reset through EN, or flashing over USB.
+
+Its answer sets the clock, and `TIME_UNSURE` clears from the next uplink.
+
+**Battery readings without a battery.** `battery_voltage` reports whatever the
+board's divider sees. With no cell fitted, a Heltec V3 on USB reads close to 0 V,
+which means "no battery", not a flat one. The example drives ADC_Ctrl (GPIO37) low
+to enable the divider, as V3.1 and V3.2 boards need; on a V3.0 board it must be
+high, or the reading stays near 0 V even with a cell fitted.
+
 ### Flash wear
 
 Storage is one ESPHome preference (NVS) per blob, committed before `save()`

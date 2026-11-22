@@ -10,6 +10,9 @@
 #   window (60 s) so PRG can pair it or hold for a factory reset.
 # - Battery voltage rides on every heartbeat. ADC_Ctrl (GPIO37) is driven low to
 #   enable the divider, as on V3.1 and V3.2 boards; V3.0 boards need it high.
+#   With no cell fitted it reads close to 0 V.
+# - A power loss, EN reset or USB flash loses the RTC clock: that boot sends SYNC
+#   with TIME_UNSURE, and its answer sets the clock (components/cs_sensor/README.md).
 
 substitutions:
   name: lora-door-battery
