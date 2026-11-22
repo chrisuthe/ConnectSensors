@@ -67,7 +67,7 @@ Components:
 
 | Component | Runs on | Role |
 |---|---|---|
-| Sensor firmware | nRF52840 or ESP32 + SX1262 | Measures, encrypts, transmits, retries |
+| Sensor firmware (`cs_sensor`) | ESPHome node + SX126x/SX127x, mains or battery | Measures, encrypts, transmits, retries |
 | `cs_proxy` | ESPHome node + SX126x/SX127x | Filters, dedupes, forwards; transmits downlinks |
 | `connect_sensors` integration | Home Assistant | Network server: dedupe, crypto, entities, pairing |
 | `cs-relay` | Any small server | Store-nothing pub/sub for federation between homes |
@@ -279,15 +279,25 @@ Proxies (ESPHome):
 - Any ESP32 board with a mains supply and an external antenna; proxies are
   always-on receivers.
 
-Sensors (battery):
+Sensors (mains or battery):
 
 - RAK4631 (nRF52840 + SX1262) - preferred for battery life
 - Seeed XIAO nRF52840 + Wio-SX1262
 - Heltec Mesh Node T114
 - ESP32 + SX1262 only for mains-powered or rarely-reporting sensors
 
-Sensor firmware: Zephyr (or Arduino with RadioLib) for v1. ESPHome's nRF52
-support is worth evaluating so sensors can also be configured in YAML.
+Sensor firmware: ESPHome, with the `cs_sensor` external component, on any chip
+ESPHome supports with an SX126x or SX127x radio, mains or battery. A sensor is
+built in YAML like a proxy; battery operation is ESPHome's `deep_sleep`. The
+protocol lives in `sensor_core`, an ESPHome-free library host-tested against the
+spec vectors (`components/cs_sensor/`), with its crypto in the component so
+ESP32 and nRF52 run identical code. The ESPHome glue is the next step.
+
+ESPHome on nRF52 is feasible: on ESPHome `dev`, a probe for the Seeed XIAO
+nRF52840 with SPI, `sx126x` on the US915 profile, `deep_sleep` and a GPIO binary
+sensor compiles, using 16% of flash (131 KB of 812 KB) and 11% of RAM (28.5 KB of
+256 KB). Running `sx126x` on nRF52, sleep current, waking on a GPIO edge, and
+flash wear from counter reservation are still to be checked on hardware.
 
 ---
 
@@ -315,7 +325,8 @@ support is worth evaluating so sensors can also be configured in YAML.
 3. Default relay operators and governance: who runs the bootstrap relays?
 4. Registering the provisional event kinds 21110-21112 through the NIP process.
 5. Whether to hide `fcnt` per epoch to reduce traffic analysis.
-6. Battery-sensor firmware: Zephyr vs. ESPHome nRF52.
+6. Battery life of ESPHome sensors on nRF52 against the budget in spec 08,
+   measured on hardware.
 7. License for code outside `spec/` (the spec is CC BY 4.0, its tools and vectors MIT).
 8. The project's domain, which fixes the lexicon NSID authority (currently the
    provisional `org.connectsensors`).
@@ -333,7 +344,7 @@ ConnectSensors/
                                     may move to its own repository)
   components/cs_proxy/              ESPHome external component
   custom_components/connect_sensors/ Home Assistant integration
-  firmware/sensor/                  reference sensor firmware
+  components/cs_sensor/             sensor firmware: sensor_core, then ESPHome glue
   relay/                            cs-relay (Nostr-compatible ephemeral relay)
   examples/                         proxy YAML for reference boards
 ```
