@@ -24,8 +24,9 @@ import math
 import os
 import struct
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
@@ -201,7 +202,7 @@ def encode_reading(channel: int, kind: int, value: int | float | bytes) -> bytes
     return bytes([channel, kind]) + struct.pack(">" + fmt, value)
 
 
-def decode_readings(data: bytes) -> list[dict]:
+def decode_readings(data: bytes) -> list[dict[str, Any]]:
     """Decode a reading list; unknown kinds are kept as raw bytes (03 section 3)."""
     out, i = [], 0
     while i < len(data):
@@ -258,7 +259,7 @@ def qr_encode(dev_eui: bytes, k_root: bytes, region: str, profile: str) -> str:
 QR_ALLOWED = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-:")
 
 
-def qr_parse(code: str) -> dict:
+def qr_parse(code: str) -> dict[str, Any]:
     code = code.strip().upper()
     if not set(code) <= QR_ALLOWED:
         raise ValueError("invalid character")
@@ -281,34 +282,79 @@ def qr_parse(code: str) -> dict:
 JOIN_STALL_RETRANSMISSIONS = 3  # the sensor's last retry of a JOIN (08 section 5), answered and still repeated
 
 
+@dataclass
+class PendingExchange:
+    """A JOIN answered with a new KEY_EXCHANGE, until SET_NETWORK is acknowledged
+    (04 section 4.2). The server persists it before sending frame (04 section 4.6,
+    07 section 10) and restores it with JoinResponder(..., pending=...), so a JOIN
+    retransmitted across a restart gets the same frame. to_dict() and from_dict()
+    convert it to and from JSON-safe values; k_session is secret, store it as such."""
+
+    sensor_pub: bytes
+    frame: bytes      # the KEY_EXCHANGE downlink
+    k_session: bytes
+    retransmissions: int = 0  # counted toward the stall (07 section 5.1)
+    sent: bool = True         # retransmissions are counted once this is set
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"sensor_pub": self.sensor_pub.hex(), "frame": self.frame.hex(), "k_session": self.k_session.hex(),
+                "retransmissions": self.retransmissions, "sent": self.sent}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> PendingExchange:
+        # A record without "sent" predates it and was counted from the start.
+        return cls(bytes.fromhex(d["sensor_pub"]), bytes.fromhex(d["frame"]), bytes.fromhex(d["k_session"]),
+                   int(d["retransmissions"]), bool(d.get("sent", True)))
+
+
 class JoinResponder:
     """Server answers to JOIN for one device (02 section 8.4, 04 section 4.2, 07 section 5.1).
 
     The root downlink counter is never reset, so no two KEY_EXCHANGE frames share a
     root nonce. A retransmitted JOIN gets the cached frame back byte for byte and
-    leaves the pending k_session alone."""
+    leaves the pending k_session alone.
 
-    def __init__(self, k_root: bytes, dev_eui: bytes, root_fcnt_down: int = 0):
+    Persist root_fcnt_down and pending, and pass both back after a restart. With
+    count_after_sent, retransmissions count toward the stall only after sent() reported
+    the KEY_EXCHANGE SENT, as 07 section 5.1 asks; without it, every one counts."""
+
+    def __init__(self, k_root: bytes, dev_eui: bytes, root_fcnt_down: int = 0,
+                 pending: PendingExchange | None = None, *, count_after_sent: bool = False):
         self.k_root, self.dev_eui = k_root, dev_eui
         self.root = keys_from(k_root, dev_eui)
         self.root_fcnt_down = root_fcnt_down  # last value used; persisted, kept after removal
-        self.pending = None
+        self.pending: PendingExchange | None = pending
+        self.count_after_sent = count_after_sent
 
-    def join(self, frame: bytes, server_priv: bytes | None, server_time: int | None) -> dict:
+    def join(self, frame: bytes, server_priv: bytes | None, server_time: int | None) -> dict[str, Any]:
+        """Answer a JOIN. server_priv (a fresh X25519 private key) and server_time are
+        used only for a new exchange; returns action ("new_exchange" or "resend"),
+        frame, k_session and stalled."""
         h, pt = open_frame(self.root, frame)
         sensor_pub = pt[1:33]
         p = self.pending
-        if p is not None and p["sensor_pub"] == sensor_pub:
-            p["retransmissions"] += 1
-            return {"action": "resend", "frame": p["frame"], "k_session": p["k_session"],
-                    "stalled": p["retransmissions"] >= JOIN_STALL_RETRANSMISSIONS}
+        if p is not None and p.sensor_pub == sensor_pub:
+            if p.sent:
+                p.retransmissions += 1
+            return {"action": "resend", "frame": p.frame, "k_session": p.k_session,
+                    "stalled": p.retransmissions >= JOIN_STALL_RETRANSMISSIONS}
+        if server_priv is None or server_time is None:
+            raise ValueError("a new exchange needs server_priv and server_time")
         self.root_fcnt_down += 1
         server_pub = x25519_pub(server_priv)
         k_session = derive_session(self.k_root, self.dev_eui, server_priv, sensor_pub, sensor_pub, server_pub)
         dl = seal(self.root, T_DOWNLINK, ZERO_TAG, ZERO_TAG, self.root_fcnt_down,
                   downlink_payload(h.fcnt, server_time, 0, command(CMD_KEY_EXCHANGE, server_pub)))
-        self.pending = {"sensor_pub": sensor_pub, "frame": dl, "k_session": k_session, "retransmissions": 0}
+        self.pending = PendingExchange(sensor_pub, dl, k_session, sent=not self.count_after_sent)
         return {"action": "new_exchange", "frame": dl, "k_session": k_session, "stalled": False}
+
+    def sent(self, frame: bytes) -> bool:
+        """A proxy reported a transmission of frame SENT (05 section 5.5). Returns whether
+        frame is the pending KEY_EXCHANGE; a late result for an older one is ignored."""
+        if self.pending is None or self.pending.frame != frame:
+            return False
+        self.pending.sent = True
+        return True
 
     def paired(self) -> None:
         """SET_NETWORK acknowledged: the pending exchange is done."""
@@ -323,8 +369,8 @@ class SensorPairing:
         self.root = keys_from(k_root, dev_eui)
         self.root_floor = 0     # survives pairing, LEAVE and re-pairing
         self.session_floor = 0  # per k_session
-        self.k_session = None
-        self.joining = None     # (JOIN fcnt, ephemeral private key)
+        self.k_session: bytes | None = None
+        self.joining: tuple[int, bytes] | None = None  # (JOIN fcnt, ephemeral private key)
 
     def join(self, fcnt: int, priv: bytes) -> bytes:
         self.joining = (fcnt, priv)
@@ -385,7 +431,7 @@ def envelope(key: bytes, msg_type: int, proxy_id: bytes, boot_id: int, seq: int,
     return msg + hmac.new(key, msg, hashlib.sha256).digest()[:ENV_MAC]
 
 
-def open_envelope(key: bytes, data: bytes) -> dict:
+def open_envelope(key: bytes, data: bytes) -> dict[str, Any]:
     if len(data) < ENV_HEADER + ENV_MAC or data[0] != ENV_VERSION:
         raise ValueError("not a v1 envelope")
     msg, mac = data[:-ENV_MAC], data[-ENV_MAC:]
@@ -400,7 +446,7 @@ def uplink_body(rx_time_us: int, rssi: float, snr: float, flags: int, frame: byt
     return struct.pack(">QhhB", rx_time_us, round(rssi * 10), round(snr * 10), flags) + bytes([len(frame)]) + frame
 
 
-def parse_uplink(body: bytes) -> dict:
+def parse_uplink(body: bytes) -> dict[str, Any]:
     if len(body) < 14 or len(body) != 14 + body[13]:
         raise ValueError("bad UPLINK length")
     rx_time_us, rssi, snr, flags, _ = struct.unpack(">QhhBB", body[:14])
@@ -416,7 +462,7 @@ def hello_body(caps: int, region: str, freq_hz: int, sf: int, bw_khz: int, uptim
             + bytes([len(fw)]) + fw.encode())
 
 
-def parse_hello(body: bytes) -> dict:
+def parse_hello(body: bytes) -> dict[str, Any]:
     caps, rlen = body[0], body[1]
     p = 2 + rlen
     freq, sf, bw, uptime = struct.unpack(">IBHI", body[p:p + 11])
@@ -434,7 +480,7 @@ def server_status_body(server_time: int, tags: list[bytes], hello_seq: int = 0) 
     return struct.pack(">IIB", server_time, hello_seq, len(tags)) + b"".join(tags)
 
 
-def parse_server_status(body: bytes) -> dict:
+def parse_server_status(body: bytes) -> dict[str, Any]:
     server_time, hello_seq, n = struct.unpack(">IIB", body[:9])
     if n > 32 or len(body) != 9 + 4 * n:
         raise ValueError("bad SERVER_STATUS length")
@@ -454,7 +500,7 @@ def tx_result_body(downlink_seq: int, result: int, offset_us: int) -> bytes:
     return struct.pack(">IBi", downlink_seq, result, offset_us)
 
 
-def parse_tx_result(body: bytes) -> dict:
+def parse_tx_result(body: bytes) -> dict[str, Any]:
     if len(body) != 9:
         raise ValueError("bad TX_RESULT length")
     downlink_seq, result, offset_us = struct.unpack(">IBi", body)
@@ -477,10 +523,10 @@ class ProxyLink:
     def __init__(self, boot_id: int):
         self.boot_id = boot_id
         self.floor = 0
-        self.echoes: list[list] = []  # [HELLO seq, sent at, echoed], the last 3 sent
-        self.last_requested_ms = None
+        self.echoes: list[list[Any]] = []  # [HELLO seq, sent at, echoed], the last 3 sent
+        self.last_requested_ms: int | None = None
 
-    def sent(self, m: dict, now_ms: int) -> None:
+    def sent(self, m: dict[str, Any], now_ms: int) -> None:
         if m["type"] != M_HELLO:
             return
         self.echoes = (self.echoes + [[m["seq"], now_ms, False]])[-HELLO_ECHO_SLOTS:]
@@ -494,7 +540,7 @@ class ProxyLink:
                 return True
         return False
 
-    def receive(self, m: dict, now_ms: int) -> dict:
+    def receive(self, m: dict[str, Any], now_ms: int) -> dict[str, Any]:
         if m["boot_id"] != self.boot_id:
             return {"result": "ignored"}
         body = bytes.fromhex(m["body"])
@@ -526,16 +572,16 @@ class ServerLink:
 
     def __init__(self, new_nonce: Callable[[], int]):
         self.new_nonce = new_nonce
-        self.boot_id = None
+        self.boot_id: int | None = None
         self.last_seq = 0
         self.seq = 0
-        self.requests: dict[int, list] = {}  # boot_id -> [nonce, issued_ms, last_sent_ms]
+        self.requests: dict[int, list[Any]] = {}  # boot_id -> [nonce, issued_ms, last_sent_ms]
 
     def next_seq(self) -> int:
         self.seq += 1
         return self.seq
 
-    def receive(self, m: dict, now_ms: int) -> dict:
+    def receive(self, m: dict[str, Any], now_ms: int) -> dict[str, Any]:
         boot = m["boot_id"]
         if boot == self.boot_id:
             if m["seq"] <= self.last_seq:
@@ -568,11 +614,14 @@ REORDER_WINDOW = 16
 
 
 class UplinkCounter:
-    """Server-side uplink counter acceptance (02 section 8.5, 07 section 5)."""
+    """Server-side uplink counter acceptance (02 section 8.5, 07 section 5).
 
-    def __init__(self, first: int):
+    last and seen (the late arrivals accepted below it) are the persisted record of
+    07 section 10; restore them with UplinkCounter(last, seen)."""
+
+    def __init__(self, first: int, seen: Iterable[int] = ()):
         self.last = first
-        self.seen = set()
+        self.seen: set[int] = {x for x in seen if first - REORDER_WINDOW < x < first}
 
     def offer(self, fcnt: int) -> str:
         if fcnt > self.last:
@@ -600,11 +649,12 @@ class UplinkCollector:
     """Server grouping of copies into transmissions and answering of retransmissions
     for one device (07 section 4, steps 3 and 5, and section 4.3)."""
 
-    def __init__(self, first: int):
-        self.counter = UplinkCounter(first)
-        self.frames = {}  # key -> [first transmission rx_ms, current transmission rx_ms, answered again]
+    def __init__(self, first: int, seen: Iterable[int] = ()):
+        self.counter = UplinkCounter(first, seen)
+        # key -> [first transmission rx_ms, current transmission rx_ms, answered again]; not persisted
+        self.frames: dict[bytes, list[int]] = {}
 
-    def receive(self, frame: bytes, arrived_ms: int, age_ms: int = 0) -> dict:
+    def receive(self, frame: bytes, arrived_ms: int, age_ms: int = 0) -> dict[str, Any]:
         rx = arrived_ms - age_ms  # a federated copy was received age_ms before its event arrived
         self.frames = {k: v for k, v in self.frames.items() if rx - v[0] < FRAME_MEMORY_MS}
         key = frame_key(frame)
@@ -612,6 +662,8 @@ class UplinkCollector:
         if f is not None and rx - f[1] < MERGE_WINDOW_MS:
             return {"result": "copy"}
         h = parse_header(frame)
+        if h is None:
+            raise ValueError("not a v1 frame")
         counter = self.counter.offer(h.fcnt)
         if f is None:
             # A duplicate of a frame no longer remembered is a replay: never answered again.
@@ -761,7 +813,7 @@ def fed_result_content(rx_ref: bytes, result: int, offset_us: int) -> str:
 def airtime_ms(payload_len: int, sf: int, bw_hz: int, cr: int = 1, preamble: int = 8,
                explicit_header: bool = True, crc: bool = True) -> float:
     """Semtech LoRa time-on-air for SF7-SF12. cr: 1..4 for 4/5..4/8."""
-    tsym = (2 ** sf) / bw_hz
+    tsym = 2.0 ** sf / bw_hz
     de = 1 if tsym > 0.016 else 0
     num = 8 * payload_len - 4 * sf + 28 + 16 * int(crc) - 20 * (0 if explicit_header else 1)
     n_payload = 8 + max(math.ceil(num / (4 * (sf - 2 * de))) * (cr + 4), 0)

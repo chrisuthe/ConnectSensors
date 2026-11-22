@@ -51,10 +51,26 @@ kind, value)` encodes one. `KINDS` maps kind codes to names. `unwrap(...)` unwra
 
 **Pairing (04).** `qr_parse(code)` returns `dev_eui`, `k_root` (hex), `region` and
 `profile`, or raises `ValueError` with the reason; `qr_encode(...)` builds a code.
-`JoinResponder(k_root, dev_eui, root_fcnt_down)` answers JOINs for one device. Persist
-its `root_fcnt_down` and keep it after the device is removed: the root counter never
-resets. A retransmitted JOIN gets the cached answer back byte for byte. Call `paired()`
-once SET_NETWORK is acknowledged.
+`JoinResponder(k_root, dev_eui, root_fcnt_down, pending=None)` answers JOINs for one
+device: `join(frame, server_priv, server_time)` returns `action` (`"new_exchange"` or
+`"resend"`), `frame`, `k_session` and `stalled`. Persist its `root_fcnt_down` and keep
+it after the device is removed: the root counter never resets. A retransmitted JOIN
+gets the cached answer back byte for byte. Call `paired()` once SET_NETWORK is
+acknowledged.
+
+The cached answer is `pending`, a `PendingExchange` (`sensor_pub`, `frame`,
+`k_session`, `retransmissions`, `sent`), or `None`. Persist it whenever `join()` or
+`sent()` changes it, a new exchange before its frame is sent (04 section 4.6, 07
+section 10), and pass it back as `pending=` after a restart. `to_dict()` and
+`PendingExchange.from_dict(d)` convert it to and from JSON-safe values; `k_session`
+is in there, so store it as a secret.
+
+`stalled` turns true on the `JOIN_STALL_RETRANSMISSIONS`th (3) retransmission of
+the pending exchange's JOIN (07 section 5.1). The spec counts only retransmissions that
+arrive after the KEY_EXCHANGE was reported `SENT`. To follow it, construct with
+`count_after_sent=True` and call `sent(frame)` on a `TX_RESULT` `SENT` for that
+downlink; it returns whether `frame` is the pending exchange's, so a late result for
+an older one changes nothing. Without `count_after_sent`, every retransmission counts.
 
 **Proxy envelope (05).** `open_envelope(key, data)` checks the MAC and returns `type`,
 `proxy_id` (hex), `boot_id`, `seq` and `body` (hex); `envelope(key, type, proxy_id,
@@ -83,6 +99,13 @@ arrived_ms)` returns `{"result": "copy"}` for a copy of a transmission already
 handled, or `{"result": "transmission", "counter": "accept" | "accept_late" |
 "duplicate" | "too_old", "answer": bool}`. A retransmitted confirmed frame is answered
 again, up to `MAX_ANSWERS_AGAIN` times. `UplinkCounter` is its counter check alone.
+Persist `collector.counter.last` and `collector.counter.seen` (the late arrivals
+accepted below it; 07 section 10) and restore with `UplinkCollector(last, seen)`, or
+`UplinkCounter(last, seen)`. Which copies were merged is held in memory only.
+
+**For tests.** `ProxyLink(boot_id)` is the proxy's side of the envelope session and
+`SensorPairing(k_root, dev_eui)` the sensor's side of JOIN and KEY_EXCHANGE, so a
+server's tests can simulate both on the public API.
 
 ## Server-side example
 
@@ -160,7 +183,8 @@ tests/package/check.sh
 
 builds the sdist and the wheel (from the sdist), installs the wheel into a clean
 Python 3.13 venv, runs `tests/package/smoke_test.py` against it from outside the
-checkout and type-checks the smoke test with `mypy --strict`. It needs
+checkout, runs `tests/package/api_test.py` the same way, and type-checks both with
+`mypy --strict --warn-unreachable`. It needs
 [uv](https://docs.astral.sh/uv/).
 
 ## Releasing

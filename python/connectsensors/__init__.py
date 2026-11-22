@@ -38,6 +38,7 @@ from ._csframe import (  # noqa: E402
     EPOCH_SECONDS,
     FRAME_MEMORY_MS,
     HEADER_LEN,
+    JOIN_STALL_RETRANSMISSIONS,
     KINDS,
     M_DOWNLINK,
     M_HELLO,
@@ -74,6 +75,9 @@ from ._csframe import (  # noqa: E402
     DeviceKeys,
     JoinResponder,
     ParsedHeader,
+    PendingExchange,
+    ProxyLink,
+    SensorPairing,
     ServerLink,
     UplinkCollector,
     UplinkCounter,
@@ -112,7 +116,7 @@ from ._csframe import (  # noqa: E402
     x25519_pub,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # 01 radio profiles
@@ -174,6 +178,8 @@ __all__ = [
     "qr_encode",
     "qr_parse",
     "JoinResponder",
+    "PendingExchange",
+    "JOIN_STALL_RETRANSMISSIONS",
     # 05 proxy envelope
     "ENV_VERSION",
     "ENV_HEADER",
@@ -210,5 +216,8 @@ __all__ = [
     "MERGE_WINDOW_MS",
     "FRAME_MEMORY_MS",
     "MAX_ANSWERS_AGAIN",
+    # The proxy and sensor sides, for a server's tests
+    "ProxyLink",
+    "SensorPairing",
     "__version__",
 ]
