@@ -137,7 +137,7 @@ has stalled; the server tells the user what to do (07 section 5.1).
 |---|---|---|
 | `UNPAIRED` | No session. Sends `JOIN` when the user presses the pairing button (section 4.5). | The button is pressed (`JOINING`) |
 | `JOINING` | Has sent `JOIN` and holds its ephemeral private key. | It accepts `KEY_EXCHANGE` (`SESSION`), or the `JOIN` goes unanswered (`UNPAIRED`, section 4.4) |
-| `SESSION` | Has `k_session`, no `k_net_route` yet. Sends `SYNC` to fetch `SET_NETWORK`. | It accepts `SET_NETWORK` (`PAIRED`), pairing fails, or it accepts `LEAVE` (`UNPAIRED`, below) |
+| `SESSION` | Has `k_session`, no `k_net_route` yet. Sends `SYNC` to fetch `SET_NETWORK`. | It accepts `SET_NETWORK` (`PAIRED`), pairing fails (below), or it accepts `LEAVE` (`UNPAIRED`, section 6.1) |
 | `PAIRED` | Has `k_session` and `k_net_route`. Normal operation (08). | It accepts `LEAVE` (`UNPAIRED`, section 6.1) |
 
 A factory reset (section 6.2) returns the sensor to `UNPAIRED` from every state.
@@ -148,8 +148,8 @@ Every other return to `UNPAIRED` keeps the root floor.
 
 - a `SYNC` goes unanswered after its retries (08 section 5); or
 - 4 `SYNC`s in all have been answered without `SET_NETWORK`. After each such
-  answer the sensor sends a new `SYNC`; it MUST NOT send more than 4 in one
-  `SESSION`.
+  answer the sensor sends a new `SYNC` (a new `fcnt`); it MUST NOT send more
+  than 4 in one `SESSION`, not counting retries (08 section 5).
 
 The user then presses the button again, which starts over with a new key pair.
 These `SYNC`s do not count as undelivered uplinks for 08 section 6, which applies
@@ -180,11 +180,11 @@ replaces the server's pending exchange (section 4.2).
    with bootstrap tags, and enters `JOINING`. It keeps its root floor (02 section
    8.4): only a factory reset clears it.
 3. **KEY_EXCHANGE.** The server identifies the frame by trying the root key sets
-   of `SCANNED` and `EXCHANGED` devices (02 section 11.3). It generates its own ephemeral key
-   pair, derives `k_session` (02 section 5.3), and answers with a `DOWNLINK`
-   under the root key set, bootstrap tags, the next value of the device's root
-   downlink counter, `reply_to` = the `JOIN`'s `fcnt`, containing `KEY_EXCHANGE`.
-   It keeps its ephemeral private key only until `k_session` is derived, and the
+   of `SCANNED` and `EXCHANGED` devices (02 section 11.3). It generates its own
+   ephemeral key pair, derives `k_session` (02 section 5.3), and answers with a
+   `DOWNLINK` under the root key set, bootstrap tags, the next value of the
+   device's root downlink counter, `reply_to` = the `JOIN`'s `fcnt`, containing
+   `KEY_EXCHANGE`. It keeps its ephemeral private key only until `k_session` is derived, and the
    frame and `k_session` as the pending exchange (4.2). The session downlink
    counter for the new `k_session` starts at 1. A retransmitted `JOIN` is
    answered as in 4.2.
@@ -251,8 +251,8 @@ MUST persist `k_session` and the device record before answering in step 6.
 
 Proxies forward `JOIN` and `SYNC` like any other uplink and transmit the answers
 like any other downlink. Relays cannot route bootstrap frames (02 section 11.4),
-so pairing works only with at least one of the owner's own proxies within range of
-the sensor. Users can pair a sensor next to a proxy and then install it.
+so pairing works only with at least one of the owner's own proxies within range
+of the sensor. Users can pair a sensor next to a proxy and then install it.
 
 ## 6. Leaving a network
 

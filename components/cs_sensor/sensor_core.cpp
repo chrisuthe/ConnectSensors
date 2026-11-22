@@ -1011,7 +1011,7 @@ void SensorCore::finish_undelivered_(uint64_t now) {
       this->emit_(SensorEvent::PAIRING_FAILED);
       return;
     case Purpose::SESSION_SYNC:
-      // 04 section 4.3: pairing fails; the server's EXCHANGED state has timed out by now too.
+      // 04 section 4.3: pairing fails, keeping the root floor.
       this->erase_session_();
       this->emit_(SensorEvent::PAIRING_FAILED);
       return;
