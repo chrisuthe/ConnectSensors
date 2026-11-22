@@ -109,7 +109,7 @@ normally completes within 5 seconds.
 | State | Entered when | Leaves when |
 |---|---|---|
 | `SCANNED` | The user enters a valid pairing code | A `JOIN` from the device verifies, or 10 minutes pass (device discarded) |
-| `EXCHANGED` | The server sends `KEY_EXCHANGE` | An uplink with normal tags and `DL_ACK` acknowledges `SET_NETWORK` (`PAIRED`), or 2 minutes pass (back to `SCANNED`, keeping the 10-minute deadline) |
+| `EXCHANGED` | The server sends `KEY_EXCHANGE` | An uplink with normal tags and `DL_ACK` acknowledges `SET_NETWORK` (`PAIRED`), a `JOIN` with a new `sensor_pub` verifies (a new pending exchange, and `EXCHANGED` again), or 2 minutes pass (back to `SCANNED`, keeping the 10-minute deadline) |
 | `PAIRED` | As above | The device is removed (section 6) |
 
 A device has at most one *pending exchange*: the `sensor_pub` of the `JOIN` it
@@ -133,12 +133,39 @@ has stalled; the server tells the user what to do (07 section 5.1).
 
 ### 4.3 Sensor states
 
-| State | Behavior |
-|---|---|
-| `UNPAIRED` | No session. Sends `JOIN` when the user presses the pairing button (section 4.5). |
-| `JOINING` | Has sent `JOIN` and holds its ephemeral private key. |
-| `SESSION` | Has `k_session`, no `k_net_route` yet. Sends `SYNC` to fetch `SET_NETWORK`. |
-| `PAIRED` | Has `k_session` and `k_net_route`. Normal operation (08). |
+| State | Behavior | Leaves when |
+|---|---|---|
+| `UNPAIRED` | No session. Sends `JOIN` when the user presses the pairing button (section 4.5). | The button is pressed (`JOINING`) |
+| `JOINING` | Has sent `JOIN` and holds its ephemeral private key. | It accepts `KEY_EXCHANGE` (`SESSION`), or the `JOIN` goes unanswered (`UNPAIRED`, section 4.4) |
+| `SESSION` | Has `k_session`, no `k_net_route` yet. Sends `SYNC` to fetch `SET_NETWORK`. | It accepts `SET_NETWORK` (`PAIRED`), pairing fails, or it accepts `LEAVE` (`UNPAIRED`, below) |
+| `PAIRED` | Has `k_session` and `k_net_route`. Normal operation (08). | It accepts `LEAVE` (`UNPAIRED`, section 6.1) |
+
+A factory reset (section 6.2) returns the sensor to `UNPAIRED` from every state.
+Every other return to `UNPAIRED` keeps the root floor.
+
+**Pairing fails in `SESSION`.** The sensor MUST erase `k_session` and return to
+`UNPAIRED` when:
+
+- a `SYNC` goes unanswered after its retries (08 section 5); or
+- 4 `SYNC`s in all have been answered without `SET_NETWORK`. After each such
+  answer the sensor sends a new `SYNC`; it MUST NOT send more than 4 in one
+  `SESSION`.
+
+The user then presses the button again, which starts over with a new key pair.
+These `SYNC`s do not count as undelivered uplinks for 08 section 6, which applies
+to a paired sensor.
+
+Each `SYNC` and its retries take under a minute (08 section 5), so a sensor
+leaves `SESSION` within a few minutes at most. The server stops identifying the
+device's `SYNC` when its `EXCHANGED` state times out after 2 minutes (section 4.2,
+07 section 4), so a sensor still in `SESSION` by then gets no answer and fails as
+above; a sensor never waits in `SESSION` for a server that has given up.
+
+**Restart.** Only `PAIRED` is kept across a restart (section 4.6). A sensor that
+restarts in `JOINING` or `SESSION` MUST come back in `UNPAIRED`, keeping its root
+floor; the ephemeral private key and any `k_session` from the unfinished pairing
+are gone. The next button press sends a `JOIN` with a new `sensor_pub`, which
+replaces the server's pending exchange (section 4.2).
 
 ### 4.4 Steps
 
@@ -153,7 +180,7 @@ has stalled; the server tells the user what to do (07 section 5.1).
    with bootstrap tags, and enters `JOINING`. It keeps its root floor (02 section
    8.4): only a factory reset clears it.
 3. **KEY_EXCHANGE.** The server identifies the frame by trying the root key sets
-   of `SCANNED` devices (02 section 11.3). It generates its own ephemeral key
+   of `SCANNED` and `EXCHANGED` devices (02 section 11.3). It generates its own ephemeral key
    pair, derives `k_session` (02 section 5.3), and answers with a `DOWNLINK`
    under the root key set, bootstrap tags, the next value of the device's root
    downlink counter, `reply_to` = the `JOIN`'s `fcnt`, containing `KEY_EXCHANGE`.
@@ -188,6 +215,11 @@ over with a new key pair.
 - A short press while `UNPAIRED` starts pairing.
 - A short press while `PAIRED` SHOULD send a `DATA_CONFIRMED` with the current
   state, so the user can test range without disturbing anything.
+- A short press while `JOINING` or `SESSION` MUST NOT send a frame or change the
+  pairing state. Pairing is already under way and ends on its own (section 4.3),
+  after which a press starts over. Restarting `JOIN` instead would discard an
+  exchange that may be about to complete and spend a root counter value on the
+  server (02 section 8.4) for every press.
 - Holding the button for 10 seconds is a factory reset (section 6.2), in every
   state. The sensor MUST carry out the reset when the 10 seconds have passed,
   while the button is still held, and SHOULD confirm it (08 section 11) so the
@@ -201,9 +233,7 @@ batteries or mounting the device, or a child playing with it does not erase the
 pairing by accident, and short enough to do on purpose without a tool. A device
 whose only button is hard to hold that long MAY use another physical gesture
 (for example holding the button while inserting the batteries), but the reset
-MUST need physical access: no command or frame can trigger it. This section does
-not define a short press in `JOINING` or `SESSION`; whatever it does there, the
-10-second hold takes precedence.
+MUST need physical access: no command or frame can trigger it.
 
 ### 4.6 Persistence
 
@@ -221,8 +251,8 @@ MUST persist `k_session` and the device record before answering in step 6.
 
 Proxies forward `JOIN` and `SYNC` like any other uplink and transmit the answers
 like any other downlink. Relays cannot route bootstrap frames (02 section 11.4),
-so at least one of the owner's own proxies MUST be within range of the sensor
-during pairing. Users can pair a sensor next to a proxy and then install it.
+so pairing works only with at least one of the owner's own proxies within range of
+the sensor. Users can pair a sensor next to a proxy and then install it.
 
 ## 6. Leaving a network
 
@@ -234,6 +264,10 @@ When the user removes a device in the server:
    to the device's next uplink.
 2. The sensor, on accepting `LEAVE`, erases `k_session` and `k_net_route`,
    returns to `UNPAIRED`, and sends nothing more until its button is pressed.
+   A `PAIRED` sensor first acknowledges it in one final `HEARTBEAT` (08 section
+   8). A sensor in `SESSION` erases `k_session` at once and sends nothing: it has
+   no `k_net_route` yet, so it cannot compute the normal tags that heartbeat
+   needs.
 3. The server deletes the device record when the next uplink acknowledges
    `LEAVE` with `DL_ACK`, or after 48 hours, whichever comes first. The user MAY
    delete it immediately; the sensor then keeps sending frames that nobody reads
@@ -311,7 +345,7 @@ session, the owner re-pairs it.
 |---|---|
 | Someone sees the pairing code | They can attempt an active attack during a future pairing, nothing more (02 section 13). Keep the code inside the case. |
 | Someone records the pairing exchange | Without the ephemeral private keys they cannot derive `k_session`, even with `k_root`. |
-| Rogue `JOIN` frames | Only devices in `SCANNED` are tried, so an attacker needs a code the user has just scanned. Bootstrap processing is rate-limited (02 section 11.3). |
+| Rogue `JOIN` frames | Only devices in `SCANNED` or `EXCHANGED` are tried, so an attacker needs a code the user has just scanned. Bootstrap processing is rate-limited (02 section 11.3). |
 | Replayed `KEY_EXCHANGE` | Rejected by `reply_to` binding and the root floor (02 section 10.2). |
 | Nonce reuse under `k_root` | The server's root downlink counter never resets, and a retransmitted `JOIN` gets the identical frame (4.2). Reuse across servers after a factory reset is accepted (02 section 13.1). |
 | Replayed `JOIN` | While the exchange is pending, it draws the identical frame and changes nothing (4.2). Otherwise it is not answered (07 section 4, step 5). |

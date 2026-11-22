@@ -929,6 +929,36 @@ static void test_session_sync_unanswered() {
   CHECK(r2.core->root_floor() == 1);
 }
 
+static void test_pairing_button_and_leave_mid_pairing() {
+  // 04 section 4.5: a short press in JOINING or SESSION changes nothing.
+  Rig rig;
+  rig.boot();
+  rig.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
+  rig.core->short_press();
+  const Tx &join = rig.wait_tx(1);
+  rig.core->short_press();
+  CHECK(rig.core->state() == PairingState::JOINING);
+  CHECK(rig.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
+  CHECK(rig.core->state() == PairingState::SESSION);
+  rig.core->short_press();
+  CHECK(rig.core->state() == PairingState::SESSION);
+  const Tx &sync = rig.wait_tx(2);
+  CHECK(type_of(sync) == T_SYNC);
+  for (const Tx &t : rig.radio.sent)
+    CHECK(type_of(t) != T_JOIN || hex(t.frame) == fv("join").frame);
+
+  // 04 section 6.1: LEAVE in SESSION unpairs at once, with no final HEARTBEAT.
+  Server server;
+  server.keys = session_keys(rig.core->session_key());
+  CHECK(rig.in_rx1(sync, server.downlink(fcnt_of(sync), V_TIME, 0, {CMD_LEAVE, 0})) == DownlinkResult::ACCEPT);
+  CHECK(rig.core->state() == PairingState::UNPAIRED);
+  CHECK(rig.saw(SensorEvent::LEFT));
+  CHECK(rig.core->session_key() == nullptr);
+  CHECK(rig.core->root_floor() == 1);
+  rig.run(3600 * S);
+  CHECK(rig.radio.sent.size() == 2);
+}
+
 static void test_time_unsure_and_sync() {
   Rig rig;
   Server server = pair_with_vectors(rig);
@@ -1572,6 +1602,7 @@ int main() {
   test_factory_reset();
   test_join_unanswered();
   test_session_sync_unanswered();
+  test_pairing_button_and_leave_mid_pairing();
   test_time_unsure_and_sync();
   test_lost_contact();
   test_commands();

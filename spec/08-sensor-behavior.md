@@ -161,7 +161,7 @@ forget its pairing because of it. Only `LEAVE` or a factory reset (the
 |---|---|
 | `SET_NETWORK` | Store `k_net_route`, switch to normal tags, enter `PAIRED` if pairing (04) |
 | `SET_HEARTBEAT` | Store the new interval; reschedule the next heartbeat from now |
-| `LEAVE` | Erase `k_session` and `k_net_route`, enter `UNPAIRED` (04 section 6.1). Keep the root floor and the uplink counter reservation. The `DL_ACK` for it goes in one final unconfirmed `HEARTBEAT`, sent under the old keys before they are erased. |
+| `LEAVE` | Erase `k_session` and `k_net_route`, enter `UNPAIRED` (04 section 6.1). Keep the root floor and the uplink counter reservation. When `PAIRED`, the `DL_ACK` for it goes in one final unconfirmed `HEARTBEAT`, sent under the old keys before they are erased; in `SESSION`, nothing is sent (04 section 6.1). |
 | `KEY_EXCHANGE` | Only valid in `JOINING` (04 section 4.4), in a downlink under the root key set whose counter is above the root floor; ignored otherwise |
 | `0x40` (set value) | Apply to a writable channel (03 section 8), then report the new state in the next uplink |
 | `0x41`-`0x7F` | As the device profile defines |
@@ -269,3 +269,7 @@ A sensor implementation MUST pass at least:
 10. A state reading that has no value when the boot uplink goes out is sent in a
     state-change frame when its first value arrives, confirmed if the reading's
     changes are confirmed.
+11. In `SESSION` (04 section 4.3), it returns to `UNPAIRED` with the root floor
+    kept when a `SYNC` goes unanswered after its retries, after 4 `SYNC`s
+    answered without `SET_NETWORK`, on `LEAVE` (sending nothing), and after a
+    restart. A short press in `JOINING` or `SESSION` sends nothing.
