@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # Keep the workflow's actions (checkout, setup-python) current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
