@@ -182,7 +182,8 @@ The server sends a downlink in reply to an uplink when any of these hold:
 - the uplink is a confirmed type (`DATA_CONFIRMED`, `HEARTBEAT_CONFIRMED`,
   `JOIN`, `SYNC`), including a retransmitted duplicate of one within the limits
   of section 4, step 5;
-- the device has undelivered commands (section 7);
+- the device has undelivered commands (section 7) and the uplink is not a late
+  arrival;
 - the device's clock needs correcting: `TIME_UNSURE` is set, or step 4.7 found
   skew.
 
