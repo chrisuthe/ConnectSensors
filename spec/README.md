@@ -29,7 +29,8 @@ to its own repository without changes.
   of frames, payloads, pairing codes, the key exchange, the proxy envelope, and
   the server's counter rules, and federation events (with a minimal BIP-340
   implementation checked against the official test vector). It generates and
-  checks the vectors.
+  checks the vectors, and is published unchanged as the
+  [`connectsensors`](../python/README.md) Python package.
 
 ```
 cd tools

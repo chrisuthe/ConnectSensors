@@ -24,6 +24,7 @@ import math
 import os
 import struct
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
@@ -187,9 +188,11 @@ KINDS = {
 FIXED_SIZE = {0: 1, 1: 2, 2: 4}
 
 
-def encode_reading(channel: int, kind: int, value) -> bytes:
+def encode_reading(channel: int, kind: int, value: int | float | bytes) -> bytes:
     cls = kind >> 6
     if cls == 3:
+        if not isinstance(value, (bytes, bytearray)):
+            raise TypeError("variable reading needs bytes")
         data = bytes(value)
         if len(data) > 60:
             raise ValueError("variable reading too long")
@@ -394,7 +397,15 @@ def open_envelope(key: bytes, data: bytes) -> dict:
 
 
 def uplink_body(rx_time_us: int, rssi: float, snr: float, flags: int, frame: bytes) -> bytes:
-    return struct.pack(">Qhhb", rx_time_us, round(rssi * 10), round(snr * 10), flags) + bytes([len(frame)]) + frame
+    return struct.pack(">QhhB", rx_time_us, round(rssi * 10), round(snr * 10), flags) + bytes([len(frame)]) + frame
+
+
+def parse_uplink(body: bytes) -> dict:
+    if len(body) < 14 or len(body) != 14 + body[13]:
+        raise ValueError("bad UPLINK length")
+    rx_time_us, rssi, snr, flags, _ = struct.unpack(">QhhBB", body[:14])
+    return {"rx_time_us": rx_time_us, "rssi": rssi / 10, "snr": snr / 10, "flags": flags,
+            "frame": body[14:]}
 
 
 def hello_body(caps: int, region: str, freq_hz: int, sf: int, bw_khz: int, uptime_s: int,
@@ -441,6 +452,13 @@ def downlink_msg_body(ref_rx_time_us: int, tx_offset_us: int, frame: bytes) -> b
 
 def tx_result_body(downlink_seq: int, result: int, offset_us: int) -> bytes:
     return struct.pack(">IBi", downlink_seq, result, offset_us)
+
+
+def parse_tx_result(body: bytes) -> dict:
+    if len(body) != 9:
+        raise ValueError("bad TX_RESULT length")
+    downlink_seq, result, offset_us = struct.unpack(">IBi", body)
+    return {"downlink_seq": downlink_seq, "result": result, "offset_us": offset_us}
 
 
 # ---------------------------------------------------------------- 05 section 3.2: sessions
@@ -506,7 +524,7 @@ class ProxyLink:
 class ServerLink:
     """A server's session with one proxy (05 section 3.2, 07 section 2.3). Nothing persisted."""
 
-    def __init__(self, new_nonce):
+    def __init__(self, new_nonce: Callable[[], int]):
         self.new_nonce = new_nonce
         self.boot_id = None
         self.last_seq = 0
@@ -1231,6 +1249,13 @@ def verify(d: str) -> int:
             ok = False
         except ValueError:
             pass
+        body = bytes.fromhex(c["body"])
+        if c["type"] == M_UPLINK:
+            u = parse_uplink(body)
+            ok = ok and uplink_body(u["rx_time_us"], u["rssi"], u["snr"], u["flags"], u["frame"]) == body
+        elif c["type"] == M_TX_RESULT:
+            t = parse_tx_result(body)
+            ok = ok and tx_result_body(t["downlink_seq"], t["result"], t["offset_us"]) == body
         print(f"{'ok  ' if ok else 'FAIL'} envelope {c['name']}")
         bad += not ok
     bad += verify_session(ev["session"])

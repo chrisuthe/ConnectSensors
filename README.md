@@ -29,6 +29,7 @@ Early development: the spec is a draft and there are no releases.
 | [`components/cs_proxy/`](components/cs_proxy/) | ESPHome external component: the proxy |
 | [`components/cs_sensor/`](components/cs_sensor/) | ESPHome external component: the sensor, on the host-tested protocol core (`sensor_core`) |
 | [`components/ssd1306_paced/`](components/ssd1306_paced/) | ESPHome external component: an SSD1306 display driver that never blocks the main loop for a whole frame |
+| [`python/`](python/) | The `connectsensors` Python package: the reference implementation, packaged for network servers such as the Home Assistant integration |
 | [`devtools/cs_testserver.py`](devtools/cs_testserver.py) | Development server for testing proxies and pairing sensors |
 | [`examples/`](examples/) | ESPHome configurations for a proxy, sensors (mains and deep sleep) and a test transmitter |
 | [`tests/`](tests/) | Unit tests for the proxy and sensor cores and a smoke test for the test server |
@@ -41,6 +42,7 @@ python3 spec/tools/csframe.py verify spec/vectors   # spec test vectors
 make -C tests/proxy_core                            # proxy core, C++
 make -C tests/sensor_core                           # sensor core, C++
 python3 tests/devtools/test_testserver.py           # test server
+tests/package/check.sh                              # Python package build and smoke test (needs uv)
 ```
 
 ## Trying a proxy

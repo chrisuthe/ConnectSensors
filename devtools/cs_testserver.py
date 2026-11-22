@@ -30,7 +30,6 @@ import json
 import os
 import secrets
 import socket
-import struct
 import sys
 import time
 
@@ -334,12 +333,12 @@ def main() -> int:
             send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, device.net_tags(now), m["seq"]))
 
         elif m["type"] == cs.M_UPLINK:
-            rx_time, rssi, snr, flags, flen = struct.unpack(">QhhBB", body[:14])
-            frame = body[14:14 + flen]
+            u = cs.parse_uplink(body)
+            rx_time, frame = u["rx_time_us"], u["frame"]
             h = cs.parse_header(frame)
             name = TYPE_NAMES.get(h.ftype, f"type {h.ftype}") if h else "invalid"
-            line = (f"{pid.hex()} UPLINK {name} fcnt {h.fcnt if h else '?'} rssi {rssi / 10:.1f} "
-                    f"snr {snr / 10:.1f}{' TS_UNCERTAIN' if flags & 1 else ''}")
+            line = (f"{pid.hex()} UPLINK {name} fcnt {h.fcnt if h else '?'} rssi {u['rssi']:.1f} "
+                    f"snr {u['snr']:.1f}{' TS_UNCERTAIN' if u['flags'] & cs.UPF_TS_UNCERTAIN else ''}")
             if h and real_uplink(p, pid, line, frame, h, rx_time, now):
                 continue
             opened = device.open(frame) if h else None
@@ -360,9 +359,9 @@ def main() -> int:
                 log(f"{pid.hex()} -> DOWNLINK seq {p.link.seq} answering fcnt {h.fcnt} in {args.window}")
 
         elif m["type"] == cs.M_TX_RESULT:
-            seq, result, tx_offset = struct.unpack(">IBi", body)
-            log(f"{pid.hex()} TX_RESULT seq {seq}: {TX_RESULTS.get(result, result)}, "
-                f"{tx_offset / 1000:.1f} ms after target")
+            t = cs.parse_tx_result(body)
+            log(f"{pid.hex()} TX_RESULT seq {t['downlink_seq']}: {TX_RESULTS.get(t['result'], t['result'])}, "
+                f"{t['offset_us'] / 1000:.1f} ms after target")
         else:
             log(f"{pid.hex()} message type 0x{m['type']:02x} ignored")
 

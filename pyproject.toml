@@ -1,0 +1,42 @@
+# The connectsensors package. Its protocol code is spec/tools/csframe.py, copied into
+# the wheel as connectsensors/_csframe.py at build time; there is no second copy.
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "connectsensors"
+dynamic = ["version"]
+description = "ConnectSensors protocol: frames, proxy envelope, server-side helpers and pairing codes"
+readme = "python/README.md"
+license = "MIT"
+license-files = ["spec/LICENSE-CODE"]
+requires-python = ">=3.13"
+dependencies = ["cryptography"]
+authors = [{ name = "Chris Uthe and ConnectSensors contributors" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/chrisuthe/ConnectSensors"
+Specification = "https://github.com/chrisuthe/ConnectSensors/tree/main/spec"
+Issues = "https://github.com/chrisuthe/ConnectSensors/issues"
+
+[tool.hatch.version]
+path = "python/connectsensors/__init__.py"
+
+# The sdist keeps csframe.py at its repository path, so a wheel built from the sdist
+# force-includes it exactly as a wheel built from the checkout does.
+[tool.hatch.build.targets.sdist]
+only-include = ["python", "spec/tools/csframe.py", "spec/LICENSE-CODE"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["python/connectsensors"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"spec/tools/csframe.py" = "connectsensors/_csframe.py"

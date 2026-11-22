@@ -64,6 +64,20 @@ jobs:
       - run: python3 -I tests/devtools/test_testserver.py
       - run: python3 -I tests/devtools/test_pairing_code.py
 
+  package:
+    name: Python package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+      # Builds the sdist and wheel, installs the wheel into a clean Python 3.13 venv
+      # and runs the public API smoke test against it.
+      - run: tests/package/check.sh dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: connectsensors-dist
+          path: dist/
+
   esphome-config:
     name: ESPHome dev config
     runs-on: ubuntu-latest
