@@ -151,12 +151,13 @@ A server with subscribing enabled ("Receive my sensors through neighbors"):
 - Keeps a subscription on every relay in its list, with the filter
   `{"kinds": [21110], "#h": [<buckets>], "#r": [<region>]}`.
 - Verifies each event's signature and drops an uplink event whose `created_at`
-  is more than 60 seconds before or 10 seconds after its own clock. An older
-  copy can no longer be merged with other copies or answered (07 section 4), so
-  it is only a replay; the 10 seconds allow for clock error. The frame's own
-  counter (02 section 8.5) still decides whether the frame is new.
-- Decodes each event and feeds the frame into its
-  normal uplink pipeline (07 section 4), recording each reception as coming from
+  is more than 60 seconds before or 10 seconds after its own clock. By then the
+  server no longer remembers the frame (07 section 4.3), so the event is only a
+  relay replaying it; the 10 seconds allow for clock error. A publisher can still
+  sign a captured frame again with a fresh `created_at`; the frame's counter
+  (02 section 8.5) and the answer limits of 07 section 4, step 5 cover that.
+- Decodes each event and feeds the frame into its normal uplink pipeline (07
+  section 4), recording each reception as coming from
   `(publisher pubkey, rx_ref)`. Frames that do not verify for any of its devices
   are dropped without further processing; most frames in a bucket belong to other
   networks.

@@ -50,8 +50,9 @@ from a stolen device.
   normal tags (02 section 6).
 - Without either (for example after the batteries were removed and the RTC has no
   backup), the sensor cannot compute tags and MUST use `SYNC` (02 section 11.2)
-  until a downlink sets its clock. This applies to every uplink, including one
-  that would otherwise be unconfirmed: it goes out as `SYNC`, a confirmed type,
+  until a downlink sets its clock. This applies to every uplink except the
+  `LEAVE` heartbeat (section 8), including one that would otherwise be
+  unconfirmed: it goes out as `SYNC`, a confirmed type,
   and is retried like any confirmed uplink (section 5).
 - On every accepted downlink the sensor sets its clock to `server_time`. It
   SHOULD NOT add an estimate of the transmission delay; the error is well under a
@@ -86,7 +87,8 @@ normally covers it.
 - Each heartbeat is scheduled `h` after the previous one, with a random offset of
   up to plus or minus 10% so that sensors do not stay in step. The offset MUST
   NOT push a heartbeat past 24 hours after the last confirmed uplink was sent
-  (section 3.3); with `h` = 1440 the sensor sends it at that limit instead.
+  (section 3.3); a heartbeat that would (for example with `h` = 1440) is sent at
+  that limit instead.
 - A heartbeat carries the full state and battery (03 section 5).
 - A heartbeat is sent as `HEARTBEAT_CONFIRMED` if no confirmed uplink has been
   answered in the last 4 hours (RECOMMENDED; at most 24 hours, section 3.3), and
@@ -145,8 +147,7 @@ accepted downlink resets the count to 0.
 
 | Count | Behavior |
 |---|---|
-| 3 or more | The sensor's tags or clock may be wrong. Every confirmed attempt MUST be a `SYNC` instead (02 section 11.2), carrying the full state as readings, until a downlink is accepted. |
-| 3 or more | Confirmed heartbeats are attempted at 1, 5, 15 and 60 minutes after the last failure, then every `h`. Normal state-change frames continue as usual. |
+| 3 or more | The sensor's tags or clock may be wrong. Every confirmed attempt, heartbeat or state change, MUST be a `SYNC` instead (02 section 11.2), carrying the full state as readings, until a downlink is accepted. Confirmed heartbeats are attempted at 1, 5, 15 and 60 minutes after the last failure, then every `h`. State changes are still sent when they happen. |
 
 A sensor MUST NOT stop transmitting because it has lost contact, and MUST NOT
 forget its pairing because of it. Only `LEAVE` or a factory reset (the
