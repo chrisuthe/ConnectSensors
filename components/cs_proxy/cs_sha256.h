@@ -1,7 +1,7 @@
 #pragma once
 
 // Self-contained SHA-256 (FIPS 180-4) and HMAC-SHA256 (RFC 2104).
-// No platform dependencies, so the proxy core builds and tests on any host.
+// No platform dependencies, so the cores build and test on any host.
 
 #include <cstddef>
 #include <cstdint>

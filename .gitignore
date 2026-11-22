@@ -4,3 +4,5 @@ __pycache__/
 secrets.yaml
 tests/proxy_core/test_core
 tests/proxy_core/vectors.inc
+tests/sensor_core/test_core
+tests/sensor_core/vectors.inc
