@@ -62,7 +62,8 @@ cs_sensor:
   hPa to 0.1 hPa, % to 0.01 % for humidity and moisture). `multiply:` overrides
   the factor. A sensor with no value (NaN) sends the kind's "unknown" value.
 - A change is reported when the value differs from what the server last saw by
-  `delta` or more (any change without `delta`), and `min_interval` has passed
+  `delta` or more (without `delta`, any change in the value as sent, which
+  validation warns about for numeric kinds), and `min_interval` has passed
   since that reading last caused a frame. Every frame carries the full state.
 - `button`, `firmware_version`, `raw` and `text` cannot be readings; channel
   `0xFF` belongs to the battery.

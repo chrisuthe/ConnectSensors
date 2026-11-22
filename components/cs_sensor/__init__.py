@@ -209,6 +209,13 @@ def _reading(config):
         raise cv.Invalid(f"Kind {kind} takes a sensor", path=[CONF_KIND])
     if CONF_CONFIRMED not in config:
         config[CONF_CONFIRMED] = kind in CONFIRMED_BY_DEFAULT
+    if kind in NUMERIC_KINDS and CONF_DELTA not in config and not config[CONF_MIN_INTERVAL].total_milliseconds:
+        _LOGGER.warning(
+            "cs_sensor reading on channel %s (%s) has neither delta nor min_interval, so every change "
+            "of one wire step sends a frame; a noisy sensor will spend its airtime budget",
+            config[CONF_CHANNEL],
+            kind,
+        )
     return config
 
 

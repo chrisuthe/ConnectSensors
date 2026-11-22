@@ -423,8 +423,8 @@ void CSSensor::dump_config() {
   }
 #ifdef USE_CS_SENSOR_DEEP_SLEEP
   if (this->deep_sleep_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "  Deep sleep: yes, pairing window %" PRIu32 " ms, max sleep %" PRIu32 " ms, woke %s",
-                  this->pairing_window_ms_, this->max_sleep_ms_, this->warm_ ? "warm" : "cold");
+    ESP_LOGCONFIG(TAG, "  Deep sleep: yes, pairing window %" PRIu32 " ms, max sleep %" PRIu32 " ms",
+                  this->pairing_window_ms_, this->max_sleep_ms_);
   }
 #endif
 }
@@ -477,8 +477,8 @@ bool CSSensor::changed_(const ReadingSource &src) const {
     return false;
   if (std::isnan(src.value) || std::isnan(src.sent))
     return std::isnan(src.value) != std::isnan(src.sent);
-  if (src.delta == 0)
-    return src.value != src.sent;
+  if (src.delta == 0)  // any change the wire can show
+    return std::round(src.value * src.scale) != std::round(src.sent * src.scale);
   return std::fabs(src.value - src.sent) >= src.delta;
 }
 
