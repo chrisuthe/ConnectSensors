@@ -691,46 +691,81 @@ static void test_engine_dedupe_and_offline() {
   CHECK(q.engine->counters().forwarded == 5 && q.engine->counters().rate_limited == 1);
 }
 
-static void test_engine_ts_uncertain() {
-  Rig r;
-  auto f = frame("data_confirmed");
-  auto g = frame("heartbeat");
-  r.loop();
-  r.take();
-  // Just inside loop interval + 20 ms: certain.
-  r.io.t += r.io.loop_interval + TS_UNCERTAIN_EXTRA_US;
+// Two short healthy passes, so the gaps the flag looks back over are all small.
+static void settle(Rig &r) {
+  for (int i = 0; i < 2; i++) {
+    r.io.t += 1000;
+    r.loop();
+  }
+}
+
+// Each call varies the MIC byte so dedupe never hides a frame; the keyless checks
+// do not look at it.
+static uint8_t heard_flags(Rig &r, const char *name) {
+  static uint8_t n = 0;
+  auto f = frame(name);
+  f.back() ^= ++n;
   r.hear(f);
   auto up = r.take(MSG_UPLINK);
-  CHECK(up.size() == 1 && up[0].body[12] == 0);
-  // One microsecond more: the main loop was stalled.
+  CHECK(up.size() == 1);
+  return up.empty() ? 0xFF : up[0].body[12];
+}
+
+static void test_engine_ts_uncertain() {
+  Rig r;
   r.loop();
+  r.take();
+  // Since the last pass: just inside loop interval + 20 ms is certain.
+  settle(r);
+  r.io.t += r.io.loop_interval + TS_UNCERTAIN_EXTRA_US;
+  CHECK(heard_flags(r, "data_confirmed") == 0);
+  // One microsecond more: the main loop was stalled.
+  settle(r);
   r.io.t += r.io.loop_interval + TS_UNCERTAIN_EXTRA_US + 1;
-  r.hear(g);
-  up = r.take(MSG_UPLINK);
-  CHECK(up.size() == 1 && up[0].body[12] == UPLINK_TS_UNCERTAIN);
+  CHECK(heard_flags(r, "heartbeat") == UPLINK_TS_UNCERTAIN);
+
+  // The radio usually runs after this component in a pass, so a packet heard just after
+  // a pass may have waited through the gap before it (an interval lambda stalling the
+  // scheduler, say), or through the one before that (06 section 7).
+  const uint64_t stall = r.io.loop_interval + TS_UNCERTAIN_EXTRA_US + 1;
+  settle(r);
+  r.io.t += stall;
+  r.loop();
+  r.io.t += 1000;
+  CHECK(heard_flags(r, "sync_after_reboot") == UPLINK_TS_UNCERTAIN);
+  settle(r);
+  r.io.t += stall;
+  r.loop();
+  r.io.t += 1000;
+  r.loop();
+  r.io.t += 1000;
+  CHECK(heard_flags(r, "sync_after_exchange") == UPLINK_TS_UNCERTAIN);
+  // Three passes on, the stall cannot have delayed a packet heard now.
+  r.io.t += 1000;
+  r.loop();
+  r.io.t += 1000;
+  CHECK(heard_flags(r, "join") == 0);
+  // Exactly at the limit is still healthy.
+  settle(r);
+  r.io.t += r.io.loop_interval + TS_UNCERTAIN_EXTRA_US;
+  r.loop();
+  r.io.t += 1000;
+  CHECK(heard_flags(r, "data_confirmed") == 0);
+
   // A longer configured loop interval counts as 16 ms, so the unflagged error stays
   // within the 36 ms of the timing budget (01 section 4.1).
   r.io.loop_interval = 50000;
-  r.loop();
+  settle(r);
   r.io.t += 36000;
-  auto h = frame("sync_after_reboot");
-  r.hear(h);
-  up = r.take(MSG_UPLINK);
-  CHECK(up.size() == 1 && up[0].body[12] == 0);
-  r.loop();
+  CHECK(heard_flags(r, "heartbeat") == 0);
+  settle(r);
   r.io.t += 36001;
-  auto d = frame("sync_after_exchange");
-  r.hear(d);
-  up = r.take(MSG_UPLINK);
-  CHECK(up.size() == 1 && up[0].body[12] == UPLINK_TS_UNCERTAIN);
+  CHECK(heard_flags(r, "sync_after_reboot") == UPLINK_TS_UNCERTAIN);
   // A shorter one tightens the threshold.
   r.io.loop_interval = 8000;
-  r.loop();
+  settle(r);
   r.io.t += 28001;
-  auto a = frame("join");
-  r.hear(a);
-  up = r.take(MSG_UPLINK);
-  CHECK(up.size() == 1 && up[0].body[12] == UPLINK_TS_UNCERTAIN);
+  CHECK(heard_flags(r, "join") == UPLINK_TS_UNCERTAIN);
 }
 
 // 01 section 4.1: the latest detection of a downlink stays inside the sensor's window.
@@ -773,26 +808,51 @@ static void test_engine_hello_and_capability() {
   CHECK(hello_caps(r) == CAP_DOWNLINK);
   CHECK(r.io.hello_gaps.size() == 2 && r.io.hello_gaps[1] == 16);
 
-  // A stall over 100 ms: the next HELLO withdraws downlinks and reports the gap.
+  // A stall over 100 ms half a minute before the next HELLO: reported in it, but the
+  // capability has come back by then (06 section 7).
   r.run_until(r.io.t + 30000000);
   r.io.t += 150000;
   r.loop();
-  r.run_until(first + 2 * HELLO_INTERVAL_US);
-  CHECK(hello_caps(r) == 0);
-  CHECK(r.io.hello_gaps.back() == 150);
   CHECK(r.engine->degraded());
+  CHECK(r.io.logged("downlinks withdrawn for 10 s") == 1);
+  r.run_until(first + 2 * HELLO_INTERVAL_US);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+  CHECK(r.io.hello_gaps.back() == 150);
+  CHECK(!r.engine->degraded());
 
-  // While withdrawn, a DOWNLINK is refused as NOT_CAPABLE.
+  // A stall just before a HELLO withdraws downlinks in it.
+  r.run_until(first + 3 * HELLO_INTERVAL_US - 1000000);
+  r.io.t += 200000;
+  r.loop();
+  const uint64_t stalled = r.io.t;
+  r.run_until(first + 3 * HELLO_INTERVAL_US);
+  CHECK(hello_caps(r) == 0);
+  CHECK(r.io.hello_gaps.back() == 200);
+
+  // Another stall inside the window extends it but is not logged again.
+  r.run_until(stalled + 5000000);
+  r.io.t += 120000;
+  r.loop();
+  const uint64_t again = r.io.t;
+  CHECK(r.io.logged("downlinks withdrawn") == 2);
+  // While withdrawn, a DOWNLINK is refused as NOT_CAPABLE, up to the end of the window.
+  r.run_until(again + DEGRADED_WINDOW_US - 16000);
   r.loop({r.downlink(r.io.t, 1000000, frame("downlink_ack"))});
   auto res = r.take(MSG_TX_RESULT);
   CHECK(res.size() == 1 && tx_res(res[0]).result == TX_NOT_CAPABLE);
+  r.run_until(again + DEGRADED_WINDOW_US - 1);
+  CHECK(r.engine->degraded());
+  r.io.t = again + DEGRADED_WINDOW_US;
+  CHECK(!r.engine->degraded());
+  // Once the window has passed, downlinks are accepted again without waiting for a HELLO.
+  r.loop({r.downlink(r.io.t, 1000000, frame("downlink_ack"))});
+  CHECK(r.take(MSG_TX_RESULT).empty());
+  r.run_until(r.io.t + 1000000);
+  CHECK(r.io.transmits.size() == 1);
 
-  // A healthy interval brings the capability back. Exactly 100 ms is still healthy.
-  r.run_until(r.io.t + 20000000);
+  // Exactly 100 ms is still healthy.
   r.io.t += DEGRADED_GAP_US;
   r.loop();
-  r.run_until(first + 3 * HELLO_INTERVAL_US);
-  CHECK(hello_caps(r) == CAP_DOWNLINK);
   CHECK(!r.engine->degraded());
 
   // downlink: false never advertises the capability.

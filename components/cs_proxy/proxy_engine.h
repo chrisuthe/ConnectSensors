@@ -25,6 +25,7 @@ static constexpr uint64_t TS_UNCERTAIN_EXTRA_US = 20000;       // 06 section 7
 // the 36 ms in the timing budget (01 section 4.1).
 static constexpr uint64_t TS_LOOP_INTERVAL_CAP_US = 16000;
 static constexpr uint64_t DEGRADED_GAP_US = 100000;            // 06 section 7
+static constexpr uint64_t DEGRADED_WINDOW_US = 10000000ULL;    // 06 section 7
 static constexpr uint64_t RSSI_PUBLISH_INTERVAL_US = 10000000ULL;
 static constexpr uint64_t COUNTERS_PUBLISH_INTERVAL_US = 10000000ULL;  // 06 section 10.1
 static constexpr uint64_t TIMER_LEAD_US = 2000;  // 06 section 8.2
@@ -122,7 +123,8 @@ class ProxyEngine {
 
   const ProxyCounters &counters() const { return this->counters_; }
   bool connected() const { return this->connected_; }
-  bool degraded() const { return this->degraded_; }
+  // A main-loop gap over DEGRADED_GAP_US ended within the last DEGRADED_WINDOW_US.
+  bool degraded() const { return this->degraded_at_(this->io_.now_us()); }
   const std::vector<uint32_t> &server_tags() const { return this->server_tags_; }
   uint64_t airtime_used_us() { return this->budget_.used_us(this->io_.now_us()); }
 
@@ -137,6 +139,9 @@ class ProxyEngine {
   void send_tx_result_(uint32_t seq, uint8_t result, int32_t offset_us);
   void send_hello_();
   void set_connected_(bool connected);
+  bool degraded_at_(uint64_t now) const {
+    return this->last_stall_us_ != 0 && now - this->last_stall_us_ < DEGRADED_WINDOW_US;
+  }
   void log_(LogLevel level, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
   ProxyConfig config_;
@@ -162,8 +167,11 @@ class ProxyEngine {
   uint64_t requested_hello_us_{0};
 
   uint64_t last_loop_us_{0};
-  uint64_t max_gap_us_{0};
-  bool degraded_{false};
+  // The last two completed gaps between this component's passes, newest first. A
+  // packet can have arrived as early as the pass before the previous one (06 section 7).
+  uint64_t recent_gaps_us_[2]{};
+  uint64_t max_gap_us_{0};  // since the last HELLO, for reporting only
+  uint64_t last_stall_us_{0};  // end of the last gap over DEGRADED_GAP_US
   uint64_t last_rssi_publish_us_{0};
   bool counters_published_{false};
   uint64_t last_counters_us_{0};

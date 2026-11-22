@@ -181,20 +181,37 @@ healthy, but a slow component elsewhere can delay it.
 - `rx_time_us` MUST be taken from the monotonic microsecond clock
   (`esp_timer_get_time()` on ESP32) at the start of the listener callback.
 - The component runs its own `loop()` every main-loop pass and records the time
-  of each pass. When a packet arrives, if more than the main-loop interval
+  of each pass. The limit for a gap is the main-loop interval
   (`App.get_loop_interval()`, normally 16 ms, counted as at most 16 ms) plus
-  20 ms has passed since the component's previous pass, the main loop was stalled
-  and the packet may have waited. The component MUST then set `TS_UNCERTAIN` in
-  the `UPLINK`. The loop interval is allowed for because an idle main loop sleeps
+  20 ms. The loop interval is allowed for because an idle main loop sleeps
   between passes; the radio interrupt wakes it, so sleeping does not delay packet
-  delivery. The cap keeps the unflagged error within 36 ms, the figure in the
-  timing budget (01 section 4.1); a node configured with a longer loop interval
-  flags more receptions instead.
+  delivery. The cap keeps a stall that goes unflagged within 36 ms, the figure in
+  the timing budget (01 section 4.1); a node configured with a longer loop
+  interval flags more receptions instead.
+- When a packet arrives, the component MUST set `TS_UNCERTAIN` in the `UPLINK` if
+  the time since its previous pass, or either of the two gaps between its passes
+  before that, exceeds the limit. The radio component can run before or after this
+  one in a pass. An idle radio stops its own loop and its interrupt restarts it,
+  which puts it last in the pass, so it usually delivers a packet just after this
+  component's pass. The packet can then have arrived any time after the previous
+  pass began, and that pass began after this component's pass before it. Its
+  wait can therefore span three gaps, the one still open and the two before it, and a stall
+  in any of them (in the scheduler, which runs `interval` and `set_timeout` work
+  ahead of the component loops, or in a component earlier in the pass) may have
+  delayed it. Each gap is held to the limit separately, so several shorter delays
+  that together pass 36 ms are not caught.
 - The component tracks the longest gap between its own loop passes and reports it
-  in `HELLO` as `max_loop_gap_ms`, then resets it.
-- If `max_loop_gap_ms` for the last interval exceeded 100 ms, the component MUST
-  clear the downlink-capable bit in the next `HELLO`, and set it again after an
-  interval below 100 ms.
+  in `HELLO` as `max_loop_gap_ms`, then resets it. This is for reporting only.
+- Downlink capability follows a 10-second sliding window. While a gap over 100 ms
+  ended within the last 10 seconds, the component MUST clear the downlink-capable
+  bit in any `HELLO` it sends and reject a `DOWNLINK` with `NOT_CAPABLE`. Ten
+  seconds after the last such gap it offers downlinks again, in the next `HELLO`
+  and for any `DOWNLINK` that arrives. The window is twice the 5 seconds a
+  downlink can be scheduled ahead (05 section 5.4), so a downlink is judged on
+  main-loop health over a longer span than the one it then waits through. It is
+  short enough that a single stall withdraws downlinks for a sixth of a `HELLO`
+  interval rather than for one or two whole intervals, and a `HELLO` only goes
+  out without the bit if a stall ended in the 10 seconds before it.
 
 Servers prefer proxies with good timing for RX1 (07).
 
@@ -450,7 +467,14 @@ be run against a test server built from the reference tool:
     publish every 10 seconds, and `frames_heard` counts the frames heard.
 13. A packet heard more than 36 ms after the component's previous loop pass is
     forwarded with `TS_UNCERTAIN`, also when the configured main-loop interval
-    is longer than 16 ms (section 7).
+    is longer than 16 ms (section 7). So is a packet heard within 36 ms of a pass
+    when either of the two gaps between the component's passes before it was over
+    36 ms.
+14. After a single main-loop stall over 100 ms, `DOWNLINK`s are rejected with
+    `NOT_CAPABLE` for 10 seconds and accepted again after that; a `HELLO` sent
+    in those 10 seconds clears the downlink-capable bit and one sent after sets
+    it, while both report the stall in `max_loop_gap_ms` until the next `HELLO`
+    resets it.
 
 ## 15. Upstream improvements (informative)
 

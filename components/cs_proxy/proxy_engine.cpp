@@ -63,7 +63,8 @@ void ProxyEngine::on_packet(const uint8_t *data, size_t len, float rssi, float s
     return;
   }
   const uint64_t allowed = std::min(this->io_.loop_interval_us(), TS_LOOP_INTERVAL_CAP_US) + TS_UNCERTAIN_EXTRA_US;
-  const uint8_t flags = gap > allowed ? UPLINK_TS_UNCERTAIN : 0;
+  const uint64_t worst = std::max({gap, this->recent_gaps_us_[0], this->recent_gaps_us_[1]});
+  const uint8_t flags = worst > allowed ? UPLINK_TS_UNCERTAIN : 0;
   uplink_body(this->body_buf_, now, rssi, snr, flags, data, len);
   this->send_(MSG_UPLINK, this->body_buf_.data(), this->body_buf_.size());
   this->counters_.forwarded++;
@@ -88,9 +89,17 @@ void ProxyEngine::on_packet(const uint8_t *data, size_t len, float rssi, float s
 uint64_t ProxyEngine::loop_start() {
   const uint64_t now = this->io_.now_us();
   if (this->last_loop_us_ != 0) {
-    uint64_t gap = now - this->last_loop_us_;
+    const uint64_t gap = now - this->last_loop_us_;
     if (gap > this->max_gap_us_)
       this->max_gap_us_ = gap;
+    this->recent_gaps_us_[1] = this->recent_gaps_us_[0];
+    this->recent_gaps_us_[0] = gap;
+    if (gap > DEGRADED_GAP_US) {
+      if (!this->degraded_at_(now))
+        this->log_(LogLevel::Warn, "Main loop stalled for %" PRIu32 " ms; downlinks withdrawn for %" PRIu32 " s",
+                   uint32_t(gap / 1000), uint32_t(DEGRADED_WINDOW_US / 1000000));
+      this->last_stall_us_ = now;
+    }
   }
   this->last_loop_us_ = now;
   return now;
@@ -141,10 +150,9 @@ void ProxyEngine::send_tx_result_(uint32_t seq, uint8_t result, int32_t offset_u
 
 void ProxyEngine::send_hello_() {
   const uint64_t now = this->io_.now_us();
-  // Downlink capability is withdrawn while the main loop is unhealthy (06 section 7).
-  this->degraded_ = this->max_gap_us_ > DEGRADED_GAP_US;
   HelloInfo h;
-  h.caps = (this->config_.downlink_enabled && !this->degraded_) ? CAP_DOWNLINK : 0;
+  // Downlink capability is withdrawn while the main loop is unhealthy (06 section 7).
+  h.caps = (this->config_.downlink_enabled && !this->degraded_at_(now)) ? CAP_DOWNLINK : 0;
   h.region = this->config_.region;
   h.frequency_hz = this->config_.frequency_hz;
   h.sf = this->config_.sf;
@@ -169,9 +177,6 @@ void ProxyEngine::send_hello_() {
       this->request_nonce_ = 0;
     }
   }
-  if (this->degraded_)
-    this->log_(LogLevel::Warn, "Main loop stalled for %u ms; downlinks withdrawn until it recovers",
-               h.max_loop_gap_ms);
   this->max_gap_us_ = 0;
   this->hello_sent_ = true;
   this->next_hello_us_ = now + HELLO_INTERVAL_US;
@@ -272,7 +277,7 @@ void ProxyEngine::handle_downlink_(const Envelope &e, uint64_t now) {
   const uint64_t tx_at = req.ref_rx_time_us + req.tx_offset_us;
   const uint32_t airtime = lora_airtime_us(req.frame.size(), this->config_.sf, this->config_.bw_hz,
                                            this->config_.cr, this->config_.preamble);
-  const bool capable = this->config_.downlink_enabled && !this->degraded_;
+  const bool capable = this->config_.downlink_enabled && !this->degraded_at_(now);
   uint8_t result =
       this->scheduler_.admit(e.seq, tx_at, req.frame.data(), req.frame.size(), airtime, now, capable, this->budget_);
   if (result != TX_SENT) {
