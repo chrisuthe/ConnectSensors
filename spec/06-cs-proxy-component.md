@@ -437,6 +437,9 @@ be run against a test server built from the reference tool:
     another `boot_id`, with a nonce of 0, or with a bad MAC draws nothing.
 12. With no server address known, or the network down, the counter sensors still
     publish every 10 seconds, and `frames_heard` counts the frames heard.
+13. A packet heard more than 36 ms after the component's previous loop pass is
+    forwarded with `TS_UNCERTAIN`, also when the configured main-loop interval
+    is longer than 16 ms (section 7).
 
 ## 15. Upstream improvements (informative)
 
