@@ -23,7 +23,6 @@ if importlib.util.find_spec(__name__ + "._csframe") is None:
 
 from ._csframe import (  # noqa: E402
     CAP_DOWNLINK,
-    CAP_FEDERATION,
     CMD_KEY_EXCHANGE,
     CMD_LEAVE,
     CMD_SET_CHANNEL,
@@ -193,7 +192,6 @@ __all__ = [
     "M_HELLO_REQUEST",
     "UPF_TS_UNCERTAIN",
     "CAP_DOWNLINK",
-    "CAP_FEDERATION",
     "envelope",
     "open_envelope",
     "uplink_body",
