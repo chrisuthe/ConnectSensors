@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ConnectSensors development server for testing proxies.
+"""ConnectSensors development server for testing proxies and sensors.
 
 Not the real network server. It speaks the proxy envelope (spec 05) to any
 number of proxies sharing one key, prints what they hear, decrypts frames from
@@ -7,10 +7,18 @@ the test-vector device (spec/vectors/frame-v1.json), and with --ack answers
 confirmed uplinks from that device with a real downlink in RX1. Copies of one
 transmission are answered once; a sensor's retry is answered again (07 section 4).
 
+Real sensors registered with --device are paired when their pairing button is
+pressed (04 section 4.4: JOIN, KEY_EXCHANGE, SYNC, SET_NETWORK), and from then on
+their uplinks are decrypted and their confirmed ones answered, with or without
+--ack. The network key is the one from the test vectors.
+
     python3 devtools/cs_testserver.py                 # prints a fresh key
     python3 devtools/cs_testserver.py --key 5a5a...   # use a key you already set
     python3 devtools/cs_testserver.py --ack           # also exercise downlinks
     python3 devtools/cs_testserver.py --no-seq-seed   # server seq from 1, as after a real restart
+    python3 devtools/cs_testserver.py --device CS:1:...              # a sensor, by pairing code
+    python3 devtools/cs_testserver.py --device DEV_EUI:K_ROOT        # or by hex dev_eui and root key
+    python3 devtools/cs_testserver.py --device ... --state pairings.json  # keep sessions across restarts
 
 Requires: cryptography (pip install cryptography)
 """
@@ -87,6 +95,81 @@ def seq_seed() -> int:
     return int(time.time()) & 0xFFFFFFFF
 
 
+def root_counter_seed() -> int:
+    """First root downlink counter, minus one, when nothing is stored.
+
+    A sensor keeps its root floor through pairing and re-pairing (02 section 8.4),
+    so a server that forgot its counter must still start above every value it used
+    before. Seconds since the epoch do that while it sends fewer than one
+    KEY_EXCHANGE a second.
+    """
+    return int(time.time())
+
+
+def parse_device(spec: str) -> tuple[bytes, bytes]:
+    """--device: a CS:1:... pairing code, or DEV_EUI:K_ROOT in hex."""
+    if spec.strip().upper().startswith("CS:"):
+        code = cs.qr_parse(spec)
+        return bytes.fromhex(code["dev_eui"]), bytes.fromhex(code["k_root"])
+    parts = spec.split(":")
+    if len(parts) != 2:
+        raise ValueError("expected CS:1:... or DEV_EUI:K_ROOT")
+    dev_eui, k_root = bytes.fromhex(parts[0]), bytes.fromhex(parts[1])
+    if len(dev_eui) != 8 or len(k_root) != 16:
+        raise ValueError("DEV_EUI is 16 hex digits and K_ROOT 32")
+    return dev_eui, k_root
+
+
+class RealDevice:
+    """A sensor registered with --device: SCANNED, EXCHANGED or PAIRED (04 section 4.2).
+
+    The pending exchange and the root counter come from csframe's JoinResponder. The
+    10-minute and 2-minute timeouts of 04 section 4.2 are not modelled.
+    """
+
+    def __init__(self, dev_eui: bytes, k_root: bytes, k_net_route: bytes):
+        self.dev_eui = dev_eui
+        self.root = cs.keys_from(k_root, dev_eui)
+        self.join = cs.JoinResponder(k_root, dev_eui, root_counter_seed())
+        self.k_net_route = k_net_route
+        self.state = "SCANNED"
+        self.k_session = None
+        self.session = None
+        self.fcnt_down = 0  # session downlink counter, from 1 with each k_session
+        self.uplinks = cs.UplinkCollector(0)
+
+    def to_json(self) -> dict:
+        return {"root_fcnt_down": self.join.root_fcnt_down, "state": self.state,
+                "k_session": self.k_session.hex() if self.k_session else None,
+                "fcnt_down": self.fcnt_down, "fcnt_up": self.uplinks.counter.last}
+
+    def load_json(self, d: dict) -> None:
+        self.join.root_fcnt_down = max(self.join.root_fcnt_down, d["root_fcnt_down"])
+        if d.get("k_session"):
+            self.set_session(bytes.fromhex(d["k_session"]), d["state"])
+            self.fcnt_down = d["fcnt_down"]
+            self.uplinks = cs.UplinkCollector(d["fcnt_up"])
+
+    def set_session(self, k_session: bytes, state: str) -> None:
+        self.k_session = k_session
+        self.session = cs.keys_from(k_session, self.dev_eui)
+        self.state = state
+
+    def open(self, frame: bytes, h) -> tuple[str, cs.DeviceKeys, bytes] | None:
+        """Identify a frame as this device's (02 section 11.3): JOIN under the root
+        key set, everything else under the session key set."""
+        tries = [("root", self.root)] if h.ftype == cs.T_JOIN else []
+        if h.ftype != cs.T_JOIN and self.session is not None:
+            tries.append(("session", self.session))
+        for name, keys in tries:
+            try:
+                _, pt = cs.open_frame(keys, frame)
+                return name, keys, pt
+            except Exception:
+                continue
+        return None
+
+
 class Proxy:
     def __init__(self, proxy_id: bytes):
         self.proxy_id = proxy_id
@@ -115,6 +198,10 @@ def main() -> int:
     ap.add_argument("--window", choices=("rx1", "rx2"), default="rx1")
     ap.add_argument("--no-seq-seed", action="store_true",
                     help="count the server seq from 1 in each session instead of seeding it from the clock")
+    ap.add_argument("--device", action="append", default=[], metavar="CODE",
+                    help="a sensor to pair: its CS:1:... pairing code, or DEV_EUI:K_ROOT in hex (repeatable)")
+    ap.add_argument("--state", metavar="FILE",
+                    help="keep the devices' sessions and counters in FILE, so a restart needs no re-pairing")
     args = ap.parse_args()
 
     key = bytes.fromhex(args.key) if args.key else secrets.token_bytes(16)
@@ -126,6 +213,32 @@ def main() -> int:
         log("Put it in the proxy's secrets.yaml as cs_proxy_key, or restart with --key.")
 
     device = TestDevice()
+    real: list[RealDevice] = []
+    for spec in args.device:
+        try:
+            dev_eui, k_root = parse_device(spec)
+        except ValueError as ex:
+            print(f"--device {spec}: {ex}", file=sys.stderr)
+            return 2
+        real.append(RealDevice(dev_eui, k_root, device.k_net_route))
+    stored = {}
+    if args.state and os.path.exists(args.state):
+        with open(args.state) as f:
+            stored = json.load(f)
+    for dev in real:
+        if dev.dev_eui.hex() in stored:
+            dev.load_json(stored[dev.dev_eui.hex()])
+        log(f"Device {dev.dev_eui.hex()}: {dev.state}")
+
+    def save_state() -> None:
+        if not args.state:
+            return
+        stored.update({dev.dev_eui.hex(): dev.to_json() for dev in real})
+        tmp = args.state + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(stored, f, indent=1)
+        os.replace(tmp, args.state)
+
     proxies: dict[bytes, Proxy] = {}
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", args.port))
@@ -134,6 +247,54 @@ def main() -> int:
     def send(p: Proxy, msg_type: int, body: bytes) -> None:
         seq = p.link.next_seq() & 0xFFFFFFFF
         sock.sendto(cs.envelope(key, msg_type, p.proxy_id, p.link.boot_id, seq, body), p.addr)
+
+    offset = 1_000_000 if args.window == "rx1" else 3_000_000
+
+    def real_uplink(p: Proxy, pid: bytes, line: str, frame: bytes, h, rx_time: int, now: int) -> bool:
+        """A registered sensor's uplink: pairing (04 section 4.4) or normal traffic."""
+        for dev in real:
+            opened = dev.open(frame, h)
+            if opened is not None:
+                break
+        else:
+            return False
+        keyset, keys, pt = opened
+        eui = dev.dev_eui.hex()
+        got = dev.uplinks.receive(frame, int(time.monotonic() * 1000))
+        if got["result"] == "copy":
+            log(line + f" {eui}: copy of the same transmission")
+            return True
+        log(line + f" {eui} ({keyset} keys, {got['counter']}): {describe_payload(h.ftype, pt)}")
+        if not got["answer"]:
+            return True
+        if h.ftype == cs.T_JOIN:
+            # 04 section 4.4 step 3; a retransmitted JOIN gets the same frame back (4.2).
+            r = dev.join.join(frame, secrets.token_bytes(32), now)
+            if r["action"] == "new_exchange":
+                dev.set_session(r["k_session"], "EXCHANGED")
+                dev.fcnt_down = 0
+            save_state()
+            send(p, cs.M_DOWNLINK, cs.downlink_msg_body(rx_time, offset, r["frame"]))
+            stalled = " (stalled: the sensor keeps repeating JOIN)" if r["stalled"] else ""
+            log(f"{pid.hex()} -> DOWNLINK KEY_EXCHANGE to {eui} ({r['action']}, root counter "
+                f"{dev.join.root_fcnt_down}){stalled}")
+            return True
+        cmds = b""
+        if dev.state == "EXCHANGED" and h.ftype == cs.T_SYNC:
+            cmds = cs.command(cs.CMD_SET_NETWORK, dev.k_net_route)  # step 6
+        elif dev.state == "EXCHANGED" and h.net_tag != cs.ZERO_TAG and pt[0] & cs.UF_DL_ACK:
+            dev.state = "PAIRED"  # step 7: normal tags acknowledge SET_NETWORK
+            dev.join.paired()
+            log(f"{eui} PAIRED")
+        if h.ftype in CONFIRMED:
+            dev.fcnt_down += 1
+            dl = cs.seal(keys, cs.T_DOWNLINK, h.net_tag, h.dev_tag, dev.fcnt_down,
+                         cs.downlink_payload(h.fcnt, now, 0, cmds))
+            send(p, cs.M_DOWNLINK, cs.downlink_msg_body(rx_time, offset, dl))
+            what = "SET_NETWORK" if cmds else "ack"
+            log(f"{pid.hex()} -> DOWNLINK {what} to {eui} answering fcnt {h.fcnt} in {args.window}")
+        save_state()
+        return True
 
     while True:
         data, addr = sock.recvfrom(2048)
@@ -179,6 +340,8 @@ def main() -> int:
             name = TYPE_NAMES.get(h.ftype, f"type {h.ftype}") if h else "invalid"
             line = (f"{pid.hex()} UPLINK {name} fcnt {h.fcnt if h else '?'} rssi {rssi / 10:.1f} "
                     f"snr {snr / 10:.1f}{' TS_UNCERTAIN' if flags & 1 else ''}")
+            if h and real_uplink(p, pid, line, frame, h, rx_time, now):
+                continue
             opened = device.open(frame) if h else None
             if opened is None:
                 log(line + " (not the test device)")
@@ -193,7 +356,6 @@ def main() -> int:
                 device.fcnt_down += 1
                 dl_pt = cs.downlink_payload(h.fcnt, now, 0)
                 dl = cs.seal(keys, cs.T_DOWNLINK, h.net_tag, h.dev_tag, device.fcnt_down, dl_pt)
-                offset = 1_000_000 if args.window == "rx1" else 3_000_000
                 send(p, cs.M_DOWNLINK, cs.downlink_msg_body(rx_time, offset, dl))
                 log(f"{pid.hex()} -> DOWNLINK seq {p.link.seq} answering fcnt {h.fcnt} in {args.window}")
 
