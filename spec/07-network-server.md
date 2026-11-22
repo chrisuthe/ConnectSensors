@@ -201,7 +201,7 @@ The downlink:
 | `reply_to` | The uplink's `fcnt` |
 | `server_time` | Current Unix time, taken when the downlink is built |
 | `PENDING` | Set if commands remain queued after this downlink |
-| Commands | As many queued commands as fit in 55 bytes, in queue order |
+| Commands | As many queued commands as fit in 55 bytes, in queue order. None in an answer to a late arrival (section 7) |
 
 An answer to `JOIN` carries only `KEY_EXCHANGE` (02 section 11.1) and follows
 section 5.1.
@@ -299,6 +299,10 @@ answer to a retransmitted `JOIN`, which is the cached `KEY_EXCHANGE` frame
   same `reply_to` (an answer to a retransmission, section 6.4), the server keeps
   only the commands that both downlinks carried, because the sensor accepted at
   most one of them and the server cannot tell which.
+- The server MUST NOT put commands in an answer to a late arrival (`accept_late`,
+  02 section 8.5). The sensor has already sent a newer frame, so it rejects that
+  answer (02 section 10.2), and recording it would move the record back to a
+  `reply_to` that older uplinks are above.
 - **Delivery.** An accepted uplink (02 section 8.5) with `DL_ACK` set and an
   `fcnt` greater than the record's `reply_to` marks the recorded commands
   delivered, and the record is cleared. A sensor accepts only a downlink that

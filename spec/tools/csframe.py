@@ -687,10 +687,13 @@ class CommandAcks:
     def __init__(self):
         self.reply_to: int | None = None
         self.awaiting: list[str] = []  # commands every downlink with reply_to carried
+        self.last_fcnt: int | None = None
 
     def downlink(self, reply_to: int, commands: list[str]) -> list[str]:
         if not commands:
             return self.awaiting
+        if self.last_fcnt is not None and reply_to < self.last_fcnt:
+            raise ValueError("commands in an answer to a late arrival")
         if reply_to == self.reply_to:
             # Two answers to one uplink: the sensor accepted at most one of them.
             self.awaiting = [c for c in self.awaiting if c in commands]
@@ -700,6 +703,8 @@ class CommandAcks:
 
     def uplink(self, fcnt: int, counter: str, dl_ack: bool) -> list[str]:
         """Returns the commands this uplink marks delivered."""
+        if counter == "accept":
+            self.last_fcnt = fcnt
         if counter not in ("accept", "accept_late") or not dl_ack:
             return []
         if self.reply_to is None or fcnt <= self.reply_to:
@@ -1208,7 +1213,10 @@ def dl_ack_steps(ctr: UplinkCounter, acks: CommandAcks, steps: list) -> list[dic
     out = []
     for s in steps:
         if s["event"] == "downlink":
-            out.append({**s, "awaiting": list(acks.downlink(s["reply_to"], s["commands"]))})
+            try:
+                out.append({**s, "awaiting": list(acks.downlink(s["reply_to"], s["commands"]))})
+            except ValueError:
+                out.append({**s, "refused": True, "awaiting": list(acks.awaiting)})
         else:
             counter = ctr.offer(s["fcnt"])
             out.append({**s, "counter": counter, "delivered": acks.uplink(s["fcnt"], counter, s["dl_ack"])})
@@ -1236,6 +1244,9 @@ def dl_ack_vectors() -> dict:
         {"event": "uplink", "fcnt": 25, "dl_ack": True,
          "note": "acknowledges one answer to 24, not known which: LEAVE stays queued"},
         {"event": "downlink", "reply_to": 25, "commands": ["LEAVE"]},
+        {"event": "uplink", "fcnt": 19, "dl_ack": False, "note": "late arrival of a confirmed uplink, which the server answers"},
+        {"event": "downlink", "reply_to": 19, "commands": ["LEAVE"],
+         "note": "MUST NOT carry commands: the answer to a late arrival is refused"},
         {"event": "uplink", "fcnt": 26, "dl_ack": True, "note": "the sensor's final HEARTBEAT: settles"},
     ]
     ctr = UplinkCounter(17)
@@ -1422,9 +1433,13 @@ def verify(d: str) -> int:
     ctr, acks = UplinkCounter(da["first_accepted"]), CommandAcks()
     for c in da["sequence"]:
         if c["event"] == "downlink":
-            got = acks.downlink(c["reply_to"], c["commands"])
-            ok = got == c["awaiting"]
-            print(f"{'ok  ' if ok else 'FAIL'} dl_ack downlink reply_to {c['reply_to']} -> awaiting {c['awaiting']}")
+            try:
+                got, refused = acks.downlink(c["reply_to"], c["commands"]), False
+            except ValueError:
+                got, refused = acks.awaiting, True
+            ok = got == c["awaiting"] and refused == c.get("refused", False)
+            print(f"{'ok  ' if ok else 'FAIL'} dl_ack downlink reply_to {c['reply_to']} -> "
+                  f"{'refused' if refused else 'awaiting ' + str(c['awaiting'])}")
         else:
             counter = ctr.offer(c["fcnt"])
             got = acks.uplink(c["fcnt"], counter, c["dl_ack"])

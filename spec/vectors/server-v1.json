@@ -321,6 +321,26 @@
       },
       {
         "event": "uplink",
+        "fcnt": 19,
+        "dl_ack": false,
+        "note": "late arrival of a confirmed uplink, which the server answers",
+        "counter": "accept_late",
+        "delivered": []
+      },
+      {
+        "event": "downlink",
+        "reply_to": 19,
+        "commands": [
+          "LEAVE"
+        ],
+        "note": "MUST NOT carry commands: the answer to a late arrival is refused",
+        "refused": true,
+        "awaiting": [
+          "LEAVE"
+        ]
+      },
+      {
+        "event": "uplink",
         "fcnt": 26,
         "dl_ack": true,
         "note": "the sensor's final HEARTBEAT: settles",
