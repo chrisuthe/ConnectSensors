@@ -103,6 +103,15 @@ Persist `collector.counter.last` and `collector.counter.seen` (the late arrivals
 accepted below it; 07 section 10) and restore with `UplinkCollector(last, seen)`, or
 `UplinkCounter(last, seen)`. Which copies were merged is held in memory only.
 
+`CommandAcks()` per device settles queued commands on `DL_ACK` (07 section 7). Call
+`downlink(reply_to, commands)` for each downlink sent with commands, and
+`uplink(fcnt, counter, dl_ack)` for each frame the collector accepts; it returns the
+commands that frame marks delivered. Only an uplink whose `fcnt` is above the
+downlink's `reply_to` settles anything, so a late arrival or a federated copy of an
+earlier frame cannot. `downlink()` raises `ValueError` if commands ride on an answer
+to a late arrival. Persist `reply_to`, `awaiting` and `last_fcnt` and restore with
+`CommandAcks(reply_to, awaiting, last_fcnt)`.
+
 **For tests.** `ProxyLink(boot_id)` is the proxy's side of the envelope session and
 `SensorPairing(k_root, dev_eui)` the sensor's side of JOIN and KEY_EXCHANGE, so a
 server's tests can simulate both on the public API.

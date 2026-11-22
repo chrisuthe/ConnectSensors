@@ -24,7 +24,7 @@ import math
 import os
 import struct
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -681,15 +681,24 @@ class UplinkCollector:
         return {"result": "transmission", "counter": counter, "answer": answer}
 
 
-class CommandAcks:
-    """Binding DL_ACK to the downlink it acknowledges (07 section 7)."""
+class CommandAcks[C]:
+    """Binding DL_ACK to the downlink it acknowledges (07 section 7) for one device.
 
-    def __init__(self):
-        self.reply_to: int | None = None
-        self.awaiting: list[str] = []  # commands every downlink with reply_to carried
-        self.last_fcnt: int | None = None
+    Commands are any values compared by equality, such as their encoded bytes. Call
+    uplink() for every frame the counter accepts and downlink() for every downlink
+    sent with commands. reply_to, awaiting and last_fcnt are the persisted record of
+    07 section 10; restore them with CommandAcks(reply_to, awaiting, last_fcnt)."""
 
-    def downlink(self, reply_to: int, commands: list[str]) -> list[str]:
+    def __init__(self, reply_to: int | None = None, awaiting: Iterable[C] = (),
+                 last_fcnt: int | None = None):
+        self.reply_to = reply_to
+        self.awaiting: list[C] = list(awaiting) if reply_to is not None else []
+        self.last_fcnt = last_fcnt  # highest fresh uplink seen, to refuse answers to late arrivals
+
+    def downlink(self, reply_to: int, commands: Sequence[C]) -> list[C]:
+        """Record a downlink sent with commands; returns the commands awaiting
+        acknowledgement. Raises ValueError for an answer to a late arrival, which
+        MUST NOT carry commands."""
         if not commands:
             return self.awaiting
         if self.last_fcnt is not None and reply_to < self.last_fcnt:
@@ -701,8 +710,9 @@ class CommandAcks:
             self.reply_to, self.awaiting = reply_to, list(commands)
         return self.awaiting
 
-    def uplink(self, fcnt: int, counter: str, dl_ack: bool) -> list[str]:
-        """Returns the commands this uplink marks delivered."""
+    def uplink(self, fcnt: int, counter: str, dl_ack: bool) -> list[C]:
+        """Returns the commands this uplink marks delivered; counter is the
+        UplinkCounter result for it."""
         if counter == "accept":
             self.last_fcnt = fcnt
         if counter not in ("accept", "accept_late") or not dl_ack:
@@ -1209,7 +1219,7 @@ def server_vectors() -> dict:
             "join": join_vectors()}
 
 
-def dl_ack_steps(ctr: UplinkCounter, acks: CommandAcks, steps: list) -> list[dict]:
+def dl_ack_steps(ctr: UplinkCounter, acks: CommandAcks[str], steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for s in steps:
         if s["event"] == "downlink":
@@ -1250,7 +1260,7 @@ def dl_ack_vectors() -> dict:
         {"event": "uplink", "fcnt": 26, "dl_ack": True, "note": "the sensor's final HEARTBEAT: settles"},
     ]
     ctr = UplinkCounter(17)
-    return {"first_accepted": 17, "sequence": dl_ack_steps(ctr, CommandAcks(), steps)}
+    return {"first_accepted": 17, "sequence": dl_ack_steps(ctr, CommandAcks[str](), steps)}
 
 
 def retransmission_vectors() -> dict:
@@ -1430,7 +1440,7 @@ def verify(d: str) -> int:
         print(f"{'ok  ' if got == want else 'FAIL'} retransmission at {c['arrived_ms']} ms -> {want}")
         bad += got != want
     da = sv["dl_ack"]
-    ctr, acks = UplinkCounter(da["first_accepted"]), CommandAcks()
+    ctr, acks = UplinkCounter(da["first_accepted"]), CommandAcks[str]()
     for c in da["sequence"]:
         if c["event"] == "downlink":
             try:

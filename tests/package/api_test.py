@@ -1,5 +1,5 @@
 """Tests of the connectsensors server APIs a network server builds on: typed state,
-persisting and restoring JoinResponder and UplinkCollector, the SENT-gated stall count
+persisting and restoring JoinResponder, UplinkCollector and CommandAcks, the SENT-gated stall count
 and the exported proxy and sensor sides.
 
 check.sh runs it against the installed wheel and type-checks it with mypy --strict
@@ -118,6 +118,27 @@ def persist_uplink_counter() -> None:
     print("ok   uplink counter persisted and restored")
 
 
+def command_acks() -> None:
+    hb = cs.command(cs.CMD_SET_HEARTBEAT, (60).to_bytes(2, "big"))
+    leave = cs.command(cs.CMD_LEAVE)
+    acks = cs.CommandAcks[bytes]()
+    assert acks.uplink(20, "accept", False) == []
+    assert acks.downlink(20, [hb]) == [hb]
+    assert acks.uplink(18, "accept_late", True) == []  # older frame: settles nothing
+    record = (acks.reply_to, list(acks.awaiting), acks.last_fcnt)
+    assert record == (20, [hb], 20)
+
+    restored = cs.CommandAcks[bytes](*record)
+    try:
+        restored.downlink(19, [leave])
+        raise AssertionError("commands on an answer to a late arrival")
+    except ValueError:
+        pass
+    assert restored.uplink(21, "accept", True) == [hb]
+    assert restored.reply_to is None and restored.awaiting == []
+    print("ok   CommandAcks")
+
+
 def stall_after_sent() -> None:
     sensor = cs.SensorPairing(K_ROOT, DEV_EUI)
     join_a = sensor.join(1, sensor_priv(4))
@@ -174,6 +195,7 @@ def main() -> int:
     typed_state()
     persist_pending_exchange()
     persist_uplink_counter()
+    command_acks()
     stall_after_sent()
     proxy_side()
     print(f"connectsensors {cs.__version__}: API tests passed")
