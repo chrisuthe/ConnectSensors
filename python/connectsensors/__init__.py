@@ -72,6 +72,7 @@ from ._csframe import (  # noqa: E402
     UPF_TS_UNCERTAIN,
     VERSION,
     ZERO_TAG,
+    CommandAcks,
     DeviceKeys,
     JoinResponder,
     ParsedHeader,
@@ -212,6 +213,7 @@ __all__ = [
     # 07 network server
     "UplinkCounter",
     "UplinkCollector",
+    "CommandAcks",
     "REORDER_WINDOW",
     "MERGE_WINDOW_MS",
     "FRAME_MEMORY_MS",

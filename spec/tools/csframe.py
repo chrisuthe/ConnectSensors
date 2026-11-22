@@ -24,7 +24,7 @@ import math
 import os
 import struct
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -681,6 +681,48 @@ class UplinkCollector:
         return {"result": "transmission", "counter": counter, "answer": answer}
 
 
+class CommandAcks[C]:
+    """Binding DL_ACK to the downlink it acknowledges (07 section 7) for one device.
+
+    Commands are any values compared by equality, such as their encoded bytes. Call
+    uplink() for every frame the counter accepts and downlink() for every downlink
+    sent with commands. reply_to, awaiting and last_fcnt are the persisted record of
+    07 section 10; restore them with CommandAcks(reply_to, awaiting, last_fcnt)."""
+
+    def __init__(self, reply_to: int | None = None, awaiting: Iterable[C] = (),
+                 last_fcnt: int | None = None):
+        self.reply_to = reply_to
+        self.awaiting: list[C] = list(awaiting) if reply_to is not None else []
+        self.last_fcnt = last_fcnt  # highest fresh uplink seen, to refuse answers to late arrivals
+
+    def downlink(self, reply_to: int, commands: Sequence[C]) -> list[C]:
+        """Record a downlink sent with commands; returns the commands awaiting
+        acknowledgement. Raises ValueError for an answer to a late arrival, which
+        MUST NOT carry commands."""
+        if not commands:
+            return self.awaiting
+        if self.last_fcnt is not None and reply_to < self.last_fcnt:
+            raise ValueError("commands in an answer to a late arrival")
+        if reply_to == self.reply_to:
+            # Two answers to one uplink: the sensor accepted at most one of them.
+            self.awaiting = [c for c in self.awaiting if c in commands]
+        else:
+            self.reply_to, self.awaiting = reply_to, list(commands)
+        return self.awaiting
+
+    def uplink(self, fcnt: int, counter: str, dl_ack: bool) -> list[C]:
+        """Returns the commands this uplink marks delivered; counter is the
+        UplinkCounter result for it."""
+        if counter == "accept":
+            self.last_fcnt = fcnt
+        if counter not in ("accept", "accept_late") or not dl_ack:
+            return []
+        if self.reply_to is None or fcnt <= self.reply_to:
+            return []
+        delivered, self.reply_to, self.awaiting = self.awaiting, None, []
+        return delivered
+
+
 def unwrap(prev_raw: int, prev_total: int, raw: int, modulus: int) -> tuple[int, str]:
     """Counter unwrapping (03 section 6). Returns (new_total, how)."""
     if raw >= prev_raw:
@@ -1173,7 +1215,52 @@ def server_vectors() -> dict:
             "uplink_counter": {"first_accepted": 10, "window": REORDER_WINDOW, "sequence": fcnt_cases},
             "counter16_unwrap": {"modulus": 65536, "sequence": unwrap_cases},
             "retransmission": retransmission_vectors(),
+            "dl_ack": dl_ack_vectors(),
             "join": join_vectors()}
+
+
+def dl_ack_steps(ctr: UplinkCounter, acks: CommandAcks[str], steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for s in steps:
+        if s["event"] == "downlink":
+            try:
+                out.append({**s, "awaiting": list(acks.downlink(s["reply_to"], s["commands"]))})
+            except ValueError:
+                out.append({**s, "refused": True, "awaiting": list(acks.awaiting)})
+        else:
+            counter = ctr.offer(s["fcnt"])
+            out.append({**s, "counter": counter, "delivered": acks.uplink(s["fcnt"], counter, s["dl_ack"])})
+    return out
+
+
+def dl_ack_vectors() -> dict:
+    """DL_ACK marks commands delivered only on an uplink newer than their downlink (07 section 7)."""
+    steps = [
+        {"event": "uplink", "fcnt": 20, "dl_ack": False, "note": "commands queued: SET_HEARTBEAT"},
+        {"event": "downlink", "reply_to": 20, "commands": ["SET_HEARTBEAT"]},
+        {"event": "uplink", "fcnt": 21, "dl_ack": True, "note": "fresh fcnt above reply_to: settles"},
+        {"event": "downlink", "reply_to": 21, "commands": ["SET_NETWORK"], "note": "network key rotation"},
+        {"event": "uplink", "fcnt": 18, "dl_ack": True, "via": "relay",
+         "note": "neighbor's late copy of an older frame, with DL_ACK for an older downlink: settles nothing"},
+        {"event": "uplink", "fcnt": 21, "dl_ack": True,
+         "note": "retransmission of 21 (duplicate): not acted on, settles nothing"},
+        {"event": "uplink", "fcnt": 23, "dl_ack": False,
+         "note": "arrives before 22; the sensor already sent its DL_ACK in 22: settles nothing yet"},
+        {"event": "uplink", "fcnt": 22, "dl_ack": True, "note": "late arrival above reply_to: settles"},
+        {"event": "uplink", "fcnt": 24, "dl_ack": False, "note": "commands queued: SET_HEARTBEAT"},
+        {"event": "downlink", "reply_to": 24, "commands": ["SET_HEARTBEAT"]},
+        {"event": "downlink", "reply_to": 24, "commands": ["SET_HEARTBEAT", "LEAVE"],
+         "note": "answer to a retransmission of 24, after the user removed the device"},
+        {"event": "uplink", "fcnt": 25, "dl_ack": True,
+         "note": "acknowledges one answer to 24, not known which: LEAVE stays queued"},
+        {"event": "downlink", "reply_to": 25, "commands": ["LEAVE"]},
+        {"event": "uplink", "fcnt": 19, "dl_ack": False, "note": "late arrival of a confirmed uplink, which the server answers"},
+        {"event": "downlink", "reply_to": 19, "commands": ["LEAVE"],
+         "note": "MUST NOT carry commands: the answer to a late arrival is refused"},
+        {"event": "uplink", "fcnt": 26, "dl_ack": True, "note": "the sensor's final HEARTBEAT: settles"},
+    ]
+    ctr = UplinkCounter(17)
+    return {"first_accepted": 17, "sequence": dl_ack_steps(ctr, CommandAcks[str](), steps)}
 
 
 def retransmission_vectors() -> dict:
@@ -1352,6 +1439,23 @@ def verify(d: str) -> int:
         want = {k: c[k] for k in ("result", "counter", "answer") if k in c}
         print(f"{'ok  ' if got == want else 'FAIL'} retransmission at {c['arrived_ms']} ms -> {want}")
         bad += got != want
+    da = sv["dl_ack"]
+    ctr, acks = UplinkCounter(da["first_accepted"]), CommandAcks[str]()
+    for c in da["sequence"]:
+        if c["event"] == "downlink":
+            try:
+                got, refused = acks.downlink(c["reply_to"], c["commands"]), False
+            except ValueError:
+                got, refused = acks.awaiting, True
+            ok = got == c["awaiting"] and refused == c.get("refused", False)
+            print(f"{'ok  ' if ok else 'FAIL'} dl_ack downlink reply_to {c['reply_to']} -> "
+                  f"{'refused' if refused else 'awaiting ' + str(c['awaiting'])}")
+        else:
+            counter = ctr.offer(c["fcnt"])
+            got = acks.uplink(c["fcnt"], counter, c["dl_ack"])
+            ok = counter == c["counter"] and got == c["delivered"]
+            print(f"{'ok  ' if ok else 'FAIL'} dl_ack uplink fcnt {c['fcnt']} -> delivered {c['delivered']}")
+        bad += not ok
     jv = sv["join"]
     srv = JoinResponder(k_root, eui, jv["root_fcnt_down_before"])
     sent = {}  # root fcnt_down -> plaintext: no two plaintexts may share a root nonce

@@ -192,6 +192,165 @@
       }
     ]
   },
+  "dl_ack": {
+    "first_accepted": 17,
+    "sequence": [
+      {
+        "event": "uplink",
+        "fcnt": 20,
+        "dl_ack": false,
+        "note": "commands queued: SET_HEARTBEAT",
+        "counter": "accept",
+        "delivered": []
+      },
+      {
+        "event": "downlink",
+        "reply_to": 20,
+        "commands": [
+          "SET_HEARTBEAT"
+        ],
+        "awaiting": [
+          "SET_HEARTBEAT"
+        ]
+      },
+      {
+        "event": "uplink",
+        "fcnt": 21,
+        "dl_ack": true,
+        "note": "fresh fcnt above reply_to: settles",
+        "counter": "accept",
+        "delivered": [
+          "SET_HEARTBEAT"
+        ]
+      },
+      {
+        "event": "downlink",
+        "reply_to": 21,
+        "commands": [
+          "SET_NETWORK"
+        ],
+        "note": "network key rotation",
+        "awaiting": [
+          "SET_NETWORK"
+        ]
+      },
+      {
+        "event": "uplink",
+        "fcnt": 18,
+        "dl_ack": true,
+        "via": "relay",
+        "note": "neighbor's late copy of an older frame, with DL_ACK for an older downlink: settles nothing",
+        "counter": "accept_late",
+        "delivered": []
+      },
+      {
+        "event": "uplink",
+        "fcnt": 21,
+        "dl_ack": true,
+        "note": "retransmission of 21 (duplicate): not acted on, settles nothing",
+        "counter": "duplicate",
+        "delivered": []
+      },
+      {
+        "event": "uplink",
+        "fcnt": 23,
+        "dl_ack": false,
+        "note": "arrives before 22; the sensor already sent its DL_ACK in 22: settles nothing yet",
+        "counter": "accept",
+        "delivered": []
+      },
+      {
+        "event": "uplink",
+        "fcnt": 22,
+        "dl_ack": true,
+        "note": "late arrival above reply_to: settles",
+        "counter": "accept_late",
+        "delivered": [
+          "SET_NETWORK"
+        ]
+      },
+      {
+        "event": "uplink",
+        "fcnt": 24,
+        "dl_ack": false,
+        "note": "commands queued: SET_HEARTBEAT",
+        "counter": "accept",
+        "delivered": []
+      },
+      {
+        "event": "downlink",
+        "reply_to": 24,
+        "commands": [
+          "SET_HEARTBEAT"
+        ],
+        "awaiting": [
+          "SET_HEARTBEAT"
+        ]
+      },
+      {
+        "event": "downlink",
+        "reply_to": 24,
+        "commands": [
+          "SET_HEARTBEAT",
+          "LEAVE"
+        ],
+        "note": "answer to a retransmission of 24, after the user removed the device",
+        "awaiting": [
+          "SET_HEARTBEAT"
+        ]
+      },
+      {
+        "event": "uplink",
+        "fcnt": 25,
+        "dl_ack": true,
+        "note": "acknowledges one answer to 24, not known which: LEAVE stays queued",
+        "counter": "accept",
+        "delivered": [
+          "SET_HEARTBEAT"
+        ]
+      },
+      {
+        "event": "downlink",
+        "reply_to": 25,
+        "commands": [
+          "LEAVE"
+        ],
+        "awaiting": [
+          "LEAVE"
+        ]
+      },
+      {
+        "event": "uplink",
+        "fcnt": 19,
+        "dl_ack": false,
+        "note": "late arrival of a confirmed uplink, which the server answers",
+        "counter": "accept_late",
+        "delivered": []
+      },
+      {
+        "event": "downlink",
+        "reply_to": 19,
+        "commands": [
+          "LEAVE"
+        ],
+        "note": "MUST NOT carry commands: the answer to a late arrival is refused",
+        "refused": true,
+        "awaiting": [
+          "LEAVE"
+        ]
+      },
+      {
+        "event": "uplink",
+        "fcnt": 26,
+        "dl_ack": true,
+        "note": "the sensor's final HEARTBEAT: settles",
+        "counter": "accept",
+        "delivered": [
+          "LEAVE"
+        ]
+      }
+    ]
+  },
   "join": {
     "stall_retransmissions": 3,
     "root_fcnt_down_before": 0,

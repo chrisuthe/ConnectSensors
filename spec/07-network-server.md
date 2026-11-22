@@ -44,7 +44,7 @@ A server MAY run several networks; each has its own keys. Most homes have one.
 | Pending exchange | yes | 04 section 4.2: `sensor_pub`, the `KEY_EXCHANGE` frame, `k_session`, and the retransmission count of section 5.1 |
 | Session `fcnt_down` reservation | yes | 02 section 8.4. Starts at 1 for each new `k_session` |
 | Heartbeat interval | yes | From the profile or the last `SET_HEARTBEAT` |
-| Command queue | yes | Section 7 |
+| Command queue and the commands awaiting acknowledgement | yes | Section 7 |
 | Last uplink time, last confirmed-uplink time | yes | Supervision, section 8 |
 | Reception history | no | Section 9 |
 | Current reading values and counter totals | yes | 03 section 6 |
@@ -115,8 +115,9 @@ For each `UPLINK` message:
    are invalid (03 section 2), keep the frame for counter and supervision
    purposes, apply no readings, and log a device error.
 7. **Act.**
-   - `DL_ACK`: mark the commands of the device's last downlink as delivered
-     (section 7).
+   - `DL_ACK`: mark the commands awaiting acknowledgement as delivered, but only
+     if the frame's `fcnt` is greater than their downlink's `reply_to` (section
+     7). A late arrival can carry `DL_ACK` for an earlier downlink.
    - Readings: update states, unwrap counters, fire `button` events.
    - `JOIN`, `SYNC`: advance the pairing state machine (04) as applicable. A
      `JOIN` is answered as in section 5.1.
@@ -181,7 +182,8 @@ The server sends a downlink in reply to an uplink when any of these hold:
 - the uplink is a confirmed type (`DATA_CONFIRMED`, `HEARTBEAT_CONFIRMED`,
   `JOIN`, `SYNC`), including a retransmitted duplicate of one within the limits
   of section 4, step 5;
-- the device has undelivered commands (section 7);
+- the device has undelivered commands (section 7) and the uplink is not a late
+  arrival;
 - the device's clock needs correcting: `TIME_UNSURE` is set, or step 4.7 found
   skew.
 
@@ -200,7 +202,7 @@ The downlink:
 | `reply_to` | The uplink's `fcnt` |
 | `server_time` | Current Unix time, taken when the downlink is built |
 | `PENDING` | Set if commands remain queued after this downlink |
-| Commands | As many queued commands as fit in 55 bytes, in queue order |
+| Commands | As many queued commands as fit in 55 bytes, in queue order. None in an answer to a late arrival (section 7) |
 
 An answer to `JOIN` carries only `KEY_EXCHANGE` (02 section 11.1) and follows
 section 5.1.
@@ -290,9 +292,35 @@ answer to a retransmitted `JOIN`, which is the cached `KEY_EXCHANGE` frame
 - Each device has an ordered queue of commands. Actions in the user interface
   (section 11.4) and the protocol itself (`SET_NETWORK` in a key rotation, `LEAVE`
   on removal) add to it.
-- Commands are sent in downlinks as in section 5. A command counts as delivered
-  when the device's next uplink after that downlink has `DL_ACK` set. If the next
-  uplink does not have `DL_ACK`, the command is sent again.
+- Commands are sent in downlinks as in section 5. A command stays queued, and
+  goes out again in each later downlink, until it is delivered.
+- **Awaiting acknowledgement.** When the server sends a downlink with commands,
+  it records that downlink's `reply_to` and its commands as *awaiting
+  acknowledgement*, replacing any earlier record. If the record already has the
+  same `reply_to` (an answer to a retransmission, section 6.4), the server keeps
+  only the commands that both downlinks carried, because the sensor accepted at
+  most one of them and the server cannot tell which.
+- The server MUST NOT put commands in an answer to a late arrival (`accept_late`,
+  02 section 8.5). The sensor has already sent a newer frame, so it rejects that
+  answer (02 section 10.2), and recording it would move the record back to a
+  `reply_to` that older uplinks are above.
+- **Delivery.** An accepted uplink (02 section 8.5) with `DL_ACK` set and an
+  `fcnt` greater than the record's `reply_to` marks the recorded commands
+  delivered, and the record is cleared. A sensor accepts only a downlink that
+  answers its most recent uplink, and sets `DL_ACK` in the next new frame it
+  builds (02 section 10.2), so such an uplink acknowledges a downlink with that
+  `reply_to` and no other.
+- An uplink whose `fcnt` is not greater than the record's `reply_to` MUST NOT
+  mark commands delivered, whether or not it has `DL_ACK`. This covers late
+  arrivals (02 section 8.5) and federated copies (09 section 6.1) of frames sent
+  before the downlink. A retransmission is never acted on again (section 4,
+  step 5).
+- An uplink with a greater `fcnt` but no `DL_ACK` settles nothing: the sensor did
+  not accept the downlink, or its `DL_ACK` is in an earlier uplink not yet
+  received. The commands stay queued and go out again in the next downlink.
+  Since commands are idempotent (02 section 10.3), the worst case of these rules
+  is a command executed twice, never one marked delivered that the sensor did not
+  receive.
 - Adding a command that replaces an earlier queued one of the same kind (for
   example a second `SET_HEARTBEAT`, or `0x40` for the same channel) removes the
   earlier one.
@@ -347,7 +375,8 @@ This history is diagnostic and is not persisted.
   the counter (02 section 8.4).
 - The pending exchange MUST be persisted before its `KEY_EXCHANGE` is sent (04
   section 4.6).
-- The command queue MUST be persisted whenever it changes.
+- The command queue and the record of commands awaiting acknowledgement MUST be
+  persisted whenever they change.
 
 ## 11. Home Assistant integration
 
@@ -433,7 +462,10 @@ result for each (`accept`, `accept_late`, `duplicate`, `too_old`), a
 `counter16` sequence with the expected totals and whether each step was an
 increase, a wrap or a reset, and a `retransmission` sequence: copies of a
 confirmed uplink and its retries from proxies and a relay, with whether each is
-a new transmission (section 4, step 3) and whether it is answered (step 5), and a
+a new transmission (section 4, step 3) and whether it is answered (step 5), a
+`dl_ack` sequence (section 7): downlinks with commands and uplinks with and
+without `DL_ACK`, including late arrivals and two answers to one uplink, with
+the commands each uplink marks delivered, and a
 `join` sequence (section 5.1): the root downlink counter value, the
 `KEY_EXCHANGE` frame and `k_session` for each `JOIN`, including byte-identical
 answers to retransmissions and the stall on the last one.
