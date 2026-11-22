@@ -80,6 +80,21 @@ def main(root: str) -> int:
         raise AssertionError(f"{parse.__name__} accepted {bad.hex()}")
     print("ok   UPLINK / TX_RESULT bodies")
 
+    # Airtime: the reference table of 01 section 5.1, to its 0.1 ms.
+    table = {23: (51.5, 205.8), 31: (61.7, 246.8), 55: (87.3, 349.2), 65: (97.5, 390.1), 86: (123.1, 492.5)}
+    for n, (us, eu) in table.items():
+        assert round(cs.region_airtime_ms("US915", n), 1) == us, (n, cs.region_airtime_ms("US915", n))
+        assert round(cs.region_airtime_ms("EU868", n), 1) == eu, (n, cs.region_airtime_ms("EU868", n))
+        assert cs.airtime_ms(n, *cs.REGIONS["US915"]) == cs.region_airtime_ms("US915", n)
+    assert (cs.SENSOR_AIRTIME_MS_PER_HOUR, cs.PROXY_AIRTIME_MS_PER_HOUR) == (36_000, 72_000)
+    for region in ("AU915", "us915", ""):
+        try:
+            cs.region_airtime_ms(region, 23)
+        except ValueError:
+            continue
+        raise AssertionError(f"region_airtime_ms accepted {region!r}")
+    print("ok   airtime")
+
     print(f"connectsensors {cs.__version__}: smoke test passed")
     return 0
 

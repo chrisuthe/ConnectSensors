@@ -25,6 +25,14 @@ The protocol is a draft, and so is this API: expect breaking changes before 1.0.
 
 Section numbers refer to the specification documents.
 
+**Radio profiles (01).** `region_airtime_ms(region, frame_len)` is a frame's time on
+air in a region profile (`"US915"`, `"EU868"`), in ms, and raises `ValueError` for any
+other name. `REGIONS` maps each profile to its spreading factor and bandwidth in Hz.
+`airtime_ms(payload_len, sf, bw_hz, ...)` is the underlying Semtech formula. The
+rolling-hour budgets of 01 section 5 are `SENSOR_AIRTIME_MS_PER_HOUR` (36 s) and
+`PROXY_AIRTIME_MS_PER_HOUR` (72 s); a server can sum `region_airtime_ms` over the
+downlinks it sent through a proxy in the last hour to stay under the proxy's.
+
 **Frames (02).** `keys_from(base, dev_eui)` derives a `DeviceKeys` from `k_root` or
 `k_session`. `seal(keys, ftype, net_tag, dev_tag, fcnt, plaintext)` builds a frame;
 `open_frame(keys, frame)` checks its MIC and returns `(ParsedHeader, plaintext)`, or

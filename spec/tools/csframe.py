@@ -768,6 +768,24 @@ def airtime_ms(payload_len: int, sf: int, bw_hz: int, cr: int = 1, preamble: int
     return ((preamble + 4.25) + n_payload) * tsym * 1000
 
 
+# 01 section 3: the spreading factor and bandwidth of each region profile. Every other
+# parameter airtime depends on is common to all profiles (01 section 2).
+REGIONS = {"US915": (9, 500_000), "EU868": (9, 125_000)}
+# 01 section 5: transmit time allowed in any rolling hour.
+SENSOR_AIRTIME_MS_PER_HOUR = 36_000
+PROXY_AIRTIME_MS_PER_HOUR = 72_000
+
+
+def region_airtime_ms(region: str, frame_len: int) -> float:
+    """Time on air of a frame_len-byte frame in a region profile (01), in ms.
+
+    Raises ValueError for a region with no profile, reserved names included."""
+    if region not in REGIONS:
+        raise ValueError(f"unknown region profile {region!r}")
+    sf, bw_hz = REGIONS[region]
+    return airtime_ms(frame_len, sf, bw_hz)
+
+
 # ======================================================================== vectors
 
 K_ROOT = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
@@ -1322,10 +1340,10 @@ def verify(d: str) -> int:
 
 
 def airtime_table() -> None:
-    print("frame_bytes  SF  BW_kHz  airtime_ms")
+    print("frame_bytes  region  SF  BW_kHz  airtime_ms")
     for n in (23, 31, 55, 65, 86):
-        for sf, bw in ((9, 500_000), (9, 125_000)):
-            print(f"{n:11d}  {sf:2d}  {bw // 1000:6d}  {airtime_ms(n, sf, bw):10.1f}")
+        for region, (sf, bw) in REGIONS.items():
+            print(f"{n:11d}  {region:6s}  {sf:2d}  {bw // 1000:6d}  {region_airtime_ms(region, n):10.1f}")
 
 
 if __name__ == "__main__":
