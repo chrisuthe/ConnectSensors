@@ -315,8 +315,9 @@ answer to a retransmitted `JOIN`, which is the cached `KEY_EXCHANGE` frame
   arrivals (02 section 8.5) and federated copies (09 section 6.1) of frames sent
   before the downlink. A retransmission is never acted on again (section 4,
   step 5).
-- An uplink with a greater `fcnt` but no `DL_ACK` means the sensor did not accept
-  the downlink. Its commands stay queued and go out again in the next downlink.
+- An uplink with a greater `fcnt` but no `DL_ACK` settles nothing: the sensor did
+  not accept the downlink, or its `DL_ACK` is in an earlier uplink not yet
+  received. The commands stay queued and go out again in the next downlink.
   Since commands are idempotent (02 section 10.3), the worst case of these rules
   is a command executed twice, never one marked delivered that the sensor did not
   receive.
@@ -374,7 +375,8 @@ This history is diagnostic and is not persisted.
   the counter (02 section 8.4).
 - The pending exchange MUST be persisted before its `KEY_EXCHANGE` is sent (04
   section 4.6).
-- The command queue MUST be persisted whenever it changes.
+- The command queue and the record of commands awaiting acknowledgement MUST be
+  persisted whenever they change.
 
 ## 11. Home Assistant integration
 
