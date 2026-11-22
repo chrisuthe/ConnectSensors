@@ -259,8 +259,8 @@ RSSI, then the proxy with fewer recent failures.
 
 ### 6.3 RX2 and fallback
 
-RX2 is only for answers to confirmed uplinks: sensors open it only after a
-confirmed uplink that RX1 did not answer (08 section 7).
+RX2 is only for answers to confirmed uplinks: sensors are only required to open it
+after a confirmed uplink that RX1 did not answer (01 section 4, 08 section 7).
 
 - If the uplink is confirmed and no candidate qualifies for RX1, or the 800 ms
   deadline has passed, the server uses RX2 (`tx_offset_us` = 3 000 000) with the
@@ -269,10 +269,10 @@ confirmed uplink that RX1 did not answer (08 section 7).
   but `SENT`, the server sends the same downlink for RX2 through the next best
   candidate, or through the same proxy if it is the only one.
 - The server MUST NOT use RX2 to answer an unconfirmed uplink. If RX1 is not
-  possible or fails, it sends nothing; commands stay queued and a clock correction
-  waits for the next uplink.
-- If both windows fail, the server does nothing more. The sensor retries
-  confirmed uplinks itself (08 section 5), and commands stay queued.
+  possible or fails, it sends nothing; queued commands and a clock correction
+  wait for the next uplink.
+- If both windows fail for a confirmed uplink, the server does nothing more. The
+  sensor retries confirmed uplinks itself (08 section 5), and commands stay queued.
 - The server MUST NOT ask more than one proxy to transmit in the same window.
 
 ### 6.4 Rebuilding a downlink
@@ -416,7 +416,7 @@ written to logs. Diagnostics downloads MUST redact keys.
 | Replayed `JOIN` during pairing | Answered with the cached frame; `k_session` and the counters are unchanged (section 5.1) |
 | Root nonce reuse | The root downlink counter is never reset and is kept after removal (section 10). Reuse by a different server after a factory reset is accepted (02 section 13.1) |
 | Replaying a captured confirmed frame to draw downlinks | Proxies filter it only within `dedupe_window` (06 section 6); the server answers a frame again at most 3 times, within 60 s (section 4, step 5), and proxy airtime budgets cap the rest |
-| A malicious proxy reporting false RSSI to win downlinks | It can only drop the downlink, which the RX2 fallback and sensor retries cover. Remove the proxy if it misbehaves. |
+| A malicious proxy reporting false RSSI to win downlinks | It can only drop the downlink, which the RX2 fallback and sensor retries cover for confirmed uplinks; queued commands wait for the next uplink. Remove the proxy if it misbehaves. |
 | Leaking state through Home Assistant | Out of scope: Home Assistant's own access control applies |
 
 ## 13. Test vectors
