@@ -52,10 +52,13 @@ from ._csframe import (  # noqa: E402
     MERGE_WINDOW_MS,
     MIC_LEN,
     MIN_FRAME,
+    PROXY_AIRTIME_MS_PER_HOUR,
+    REGIONS,
     REORDER_WINDOW,
     REQUEST_BOOTS,
     REQUEST_NONCE_MS,
     REQUEST_RESEND_MS,
+    SENSOR_AIRTIME_MS_PER_HOUR,
     T_DATA,
     T_DATA_CONFIRMED,
     T_DOWNLINK,
@@ -74,6 +77,7 @@ from ._csframe import (  # noqa: E402
     ServerLink,
     UplinkCollector,
     UplinkCounter,
+    airtime_ms,
     command,
     decode_readings,
     derive_net_route,
@@ -99,6 +103,7 @@ from ._csframe import (  # noqa: E402
     parse_uplink,
     qr_encode,
     qr_parse,
+    region_airtime_ms,
     seal,
     server_status_body,
     tx_result_body,
@@ -107,9 +112,15 @@ from ._csframe import (  # noqa: E402
     x25519_pub,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
+    # 01 radio profiles
+    "REGIONS",
+    "SENSOR_AIRTIME_MS_PER_HOUR",
+    "PROXY_AIRTIME_MS_PER_HOUR",
+    "airtime_ms",
+    "region_airtime_ms",
     # 02 frames: constants
     "MAGIC",
     "VERSION",
