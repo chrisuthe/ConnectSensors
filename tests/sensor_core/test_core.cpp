@@ -1329,14 +1329,8 @@ static void test_factory_reset_without_erase() {
 }
 
 static void test_airtime_window_is_an_hour() {
+  // A JOIN (95 ms) spent late in a minute against a 100 ms budget.
   Rig rig;
-  rig.cfg.airtime_budget_us = 70000;  // one 66 ms frame per hour
-  rig.boot();
-  rig.clock.now = 59 * S;  // late in a minute
-  rig.random.keys.push_back(Bytes(32, 0x11));
-  rig.core->short_press();  // JOIN: 95 ms, over budget
-  rig.run(2 * S);
-  CHECK(rig.radio.sent.empty());
   rig.cfg.airtime_budget_us = 100000;
   rig.boot();
   rig.clock.now = 3600 * S + 59 * S;

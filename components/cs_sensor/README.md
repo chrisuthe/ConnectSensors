@@ -114,7 +114,8 @@ Where the spec is silent or ambiguous, the core takes the conservative reading:
 - Heartbeats are scheduled at `h` plus or minus 10% (08 section 4.2), but never
   more than 24 hours after the last confirmed uplink (08 section 3.3). With `h`
   near 1440 minutes the two conflict, and the 24-hour MUST wins.
-- `firmware_version` rides on heartbeats until one carrying it is answered.
+- `firmware_version` rides on heartbeats until one carrying it is answered, or
+  goes out unconfirmed.
 - Without a clock, unconfirmed frames are sent as `SYNC` too, since normal tags
   cannot be computed (08 section 3.2).
 - On `LEAVE`, the keys are erased when the final `HEARTBEAT` finishes
