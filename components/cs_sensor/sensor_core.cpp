@@ -615,7 +615,7 @@ void SensorCore::short_press() {
       this->report(true);
       break;
     default:
-      // 04 section 4.5 leaves a short press in JOINING and SESSION undefined; ignore it.
+      // 04 section 4.5: pairing is under way and ends on its own.
       break;
   }
 }
@@ -1011,7 +1011,7 @@ void SensorCore::finish_undelivered_(uint64_t now) {
       this->emit_(SensorEvent::PAIRING_FAILED);
       return;
     case Purpose::SESSION_SYNC:
-      // Unspecified (#10); the server's EXCHANGED state has timed out by now too.
+      // 04 section 4.3: pairing fails, keeping the root floor.
       this->erase_session_();
       this->emit_(SensorEvent::PAIRING_FAILED);
       return;
@@ -1190,7 +1190,7 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
     } else if (!(dflags & DF_PENDING)) {
       this->pending_hb_count_ = 0;
     }
-    // Answered without SET_NETWORK: ask again, a few times, rather than wait for ever.
+    // Answered without SET_NETWORK: ask again, at most 4 SYNCs in all (04 section 4.3).
     if (this->state_ == PairingState::SESSION) {
       if (++this->session_syncs_ < MAX_SESSION_SYNCS) {
         this->want_session_sync_ = true;

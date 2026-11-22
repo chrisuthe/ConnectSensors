@@ -200,9 +200,10 @@ Tests: [`tests/sensor_core`](../../tests/sensor_core), run with
   `firmware_version` in the first one after boot, confirmed uplinks with the
   retry schedule, RX1 and RX2, `DL_ACK`, `PENDING`, contact loss and `SYNC`, clock
   keeping and `TIME_UNSURE`, the 1% airtime budget, and boot.
-- **Pairing (04):** `UNPAIRED`, `JOINING`, `SESSION` and `PAIRED`, the
-  `JOIN`, `KEY_EXCHANGE`, `SYNC` and `SET_NETWORK` exchange, `LEAVE`, and the
-  factory reset.
+- **Pairing (04):** `UNPAIRED`, `JOINING`, `SESSION` and `PAIRED` with every
+  exit 04 section 4.3 defines (a failed `SYNC`, a restart, `LEAVE` mid-pairing),
+  the `JOIN`, `KEY_EXCHANGE`, `SYNC` and `SET_NETWORK` exchange, the pairing
+  button (04 section 4.5), `LEAVE`, and the factory reset.
 - **Pairing code (04 section 3):** builds the `CS:1:...` string, so firmware can
   print its own code.
 
@@ -272,14 +273,6 @@ airtime through `Radio::airtime_us`.
 
 Where the spec is silent or ambiguous, the core takes the conservative reading:
 
-- A short press in `JOINING` or `SESSION` is ignored (04 section 4.5 leaves it
-  undefined).
-- Only `PAIRED` is stored. A restart in `JOINING` or `SESSION` returns to
-  `UNPAIRED` with the root floor kept, so the user presses the button again.
-- A `SYNC` in `SESSION` that gets no answer after its retries returns the
-  sensor to `UNPAIRED`, keeping the root floor, like an unanswered `JOIN`. A
-  `SYNC` answered without `SET_NETWORK` is sent again, up to 4 times in all,
-  and then pairing fails the same way.
 - After 3 undelivered confirmed uplinks, every confirmed attempt is a `SYNC`
   until a downlink is accepted, not only the next one (08 section 6).
 - A state change abandons pending retries. The abandoned uplink does not count
@@ -296,9 +289,7 @@ Where the spec is silent or ambiguous, the core takes the conservative reading:
   cannot be computed (08 section 3.2).
 - On `LEAVE`, the keys are erased when the final `HEARTBEAT` finishes
   transmitting. Its RX1 still opens, but nothing in it can verify. Commands
-  after `LEAVE` in the same downlink still run, in order. A `LEAVE` received in
-  `SESSION` erases the keys without the final heartbeat, which would need
-  normal tags.
+  after `LEAVE` in the same downlink still run, in order.
 - A truncated command ends command processing for that downlink.
 - Downlink tags are not checked: the MIC covers them, and 02 section 10.2 does
   not list them.

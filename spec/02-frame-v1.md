@@ -371,8 +371,7 @@ which the sensor uses normal tags again.
 ### 11.3 Server identification of bootstrap frames
 
 - For `JOIN`: the server tries the root key set of each device that is waiting to
-  be paired (`SCANNED`, or `EXCHANGED` for a retransmitted `JOIN`, 04 section
-  4.2).
+  be paired (`SCANNED` or `EXCHANGED`, 04 section 4.2).
 - For `SYNC`: the server tries the session key set of each device that is paired
   or in the middle of pairing.
 - The server MUST limit how many bootstrap frames it processes per minute, so
