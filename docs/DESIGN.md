@@ -176,8 +176,8 @@ Pairing is in [spec/04-pairing.md](../spec/04-pairing.md) and readings in
 - **Answers:** confirmed uplinks, queued commands and clock corrections get a
   downlink. A sensor's retry of a confirmed uplink (4 s or more later) is a new
   transmission and is answered again. RX1 goes through the proxy with the best
-  SNR among those with good timing; failures fall back to RX2 through another
-  proxy.
+  SNR among those with good timing; for confirmed uplinks, failures fall back to
+  RX2 through another proxy.
 - **Commands** are queued per device and resent until the sensor's next uplink
   acknowledges them.
 - **Supervision:** a device silent for three heartbeat intervals is unreachable

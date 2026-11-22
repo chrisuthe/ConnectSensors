@@ -182,8 +182,8 @@ first bytes ("buckets"), so a relay sees only that the subscriber is interested 
 
 ### 6.3 Federated downlinks
 
-When a subscriber decides to answer an uplink (07 section 5) and no local proxy
-can transmit:
+When a subscriber decides to answer a confirmed uplink (07 section 5) and no
+local proxy can transmit:
 
 1. It considers receptions from events carrying `["dl", "1"]`.
 2. It skips any that cannot make RX2: the uplink was first received
