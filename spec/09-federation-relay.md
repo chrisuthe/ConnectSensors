@@ -159,7 +159,10 @@ A server with subscribing enabled ("Receive my sensors through neighbors"):
   time, taking a federated copy as received `age_ms` before its event arrived
   (07 section 4.3). Federated copies usually arrive after the local decision;
   they then only add receptions to the history. A federated retransmission is a
-  new transmission and is answered again like a local one.
+  new transmission and is answered again like a local one. A federated copy
+  marks commands delivered under the same rule as a local frame (07 section 7):
+  only if its `fcnt` is greater than the `reply_to` of the downlink awaiting
+  acknowledgement.
 - Counts federated receptions for supervision (07 section 8) and coverage (07
   section 9), so a device heard only through a neighbor is reachable but
   single-path.

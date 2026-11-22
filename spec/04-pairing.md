@@ -109,7 +109,7 @@ normally completes within 5 seconds.
 | State | Entered when | Leaves when |
 |---|---|---|
 | `SCANNED` | The user enters a valid pairing code | A `JOIN` from the device verifies, or 10 minutes pass (device discarded) |
-| `EXCHANGED` | The server sends `KEY_EXCHANGE` | An uplink with normal tags and `DL_ACK` acknowledges `SET_NETWORK` (`PAIRED`), a `JOIN` with a new `sensor_pub` verifies (a new pending exchange, and `EXCHANGED` again), or 2 minutes pass (back to `SCANNED`, keeping the 10-minute deadline) |
+| `EXCHANGED` | The server sends `KEY_EXCHANGE` | An uplink with normal tags and `DL_ACK` acknowledges `SET_NETWORK` as in 07 section 7 (`PAIRED`), a `JOIN` with a new `sensor_pub` verifies (a new pending exchange, and `EXCHANGED` again), or 2 minutes pass (back to `SCANNED`, keeping the 10-minute deadline) |
 | `PAIRED` | As above | The device is removed (section 6) |
 
 A device has at most one *pending exchange*: the `sensor_pub` of the `JOIN` it
@@ -268,8 +268,8 @@ When the user removes a device in the server:
    8). A sensor in `SESSION` erases `k_session` at once and sends nothing: it has
    no `k_net_route` yet, so it cannot compute the normal tags that heartbeat
    needs.
-3. The server deletes the device record when the next uplink acknowledges
-   `LEAVE` with `DL_ACK`, or after 48 hours, whichever comes first. The user MAY
+3. The server deletes the device record when an uplink acknowledges `LEAVE`
+   with `DL_ACK` (07 section 7), or after 48 hours, whichever comes first. The user MAY
    delete it immediately; the sensor then keeps sending frames that nobody reads
    until it is reset.
 

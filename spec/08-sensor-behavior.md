@@ -152,7 +152,8 @@ forget its pairing because of it. Only `LEAVE` or a factory reset (the
   discarded silently.
 - On acceptance the sensor sets its clock (section 3.2), marks the uplink
   answered, and executes the commands in order (section 8). It MUST set `DL_ACK`
-  in its next uplink if the downlink contained at least one command.
+  in its next new uplink if the downlink contained at least one command (02
+  section 10.2).
 - If the downlink has `PENDING` set, the sensor SHOULD send a `HEARTBEAT` 2 to 4
   seconds later (random), so the server can deliver the next command. It MUST
   NOT do this more than 4 times in a row.

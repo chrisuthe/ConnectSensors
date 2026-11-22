@@ -311,7 +311,10 @@ On accepting a downlink, the sensor:
 - MUST treat a confirmed uplink as acknowledged.
 - MUST execute the commands in order.
 - MUST set `DL_ACK` in its next uplink if the downlink contained at least one
-  command.
+  command. That is the next new frame, whose `fcnt` is greater than the
+  downlink's `reply_to`; a retransmission of an earlier frame (8.3) is unchanged.
+  The server binds the acknowledgement to the downlink by that `fcnt` (07
+  section 7).
 
 ### 10.3 Commands
 
@@ -322,8 +325,8 @@ cmd_id (uint8) | len (uint8) | args (len bytes)
 ```
 
 A sensor MUST skip a command it does not know, using `len`. Commands MUST be
-idempotent, because the server re-sends any command whose downlink was not
-followed by an uplink with `DL_ACK`.
+idempotent, because the server re-sends any command it has not seen
+acknowledged with `DL_ACK` (07 section 7).
 
 | `cmd_id` | Name | Args | Effect |
 |---|---|---|---|
