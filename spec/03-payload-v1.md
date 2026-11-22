@@ -217,6 +217,30 @@ A JSON document:
 }
 ```
 
+This specification publishes two profiles: `CS.CONTACT-1` above, and
+`CS.CLIMATE-1` for a temperature and humidity sensor:
+
+```json
+{
+  "profile": "CS.CLIMATE-1",
+  "name": "ConnectSensors climate sensor",
+  "manufacturer": "ConnectSensors reference design",
+  "model": "Climate v1",
+  "power": "battery",
+  "heartbeat_minutes": 30,
+  "channels": [
+    { "channel": 0, "kind": "temperature" },
+    { "channel": 0, "kind": "humidity" },
+    { "channel": 255, "kind": "battery_percent" }
+  ],
+  "commands": []
+}
+```
+
+A climate sensor reports changes as they happen (08 section 4.1), so its
+heartbeat only supervises it and refreshes a steady state, as for a contact
+sensor.
+
 Fields:
 
 | Field | Required | Meaning |
