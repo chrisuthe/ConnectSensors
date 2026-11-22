@@ -1,7 +1,7 @@
 # 05 - Proxy Envelope
 
 Status: Draft
-Version: 1.0-draft.3
+Version: 1.0-draft.4
 
 This document defines the messages between a proxy and its owner's server on the
 local network: how a proxy delivers the frames it hears, how a server asks a
@@ -150,8 +150,26 @@ frames.
 - A server MAY offer a *shared key*: one key that any proxy may use, for users who
   prefer not to enrol proxies one by one. A server using a shared key MUST show
   each newly seen `proxy_id` to the user and let them block it.
+- A proxy that accepts downlinks MUST have its own key, held by no other proxy. A
+  shared key is only for proxies configured not to accept downlinks (06 section
+  3.2, `downlink.enabled: false`).
+- A server MUST NOT send a `DOWNLINK` to a proxy whose key another proxy also
+  holds. If such a proxy advertises downlink capability (section 5.2), the server
+  MUST warn the user and offer to give it a key of its own.
 - Removing a proxy in the server deletes its key; its messages then fail the MAC
-  check.
+  check. A shared key is not deleted when one of its proxies is removed: the
+  server blocks that `proxy_id` instead, and the key stays valid for every other
+  proxy holding it.
+
+The MAC shows only that the sender holds the key, and `proxy_id`, `boot_id` and
+`seq` travel in the clear. Anyone holding a key can therefore send messages as
+any proxy that uses it, in either direction. A proxy with its own key is exposed
+only if that key leaks. With a shared key, any holder, such as anyone with one of
+the proxies that use it, can send uplinks and `HELLO`s in the name of every proxy
+on that key, take over their sessions on the server (section 3.2), and send
+`DOWNLINK`s to any of them that accepts downlinks. A proxy with downlinks enabled
+cannot tell whether its key is shared, so this rule is kept by the user and the
+server.
 
 The key is text in the proxy's configuration: 32 hex digits.
 
@@ -337,9 +355,10 @@ All messages fit in one UDP datagram with no fragmentation on any normal network
 | Concern | Handling |
 |---|---|
 | Fake uplinks injected on the LAN | MAC with the proxy key; and the frames themselves are authenticated end to end (02) |
-| Using a proxy as a jammer | `DOWNLINK` requires the proxy key; replay protection; frames must be valid downlink-type frames; airtime budget |
+| Using a proxy as a jammer | `DOWNLINK` requires the proxy key, and a proxy that accepts downlinks has a key of its own (section 4.2), so no other proxy's key reaches it; a server flags a proxy left on a shared key with downlinks enabled; replay protection; frames must be valid downlink-type frames; airtime budget |
 | Reading traffic on the LAN | Envelopes are not encrypted. They expose what a proxy already exposes over the air: frame bytes, signal strength and timing. |
-| Stolen proxy | It holds only its proxy key. Removing the proxy in the server revokes it. |
+| Stolen proxy with its own key | It holds only its own key, which lets the thief act as that proxy alone. Removing the proxy in the server revokes it. |
+| Stolen proxy with a shared key | The thief can act as every proxy on that key: send uplinks and `HELLO`s in their names, and keep taking over their sessions (section 3.2) so that the server discards their messages while it holds them. It can make one of them transmit only if that proxy was left with downlinks enabled against section 4.2, which the server flags; sensor frames stay authenticated end to end (02). Blocking the stolen `proxy_id` does not revoke the key: the user replaces the shared key on every proxy that uses it. |
 | Replaying an old `HELLO` to move the server to a stale boot or address | The server switches boot only on a `HELLO` echoing a `HELLO_REQUEST` nonce from the last 30 seconds (section 3.2). A recorded `HELLO` carries an old nonce or none, and messages from other boots change no state. This holds right after a server restart too. |
 | Replaying a `HELLO_REQUEST` | It is checked only for the MAC and the proxy's `boot_id`, so it can be replayed within a boot. It can only make the proxy send a `HELLO`, at most one per 5 seconds beyond its periodic ones. The `HELLO` goes to the configured server, not to the request's source. |
 | Replaying server messages after a server restart | Once the proxy has followed the restarted server, its floor is the new server's low `seq`. A message the old server instance sent in this boot with a higher `seq` would pass the check again, until the new `seq` overtakes it. A `DOWNLINK` among them targets a time in this boot that has long passed, so the proxy rejects it as `TOO_LATE` without transmitting. A `SERVER_STATUS` only refreshes diagnostics. A server MAY start its `seq` above any value it used before, for example from its clock, to close this window. |

@@ -226,6 +226,9 @@ def main() -> int:
     finally:
         out2 = stop_server(srv)
     check(f"TX_RESULT seq {dl_seq}: SENT, 1.5 ms after target" in out, "TX_RESULT reported")
+    check(out.count("two downlink-capable proxies share --key") == 1,
+          "a second downlink-capable proxy on the one key draws one warning")
+    check("share --key" not in out2, "no warning with a single proxy")
     print("--- server output ---\n" + out.strip())
     print("--- restarted server output ---\n" + out2.strip())
     print("all checks pass" if failures == 0 else f"{failures} failures")

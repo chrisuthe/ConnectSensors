@@ -1,7 +1,7 @@
 # 07 - Network Server
 
 Status: Draft
-Version: 1.0-draft.2
+Version: 1.0-draft.3
 
 This document specifies what a network server does: the state it keeps, how it
 processes uplinks, how it answers them, how it picks which proxy transmits, how
@@ -54,6 +54,7 @@ A server MAY run several networks; each has its own keys. Most homes have one.
 | Item | Persisted | Notes |
 |---|---|---|
 | `proxy_id`, `proxy_key` | yes | 05 section 4 |
+| Whether the key is shared | yes | 05 section 4.2. A proxy on a shared key never gets downlinks (section 6.1). |
 | Last address and port | no | 05 section 2.1 |
 | Current `boot_id`, last received `seq`, server `seq` | no | 05 section 3.2. After a restart they are rebuilt by `HELLO_REQUEST`. |
 | Outstanding `HELLO_REQUEST` nonces, per `boot_id` | no | 05 section 3.2 |
@@ -246,6 +247,7 @@ A proxy is a candidate for answering a frame if all of these hold:
 
 - it reported the frame in this boot (its `ref_rx_time_us` is known);
 - its last `HELLO` advertised downlink capability and arrived within 180 s;
+- it has a key of its own, not a shared key (05 section 4.2);
 - its region, frequency, spreading factor and bandwidth match the network's
   profile (05 section 5.2).
 
@@ -395,6 +397,9 @@ The integration raises a repair issue when:
 - a proxy's radio settings do not match the network's profile;
 - a new proxy appears using the shared key (if enabled), for the user to accept
   or block;
+- a proxy on the shared key advertises downlink capability: it gets no downlinks
+  and anyone holding the shared key could make it transmit, so the repair offers
+  to generate a key of its own (05 section 4.2);
 - a key rotation has devices that did not acknowledge within 7 days;
 - the server clock is not synchronized;
 - a device is one-way (section 8.1).
@@ -417,6 +422,8 @@ written to logs. Diagnostics downloads MUST redact keys.
 | Root nonce reuse | The root downlink counter is never reset and is kept after removal (section 10). Reuse by a different server after a factory reset is accepted (02 section 13.1) |
 | Replaying a captured confirmed frame to draw downlinks | Proxies filter it only within `dedupe_window` (06 section 6); the server answers a frame again at most 3 times, within 60 s (section 4, step 5), and proxy airtime budgets cap the rest |
 | A malicious proxy reporting false RSSI to win downlinks | It can only drop the downlink, which the RX2 fallback and sensor retries cover for confirmed uplinks; queued commands wait for the next uplink. Remove the proxy if it misbehaves. |
+| Forged `DOWNLINK`s to make a proxy transmit | Only a holder of the proxy's key can send one. Downlinks go only through proxies with a key of their own (section 6.1, 05 section 4.2), so a stolen proxy exposes no other proxy's transmitter. A proxy left on the shared key with downlinks enabled is the exception: any holder of the shared key can make it transmit, so the server raises a repair (section 11.5) until it gets a key of its own or its downlinks are turned off. |
+| A stolen proxy on a shared key | Its holder can act as every proxy on that key (05 section 7): report false receptions, which only skews the coverage figures of section 9, since none of those proxies is a downlink candidate, and keep taking over their sessions (05 section 3.2), so the server discards their frames while it holds them. Blocking its `proxy_id` does not stop this; the user replaces the shared key on all of them. Single-path and unreachable alarms (section 8) show the loss. |
 | Leaking state through Home Assistant | Out of scope: Home Assistant's own access control applies |
 
 ## 13. Test vectors

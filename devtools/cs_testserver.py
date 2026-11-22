@@ -12,6 +12,11 @@ pressed (04 section 4.4: JOIN, KEY_EXCHANGE, SYNC, SET_NETWORK), and from then o
 their uplinks are decrypted and their confirmed ones answered, with or without
 --ack. The network key is the one from the test vectors.
 
+Development only: every proxy uses the one --key. Spec 05 section 4.2 requires a
+key of its own for each proxy that accepts downlinks, so sending downlinks to more
+than one proxy under this key is not compliant; anyone holding it can make all of
+them transmit. The server logs a warning when that happens.
+
     python3 devtools/cs_testserver.py                 # prints a fresh key
     python3 devtools/cs_testserver.py --key 5a5a...   # use a key you already set
     python3 devtools/cs_testserver.py --ack           # also exercise downlinks
@@ -192,7 +197,8 @@ def describe_payload(ftype: int, pt: bytes) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=47800)
-    ap.add_argument("--key", help="proxy key, 32 hex digits (default: generate one)")
+    ap.add_argument("--key", help="proxy key shared by every proxy, 32 hex digits (default: generate one); "
+                                  "development only, see above")
     ap.add_argument("--ack", action="store_true", help="answer confirmed uplinks from the test device")
     ap.add_argument("--window", choices=("rx1", "rx2"), default="rx1")
     ap.add_argument("--no-seq-seed", action="store_true",
@@ -239,6 +245,7 @@ def main() -> int:
         os.replace(tmp, args.state)
 
     proxies: dict[bytes, Proxy] = {}
+    downlink_proxies: set[bytes] = set()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", args.port))
     log(f"Listening on UDP {args.port}; downlinks {'on (' + args.window + ')' if args.ack else 'off'}")
@@ -331,6 +338,11 @@ def main() -> int:
                 f"loop gap {h['max_loop_gap_ms']} ms, "
                 f"heard/fwd/dup/invalid/rl/tx_ok/tx_fail = {'/'.join(map(str, h['counters']))}")
             send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, device.net_tags(now), m["seq"]))
+            if h["caps"] & 1 and (args.ack or real) and pid not in downlink_proxies:
+                downlink_proxies.add(pid)
+                if len(downlink_proxies) == 2:
+                    log("WARNING: two downlink-capable proxies share --key; development only. A real "
+                        "server gives each its own key (05 section 4.2).")
 
         elif m["type"] == cs.M_UPLINK:
             u = cs.parse_uplink(body)

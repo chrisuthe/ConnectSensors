@@ -260,6 +260,7 @@ lexicons in `spec/lexicons/`:
 | Replay | Monotonic `fcnt` with small reorder window |
 | Malicious proxy drops or delays frames | Path diversity; supervision alarms on missing heartbeats |
 | Malicious proxy floods server/relay | Proxy HMAC (LAN) or signatures (relay); rate limits; blocklists |
+| Stolen proxy key used to forge downlinks | A proxy that accepts downlinks has a key of its own; an optional shared key is only for receive-only proxies (spec 05 section 4.2) |
 | Jamming | Cannot be prevented; detected via supervision timeouts |
 | Tracking devices over time | Hourly rotating `net_tag` and `dev_tag` |
 | Relay operator traffic analysis | Ephemeral events; multiple independent relays; optional cover traffic |
