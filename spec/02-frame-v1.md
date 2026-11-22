@@ -246,15 +246,21 @@ the key set it was sent under.
 ### 8.5 Server acceptance of uplinks
 
 For each device the server keeps `last_fcnt`, the highest accepted uplink
-counter, and a record of which of the 16 counter values below it were received.
+counter, and a record of which of the 15 counter values below it
+(`last_fcnt - 15` to `last_fcnt - 1`) were received. Each frame gets one of four
+results:
 
-- `fcnt > last_fcnt`: accept, and update `last_fcnt`. Any gap is allowed.
-- `last_fcnt - 16 < fcnt <= last_fcnt` and not yet received: accept (late
-  arrival).
-- Otherwise: treat as a duplicate or replay. Do not deliver it again. If it is a
-  retransmission (section 8.3) of a confirmed type, the server MUST answer it
-  again, within the limits of 07 section 4, step 5, so a sensor that missed the
-  first answer stops retrying.
+- `accept`: `fcnt > last_fcnt`. Accept, and update `last_fcnt`. Any gap is
+  allowed.
+- `accept_late`: `last_fcnt - 16 < fcnt < last_fcnt` and not yet received.
+  Accept (late arrival).
+- `duplicate`: `fcnt == last_fcnt`, or a value in the window that was already
+  received. Treat it as a retransmission or replay and do not deliver it again.
+  If it is a retransmission (section 8.3) of a confirmed type, the server MUST
+  answer it again, within the limits of 07 section 4, step 5, so a sensor that
+  missed the first answer stops retrying.
+- `too_old`: `fcnt <= last_fcnt - 16`. Drop it; the server no longer knows
+  whether it was received.
 
 A frame is accepted only after its MIC verifies.
 
@@ -414,7 +420,7 @@ types work without proxy updates.
 | Replay of downlinks | `reply_to` binding and downlink counter (10.2) |
 | Nonce reuse | Counters never repeat (8.1, 8.2, 8.4); direction byte separates uplink and downlink. One residual case is accepted: see 13.1 |
 | Tracking a device over time | Hourly tags; `dev_eui` never in the clear |
-| Linking via counter values | Not addressed in v1. `fcnt` is in the clear and increases steadily, so an observer can link a device's frames across epochs by counter continuity. A future version may mask it. |
+| Linking via counter values | Not addressed in v1. `fcnt` is in the clear and increases steadily, so an observer can link a device's frames across epochs by counter continuity. Federation widens who can observe it (09 section 9). A future version may mask it. |
 | Key compromise | Per device. A leaked pairing code lets an attacker who is present during a future pairing interfere with it, but does not reveal any past or future session that it did not take part in (5.3). |
 | Second-hand devices | A change of owner requires a factory reset (04 section 6.3), which also erases the previous owner's keys. A previous owner who kept the pairing code cannot read traffic after the device is paired again. They can attempt an active attack during that pairing; owners who need protection from that should re-flash `k_root`. |
 | Proxy dropping frames | Out of scope for the frame format; handled by path diversity and supervision (07) |

@@ -421,7 +421,6 @@ M_HELLO_REQUEST = 0x83
 UPF_TS_UNCERTAIN = 0x01
 
 CAP_DOWNLINK = 0x01
-CAP_FEDERATION = 0x02
 
 
 def envelope(key: bytes, msg_type: int, proxy_id: bytes, boot_id: int, seq: int, body: bytes) -> bytes:
@@ -614,7 +613,7 @@ REORDER_WINDOW = 16
 
 
 class UplinkCounter:
-    """Server-side uplink counter acceptance (02 section 8.5, 07 section 5).
+    """Server-side uplink counter acceptance (02 section 8.5, 07 section 4, step 5).
 
     last and seen (the late arrivals accepted below it) are the persisted record of
     07 section 10; restore them with UplinkCounter(last, seen)."""

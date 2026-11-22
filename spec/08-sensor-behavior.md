@@ -50,7 +50,10 @@ from a stolen device.
   normal tags (02 section 6).
 - Without either (for example after the batteries were removed and the RTC has no
   backup), the sensor cannot compute tags and MUST use `SYNC` (02 section 11.2)
-  until a downlink sets its clock.
+  until a downlink sets its clock. This applies to every uplink except the
+  `LEAVE` heartbeat (section 8), including one that would otherwise be
+  unconfirmed: it goes out as `SYNC`, a confirmed type,
+  and is retried like any confirmed uplink (section 5).
 - On every accepted downlink the sensor sets its clock to `server_time`. It
   SHOULD NOT add an estimate of the transmission delay; the error is well under a
   second and tags only need the hour.
@@ -82,7 +85,10 @@ normally covers it.
 - The interval `h` comes from the device profile, or from `SET_HEARTBEAT` once
   received. Allowed range: 1 to 1440 minutes.
 - Each heartbeat is scheduled `h` after the previous one, with a random offset of
-  up to plus or minus 10% so that sensors do not stay in step.
+  up to plus or minus 10% so that sensors do not stay in step. The offset MUST
+  NOT push a heartbeat past 24 hours after the last confirmed uplink was sent
+  (section 3.3); a heartbeat that would (for example with `h` = 1440) is sent at
+  that limit instead.
 - A heartbeat carries the full state and battery (03 section 5).
 - A heartbeat is sent as `HEARTBEAT_CONFIRMED` if no confirmed uplink has been
   answered in the last 4 hours (RECOMMENDED; at most 24 hours, section 3.3), and
@@ -120,9 +126,15 @@ the uplink is unanswered and the sensor retransmits it.
 - A retry is the identical frame (02 section 8.3). Each retry is followed by RX1
   and RX2 as usual. Proxies forward it (06 section 6) and the server answers it
   again (07 section 4, step 5), so a lost answer is recovered by the next retry.
-- If the state changes while retries are pending, the sensor abandons them and
-  sends a new confirmed frame (new `fcnt`) with the latest state. The server
-  only needs the latest state.
+- If the state changes while retries are pending for a state frame or a
+  heartbeat, the sensor abandons them and sends a new confirmed frame (new
+  `fcnt`) with the latest state. The server only needs the latest state. An
+  abandoned uplink is not undelivered (section 6 does not count it).
+- A frame that carries an event reading (for example `button`) is never
+  abandoned: a resend under a new counter would make the server act on the event
+  twice. Its retries run to the end, and the state change goes in the next frame.
+  Pairing frames (`JOIN`, and the `SYNC` of 04 section 4.4) are not abandoned
+  either.
 - After the last retry the uplink is *undelivered*. A state change will still
   reach the server in the next heartbeat, which carries the full state. A
   `button` event is lost.
@@ -135,8 +147,7 @@ accepted downlink resets the count to 0.
 
 | Count | Behavior |
 |---|---|
-| 3 | The sensor's tags or clock may be wrong. The next confirmed attempt MUST be a `SYNC` instead (02 section 11.2), carrying the full state as readings. |
-| 3 or more | Confirmed heartbeats are attempted at 1, 5, 15 and 60 minutes after the last failure, then every `h`. Normal state-change frames continue as usual. |
+| 3 or more | The sensor's tags or clock may be wrong. Every confirmed attempt, heartbeat or state change, MUST be a `SYNC` instead (02 section 11.2), carrying the full state as readings, until a downlink is accepted. Confirmed heartbeats are attempted at 1, 5, 15 and 60 minutes after the last failure, then every `h`. State changes are still sent when they happen. |
 
 A sensor MUST NOT stop transmitting because it has lost contact, and MUST NOT
 forget its pairing because of it. Only `LEAVE` or a factory reset (the
@@ -164,7 +175,7 @@ forget its pairing because of it. Only `LEAVE` or a factory reset (the
 |---|---|
 | `SET_NETWORK` | Store `k_net_route`, switch to normal tags, enter `PAIRED` if pairing (04) |
 | `SET_HEARTBEAT` | Store the new interval; reschedule the next heartbeat from now |
-| `LEAVE` | Erase `k_session` and `k_net_route`, enter `UNPAIRED` (04 section 6.1). Keep the root floor and the uplink counter reservation. When `PAIRED`, the `DL_ACK` for it goes in one final unconfirmed `HEARTBEAT`, sent under the old keys before they are erased; in `SESSION`, nothing is sent (04 section 6.1). |
+| `LEAVE` | Erase `k_session` and `k_net_route`, enter `UNPAIRED` (04 section 6.1). Keep the root floor and the uplink counter reservation. When `PAIRED`, the `DL_ACK` for it goes in one final unconfirmed `HEARTBEAT`, sent under the old keys; the keys are erased when that transmission ends. RX1 still opens after it (01 section 4), but nothing received in it can verify, so it is ignored. Without a clock the sensor cannot compute the tags for that `HEARTBEAT`, so it erases the keys without sending. In `SESSION`, nothing is sent (04 section 6.1). |
 | `KEY_EXCHANGE` | Only valid in `JOINING` (04 section 4.4), in a downlink under the root key set whose counter is above the root floor; ignored otherwise |
 | `0x40` (set value) | Apply to a writable channel (03 section 8), then report the new state in the next uplink |
 | `0x41`-`0x7F` | As the device profile defines |
@@ -256,7 +267,8 @@ A sensor implementation MUST pass at least:
    used before (02 section 8.2), including after a factory reset.
 3. With no server answering, a confirmed uplink is sent 4 times in total at the
    times in section 5, as identical bytes.
-4. After 3 undelivered confirmed uplinks, the next confirmed attempt is `SYNC`.
+4. After 3 undelivered confirmed uplinks, every confirmed attempt is `SYNC` until
+   a downlink is accepted.
 5. A downlink with a wrong `reply_to`, a stale `fcnt_down`, or a bad MIC is
    ignored.
 6. `SET_HEARTBEAT` changes the heartbeat interval, and `LEAVE` unpairs the

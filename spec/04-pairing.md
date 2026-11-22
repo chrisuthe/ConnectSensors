@@ -55,8 +55,10 @@ CS:1:C5C5000000000001:AAAQEAYEAUDAOCAJBIFQYDIOB4:US915:CS.CONTACT-1:C1FB
 ```
 
 Every character is in the QR code alphanumeric set (`0-9 A-Z $%*+-./:` and
-space), so the code fits a compact QR code (version 4 at error correction level
-M).
+space), so the code fits a compact QR code at error correction level M. The
+example (72 characters) fits version 4. A code with a 32-character profile
+identifier is 92 characters, more than version 4 holds (90), and needs version 5
+(up to 122).
 
 ### 3.2 Parsing
 

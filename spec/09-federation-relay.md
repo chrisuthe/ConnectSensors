@@ -150,8 +150,14 @@ A server with subscribing enabled ("Receive my sensors through neighbors"):
 
 - Keeps a subscription on every relay in its list, with the filter
   `{"kinds": [21110], "#h": [<buckets>], "#r": [<region>]}`.
-- Verifies each event's signature, decodes it, and feeds the frame into its
-  normal uplink pipeline (07 section 4), recording each reception as coming from
+- Verifies each event's signature and drops an uplink event whose `created_at`
+  is more than 60 seconds before or 10 seconds after its own clock. By then the
+  server no longer remembers the frame (07 section 4.3), so the event is only a
+  relay replaying it; the 10 seconds allow for clock error. A publisher can still
+  sign a captured frame again with a fresh `created_at`; the frame's counter
+  (02 section 8.5) and the answer limits of 07 section 4, step 5 cover that.
+- Decodes each event and feeds the frame into its normal uplink pipeline (07
+  section 4), recording each reception as coming from
   `(publisher pubkey, rx_ref)`. Frames that do not verify for any of its devices
   are dropped without further processing; most frames in a bucket belong to other
   networks.
@@ -261,6 +267,7 @@ own.
 | Fake uplink events | Signed by the publisher, but the frame itself is what matters: it is authenticated end to end (02), so fakes fail the MIC check. |
 | Downlink request abuse | `rx_ref` is public, so anyone can request a downlink for a reception. Requests must carry a valid-looking downlink frame with matching tags, only the first request per reception counts, and limits cap the airtime (section 7). The worst case is a wasted downlink or a blocked RX2 answer, which sensor retries cover. Publishers worried about this can use an allow list. |
 | Flooding relays | Per-pubkey rate limits; NIP-42 authentication. |
+| Linking a device's frames by counter | `fcnt` is in the clear (02 section 13). Without federation only someone in radio range sees it; publishing hands every frame in a bucket to any subscriber of the relay, anywhere, who can then link a device's frames across epochs by counter continuity and see when it transmits. Not addressed in v1. |
 | Tracking a home through its publisher key | A home can rotate its federation key at any time, at the cost of breaking allow lists that name it. |
 
 ## 10. Test vectors

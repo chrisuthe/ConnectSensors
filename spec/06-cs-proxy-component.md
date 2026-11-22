@@ -61,9 +61,9 @@ A complete board example is in section 13.
 |---|---|---|---|
 | `id` | ID | generated | |
 | `radio_id` | ID of `sx126x` or `sx127x` | required | The radio to use |
-| `region` | `US915` or `EU868` | required | Region profile (01) |
-| `server.transport` | `udp` or `mqtt` | `udp` | 05 section 2 |
-| `server.host` | hostname or IP | none | Server address for UDP. If omitted, mDNS discovery (05 section 2.1). |
+| `region` | `US915` or `EU868` | required | Region profile (01). `EU868` is not accepted yet (01 section 3.2). |
+| `server.transport` | `udp` or `mqtt` | `udp` | 05 section 2. Not accepted yet; UDP only. |
+| `server.host` | hostname or IP | none | Server address for UDP. If omitted, mDNS discovery (05 section 2.1). Required for now: discovery is not implemented. |
 | `server.port` | int | 47800 | Server UDP port |
 | `server.key` | 32 hex digits | required unless standalone | The proxy key (05 section 4.2). A key of this proxy's own; a shared key requires `downlink.enabled: false`. |
 | `proxy_id` | 16 hex digits | from MAC | Override only when the MAC is not stable |
@@ -74,7 +74,7 @@ A complete board example is in section 13.
 | `rate_limit.global` | rate | 20/s | Token bucket, burst equal to the rate |
 | `rate_limit.per_device` | rate | 2/s | Per `dev_tag`, burst 5 |
 | `rate_limit.bootstrap` | rate | 5/s | Shared by all bootstrap frames (`dev_tag` 0), burst 5 |
-| `federation.enabled` | bool | `false` | Standalone mode (section 3.4); only allowed without `server` |
+| `federation.enabled` | bool | `false` | Standalone mode (section 3.4); only allowed without `server`. Not accepted yet, nor are the other `federation.*` options. |
 | `federation.relays` | list of `wss://` URLs | none | Required in standalone mode; at least 2 RECOMMENDED |
 | `federation.downlinks` | bool | `false` | Accept downlink requests from relays (09 section 7) |
 | `federation.allow` | list of pubkeys | none | If set, accept downlink requests only from these subscriber keys |
@@ -82,10 +82,11 @@ A complete board example is in section 13.
 `transport: mqtt` requires ESPHome's `mqtt` component; `host` and `port` are then
 ignored.
 
-The MQTT transport and standalone mode (`federation`) are not implemented yet, so
-the ESPHome component does not accept `server.transport` or `federation` until
-they are; UDP is the only transport. Its `server.host` is required, as an IPv4
-address or a hostname.
+The options marked "not accepted yet" describe the protocol; the ESPHome
+component rejects them at config time until they are implemented. The MQTT
+transport, mDNS discovery and standalone mode (`federation`) are not implemented,
+so UDP is the only transport and `server.host` is required, as an IPv4 address or
+a hostname. `EU868` is rejected until its frequency is decided.
 
 ### 3.3 Validation at compile time
 
@@ -322,7 +323,8 @@ Device class `connectivity`, diagnostic.
 | Airtime buckets, 60 entries | 0.25 KB |
 | Code | 15-25 KB flash |
 
-SHA-256 and HMAC-SHA256 come from mbedTLS, which ESP-IDF already includes.
+SHA-256 and HMAC-SHA256 come from the component's own `cs_sha256`, which has no
+platform dependencies, so the proxy core builds and runs its tests on any host.
 
 ## 13. Example: Heltec WiFi LoRa 32 V3 (informative)
 

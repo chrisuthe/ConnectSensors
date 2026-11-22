@@ -13,10 +13,13 @@ coverage for everyone.
 
 ## 1. Background
 
-### 1.1 ESPHome today (2026.11.0)
+### 1.1 ESPHome today (2026.12, `dev`)
 
 - Native radio drivers: `sx126x`, `sx127x`, `cc1101`, with an `on_packet` trigger
   (raw bytes, RSSI, SNR) and a `send_packet` action.
+- 2026.12 adds asynchronous transmit (`start_transmit_async`), so a packet goes
+  out without blocking the main loop. `cs_proxy` and `cs_sensor` use it and
+  require 2026.12 or later.
 - `packet_transport` runs over these radios, but it is node-to-node state sync,
   not a forwarding network.
 - Recent releases add proxy-style components (`serial_proxy`, `bridge`,

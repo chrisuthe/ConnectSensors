@@ -15,7 +15,6 @@
           "geohash": { "type": "string", "minLength": 1, "maxLength": 5, "description": "Approximate area. At most 5 characters (about 5 km)." },
           "relays": { "type": "array", "minLength": 1, "maxLength": 8, "items": { "type": "string", "format": "uri" } },
           "downlinks": { "type": "boolean", "description": "Whether the publisher accepts downlink requests." },
-          "proxies": { "type": "integer", "minimum": 0, "maximum": 1000 },
           "updatedAt": { "type": "string", "format": "datetime" }
         }
       }
