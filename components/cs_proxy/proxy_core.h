@@ -165,6 +165,11 @@ enum TxResult : uint8_t {
 // Little helper for building big-endian bodies.
 class ByteWriter {
  public:
+  ByteWriter() : buf(this->own_) {}
+  // Writes into out from the start, reusing its capacity.
+  explicit ByteWriter(std::vector<uint8_t> &out) : buf(out) { out.clear(); }
+  ByteWriter(const ByteWriter &) = delete;
+  ByteWriter &operator=(const ByteWriter &) = delete;
   void u8(uint8_t v) { this->buf.push_back(v); }
   void u16(uint16_t v);
   void u32(uint32_t v);
@@ -172,7 +177,12 @@ class ByteWriter {
   void i16(int16_t v) { this->u16(uint16_t(v)); }
   void i32(int32_t v) { this->u32(uint32_t(v)); }
   void bytes(const uint8_t *p, size_t n) { this->buf.insert(this->buf.end(), p, p + n); }
-  std::vector<uint8_t> buf;
+
+ private:
+  std::vector<uint8_t> own_;
+
+ public:
+  std::vector<uint8_t> &buf;
 };
 
 struct Envelope {
@@ -187,6 +197,9 @@ class EnvelopeCodec {
  public:
   EnvelopeCodec(const uint8_t key[16], const uint8_t proxy_id[8]);
   std::vector<uint8_t> build(uint8_t type, uint32_t boot_id, uint32_t seq, const std::vector<uint8_t> &body) const;
+  // Same, into out: a buffer kept across calls costs no allocation per message.
+  void build(std::vector<uint8_t> &out, uint8_t type, uint32_t boot_id, uint32_t seq, const uint8_t *body,
+             size_t body_len) const;
   // Checks version, MAC and proxy_id. Body points into data.
   bool open(const uint8_t *data, size_t len, Envelope &out) const;
   const uint8_t *proxy_id() const { return this->proxy_id_; }
@@ -199,6 +212,8 @@ class EnvelopeCodec {
 int16_t to_x10(float v);
 std::vector<uint8_t> uplink_body(uint64_t rx_time_us, float rssi, float snr, uint8_t flags, const uint8_t *frame,
                                  size_t frame_len);
+void uplink_body(std::vector<uint8_t> &out, uint64_t rx_time_us, float rssi, float snr, uint8_t flags,
+                 const uint8_t *frame, size_t frame_len);
 
 struct HelloInfo {
   uint8_t caps{0};

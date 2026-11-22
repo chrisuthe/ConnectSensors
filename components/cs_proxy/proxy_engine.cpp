@@ -62,7 +62,8 @@ void ProxyEngine::on_packet(const uint8_t *data, size_t len, float rssi, float s
     return;
   }
   const uint8_t flags = gap > this->io_.loop_interval_us() + TS_UNCERTAIN_EXTRA_US ? UPLINK_TS_UNCERTAIN : 0;
-  this->send_(MSG_UPLINK, uplink_body(now, rssi, snr, flags, data, len));
+  uplink_body(this->body_buf_, now, rssi, snr, flags, data, len);
+  this->send_(MSG_UPLINK, this->body_buf_.data(), this->body_buf_.size());
   this->counters_.forwarded++;
   this->log_(LogLevel::Debug,
              "Forwarded type %u net %08" PRIx32 " dev %08" PRIx32 " fcnt %" PRIu32 " rssi %.1f snr %.1f%s", h.type,
@@ -96,8 +97,14 @@ uint64_t ProxyEngine::loop_start() {
 void ProxyEngine::loop_end() {
   this->run_due_transmissions_();
 
-  // HELLO right after the server address is known, then every 60 s.
   const uint64_t now = this->io_.now_us();
+  if (!this->counters_published_ || now - this->last_counters_us_ >= COUNTERS_PUBLISH_INTERVAL_US) {
+    this->counters_published_ = true;
+    this->last_counters_us_ = now;
+    this->io_.on_counters();
+  }
+
+  // HELLO right after the server address is known, then every 60 s.
   if (this->io_.server_known() && this->io_.network_up() && (!this->hello_sent_ || now >= this->next_hello_us_))
     this->send_hello_();
 
@@ -118,11 +125,11 @@ void ProxyEngine::loop_end() {
 
 // ------------------------------------------------------------------------ messages
 
-bool ProxyEngine::send_(uint8_t type, const std::vector<uint8_t> &body) {
+bool ProxyEngine::send_(uint8_t type, const uint8_t *body, size_t body_len) {
   if (!this->io_.server_known())
     return false;
-  auto msg = this->codec_.build(type, this->config_.boot_id, ++this->seq_, body);
-  this->io_.send_datagram(msg.data(), msg.size());
+  this->codec_.build(this->msg_buf_, type, this->config_.boot_id, ++this->seq_, body, body_len);
+  this->io_.send_datagram(this->msg_buf_.data(), this->msg_buf_.size());
   return true;
 }
 

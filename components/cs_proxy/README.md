@@ -25,12 +25,12 @@ Version 0.2.0, early development. Implemented:
 - Server hostname or IP address (resolved without blocking)
 - Diagnostic sensors and the `server_connected` binary sensor
 
-Not yet implemented (rejected at compile time where configurable):
+Not yet implemented:
 
-- `EU868` (the profile's frequency is not decided)
-- MQTT transport
+- `EU868` (the profile's frequency is not decided; rejected at compile time)
+- MQTT transport and standalone federation (spec 09 section 5.2); there are no
+  `server.transport` or `federation` options until they work
 - mDNS discovery of the server (`server.host` is required)
-- Standalone federation (spec 09 section 5.2)
 
 ## Requirements
 
@@ -89,7 +89,8 @@ cs_proxy:
 Sensors (all optional, all diagnostic): `frames_heard`, `frames_forwarded`,
 `duplicates`, `invalid`, `rate_limited`, `downlinks_sent`, `downlinks_failed`,
 `last_rssi`, `last_snr`, `max_loop_gap`, `airtime_used`. Binary sensor:
-`server_connected`.
+`server_connected`. The counters publish every 10 seconds, also while the server
+is unreachable; `max_loop_gap` publishes with each `HELLO`.
 
 ## Code layout
 
@@ -98,7 +99,8 @@ Sensors (all optional, all diagnostic): `frames_heard`, `frames_forwarded`,
 | `proxy_core.h/.cpp` | Protocol building blocks: frames, envelope, dedupe, rate limits, airtime, scheduling |
 | `proxy_engine.h/.cpp` | Runtime behaviour on top of the core: receive pipeline, counters, loop gaps, `HELLO`, connection state, transmit state machine. No ESPHome dependency; the glue implements its `ProxyIo` |
 | `cs_sha256.h/.cpp` | SHA-256 and HMAC-SHA256 |
-| `cs_proxy.h/.cpp` | ESPHome glue: radio listener, UDP, address resolution, timers, entities, logging |
+| `cs_clock.h` | The 64-bit microsecond clock, per platform |
+| `cs_proxy.h/.cpp` | ESPHome glue: radio listener, UDP, address resolution, timers, entities, logging. Its `loop()` stays enabled: it measures main-loop gaps (spec 06 section 7) |
 | `__init__.py` | Configuration schema, region checks, code generation |
 | `sensor.py`, `binary_sensor.py` | Entity platforms |
 

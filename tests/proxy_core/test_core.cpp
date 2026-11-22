@@ -423,6 +423,7 @@ struct FakeIo : ProxyIo {
   int rediscovers = 0;
   std::vector<bool> connected_events;
   std::vector<uint16_t> hello_gaps;
+  std::vector<uint64_t> counter_publishes;  // times of on_counters()
 
   uint64_t now_us() override { return t; }
   void wait_until(uint64_t at) override {
@@ -453,6 +454,7 @@ struct FakeIo : ProxyIo {
   void request_loop() override { loop_requests++; }
   void on_connected(bool c) override { connected_events.push_back(c); }
   void on_hello(uint16_t gap_ms) override { hello_gaps.push_back(gap_ms); }
+  void on_counters() override { counter_publishes.push_back(t); }
   std::vector<std::string> logs;
   void vlog(LogLevel, const char *fmt, va_list args) override {
     char line[256];
@@ -1098,6 +1100,31 @@ static void test_engine_hello_request() {
   CHECK(h.size() == 1 && hello_nonce(h[0]) == 0x44u);
 }
 
+static void test_engine_counters_offline() {
+  // Counter sensors keep updating while the server is unreachable (06 section 10.1).
+  Rig r;
+  r.io.server = false;
+  const uint64_t t0 = r.io.t;
+  r.loop();
+  CHECK(r.io.counter_publishes.size() == 1);  // at the first pass
+  r.hear(frame("heartbeat"));
+  r.run_until(t0 + 35 * 1000000ULL);
+  CHECK(r.take().empty());  // no HELLO, nothing forwarded
+  CHECK(r.io.hello_gaps.empty());
+  CHECK(r.io.counter_publishes.size() == 4);  // 0, 10, 20 and 30 s
+  for (size_t i = 1; i < r.io.counter_publishes.size(); i++) {
+    uint64_t d = r.io.counter_publishes[i] - r.io.counter_publishes[i - 1];
+    CHECK(d >= COUNTERS_PUBLISH_INTERVAL_US && d < COUNTERS_PUBLISH_INTERVAL_US + r.io.loop_interval);
+  }
+  CHECK(r.engine->counters().heard == 1 && r.engine->counters().forwarded == 0);
+
+  // The cadence does not follow HELLO once the server is known.
+  r.io.server = true;
+  r.run_until(t0 + 41 * 1000000ULL);
+  CHECK(r.io.hello_gaps.size() == 1);
+  CHECK(r.io.counter_publishes.size() == 5);
+}
+
 int main() {
   test_sha256();
   test_frames();
@@ -1114,6 +1141,7 @@ int main() {
   test_eui64();
   test_engine_forwarding();
   test_engine_dedupe_and_offline();
+  test_engine_counters_offline();
   test_engine_ts_uncertain();
   test_engine_hello_and_capability();
   test_engine_connection();

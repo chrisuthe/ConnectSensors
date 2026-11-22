@@ -1,9 +1,12 @@
 #include "cs_proxy.h"
 
 #include "esphome/core/application.h"
+#include "esphome/core/hal.h"
 #include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 #include "esphome/components/network/util.h"
+
+#include <algorithm>
 
 namespace esphome::cs_proxy {
 
@@ -58,15 +61,6 @@ void CSProxy::setup() {
     return;
   }
 
-  esp_timer_create_args_t args{};
-  args.callback = &CSProxy::tx_timer_cb_;
-  args.arg = this;
-  args.name = "cs_proxy_tx";
-  if (esp_timer_create(&args, &this->tx_timer_) != ESP_OK) {
-    ESP_LOGW(TAG, "No high-resolution transmit timer; downlink timing relies on the main loop");
-    this->tx_timer_ = nullptr;
-  }
-
 #ifdef USE_CS_PROXY_SX126X
   if (this->sx126x_ != nullptr)
     this->sx126x_->register_listener(this);
@@ -99,6 +93,9 @@ void CSProxy::on_packet(const std::vector<uint8_t> &packet, float rssi, float sn
   this->engine_->on_packet(packet.data(), packet.size(), rssi, snr);
 }
 
+// The loop stays enabled: it is the probe for main-loop health (06 section 7). Its
+// passes time the radio's packets (TS_UNCERTAIN) and give HELLO's max_loop_gap_ms,
+// which decides downlink capability, so it must run on every main-loop pass.
 void CSProxy::loop() {
   const uint64_t now = this->engine_->loop_start();
   this->poll_server_address_(now);
@@ -143,8 +140,9 @@ void CSProxy::poll_server_address_(uint64_t now) {
 // ------------------------------------------------------------------------ ProxyIo
 
 void CSProxy::wait_until(uint64_t t_us) {
-  while (this->now_us() < t_us) {
-  }
+  const uint64_t now = this->now_us();
+  if (t_us > now)
+    delayMicroseconds(uint32_t(t_us - now));  // at most TIMER_LEAD_US
 }
 
 uint64_t CSProxy::loop_interval_us() { return uint64_t(App.get_loop_interval()) * 1000; }
@@ -164,14 +162,13 @@ void CSProxy::rediscover() {
   this->resolving_ = false;
 }
 
-void CSProxy::tx_timer_cb_(void *arg) { static_cast<CSProxy *>(arg)->enable_loop_soon_any_context(); }
-
 void CSProxy::arm_timer(uint64_t wake_us) {
-  if (this->tx_timer_ == nullptr)
-    return;
-  esp_timer_stop(this->tx_timer_);
+  // The main loop never sleeps past the next scheduled item. The scheduler alone
+  // does not run component loops before the loop interval is up, so the callback
+  // asks for a pass now; the engine waits out the last TIMER_LEAD_US itself.
   const uint64_t now = this->now_us();
-  esp_timer_start_once(this->tx_timer_, wake_us > now ? wake_us - now : 1);
+  const uint32_t ms = wake_us > now ? uint32_t(std::min<uint64_t>((wake_us - now) / 1000, UINT32_MAX)) : 0;
+  this->set_timeout("tx", ms, [this]() { this->enable_loop_soon_any_context(); });
 }
 
 uint8_t CSProxy::start_transmit(const uint8_t *frame, size_t len, uint32_t timeout_ms) {
@@ -231,10 +228,9 @@ void CSProxy::on_hello(uint16_t max_loop_gap_ms) {
   if (this->max_loop_gap_sensor_ != nullptr)
     this->max_loop_gap_sensor_->publish_state(max_loop_gap_ms);
 #endif
-  this->publish_counters_();
 }
 
-void CSProxy::publish_counters_() {
+void CSProxy::on_counters() {
 #ifdef USE_SENSOR
   auto pub = [](sensor::Sensor *s, float v) {
     if (s != nullptr)

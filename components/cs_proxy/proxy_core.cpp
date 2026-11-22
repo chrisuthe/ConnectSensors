@@ -241,17 +241,23 @@ EnvelopeCodec::EnvelopeCodec(const uint8_t key[16], const uint8_t proxy_id[8]) {
 
 std::vector<uint8_t> EnvelopeCodec::build(uint8_t type, uint32_t boot_id, uint32_t seq,
                                           const std::vector<uint8_t> &body) const {
-  ByteWriter w;
+  std::vector<uint8_t> out;
+  this->build(out, type, boot_id, seq, body.data(), body.size());
+  return out;
+}
+
+void EnvelopeCodec::build(std::vector<uint8_t> &out, uint8_t type, uint32_t boot_id, uint32_t seq,
+                          const uint8_t *body, size_t body_len) const {
+  ByteWriter w(out);
   w.u8(ENV_VERSION);
   w.u8(type);
   w.bytes(this->proxy_id_, 8);
   w.u32(boot_id);
   w.u32(seq);
-  w.bytes(body.data(), body.size());
+  w.bytes(body, body_len);
   uint8_t mac[32];
   hmac_sha256(this->key_, 16, w.buf.data(), w.buf.size(), mac);
   w.bytes(mac, ENV_MAC);
-  return w.buf;
 }
 
 bool EnvelopeCodec::open(const uint8_t *data, size_t len, Envelope &out) const {
@@ -282,14 +288,20 @@ int16_t to_x10(float v) {
 
 std::vector<uint8_t> uplink_body(uint64_t rx_time_us, float rssi, float snr, uint8_t flags, const uint8_t *frame,
                                  size_t frame_len) {
-  ByteWriter w;
+  std::vector<uint8_t> out;
+  uplink_body(out, rx_time_us, rssi, snr, flags, frame, frame_len);
+  return out;
+}
+
+void uplink_body(std::vector<uint8_t> &out, uint64_t rx_time_us, float rssi, float snr, uint8_t flags,
+                 const uint8_t *frame, size_t frame_len) {
+  ByteWriter w(out);
   w.u64(rx_time_us);
   w.i16(to_x10(rssi));
   w.i16(to_x10(snr));
   w.u8(flags);
   w.u8(uint8_t(frame_len));
   w.bytes(frame, frame_len);
-  return w.buf;
 }
 
 std::vector<uint8_t> hello_body(const HelloInfo &h) {

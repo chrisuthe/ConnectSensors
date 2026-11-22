@@ -4,10 +4,9 @@ import logging
 import re
 
 import esphome.codegen as cg
-from esphome.components import socket
+from esphome.components import socket, sx126x
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_PORT
-from esphome.core import CORE
+from esphome.const import CONF_ID, CONF_KEY, CONF_PORT, CONF_REBOOT_TIMEOUT
 import esphome.final_validate as fv
 
 DEPENDENCIES = ["network"]
@@ -18,9 +17,7 @@ CONF_ENABLED = "enabled"
 CONF_RADIO_ID = "radio_id"
 CONF_REGION = "region"
 CONF_SERVER = "server"
-CONF_TRANSPORT = "transport"
 CONF_HOST = "host"
-CONF_KEY = "key"
 CONF_PROXY_ID = "proxy_id"
 CONF_DOWNLINK = "downlink"
 CONF_AIRTIME_BUDGET = "airtime_budget"
@@ -30,7 +27,6 @@ CONF_RATE_LIMIT = "rate_limit"
 CONF_GLOBAL = "global"
 CONF_PER_DEVICE = "per_device"
 CONF_BOOTSTRAP = "bootstrap"
-CONF_FEDERATION = "federation"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,28 +90,34 @@ def _rate(value):
     return rate
 
 
-def _transport(value):
-    value = cv.one_of("udp", "mqtt", lower=True)(value)
-    if value == "mqtt":
-        raise cv.Invalid("The MQTT transport is not implemented yet; use udp")
+_DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.IGNORECASE)
+
+
+def _server_host(value):
+    """An IPv4 address or a DNS name. cv.domain() would refuse a bare LAN name such
+    as "cs-server" and accept IPv6, which the IPv4-only resolver cannot use."""
+    value = cv.string_strict(value).strip()
+    try:
+        return str(cv.ipv4address(value))
+    except cv.Invalid:
+        pass
+    if ":" in value:
+        raise cv.Invalid("server.host must be a hostname or an IPv4 address; IPv6 is not supported")
+    labels = (value[:-1] if value.endswith(".") else value).split(".")
+    if (
+        len(value) > 253
+        or not all(_DNS_LABEL.fullmatch(label) for label in labels)
+        or all(label.isdigit() for label in labels)
+    ):
+        raise cv.Invalid(f"server.host must be a hostname or an IPv4 address, not {value!r}")
     return value
-
-
-def _federation(config):
-    if config[CONF_ENABLED]:
-        raise cv.Invalid(
-            "Standalone federation (spec/09 section 5.2) is not implemented yet. "
-            "Proxies attached to a server never need it: the server federates."
-        )
-    return config
 
 
 SERVER_SCHEMA = cv.Schema(
     {
-        cv.Optional(CONF_TRANSPORT, default="udp"): _transport,
-        cv.Required(CONF_HOST): cv.string_strict,
+        cv.Required(CONF_HOST): _server_host,
         cv.Optional(CONF_PORT, default=47800): cv.port,
-        cv.Required(CONF_KEY): cv.bind_key(name="key"),
+        cv.Required(CONF_KEY): cv.bind_key(name=CONF_KEY),
     }
 )
 
@@ -149,10 +151,6 @@ CONFIG_SCHEMA = cv.All(
                     cv.Optional(CONF_BOOTSTRAP, default="5/s"): _rate,
                 }
             ),
-            cv.Optional(CONF_FEDERATION, default={}): cv.All(
-                cv.Schema({cv.Optional(CONF_ENABLED, default=False): cv.boolean}),
-                _federation,
-            ),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
@@ -163,15 +161,14 @@ CONFIG_SCHEMA = cv.All(
 
 
 def _find_radio(full_config, radio_id):
-    """Return (kind, radio_config) for the radio with this ID."""
-    for kind in RADIO_KINDS:
-        confs = full_config.get(kind)
-        if confs is None:
-            continue
-        for conf in confs if isinstance(confs, list) else [confs]:
-            if str(conf.get(CONF_ID)) == str(radio_id):
-                return kind, conf
-    return None, None
+    """Return (kind, radio_config) for the radio with this ID, or (None, None)."""
+    try:
+        path = full_config.get_path_for_id(radio_id)
+    except KeyError:
+        return None, None
+    if path[0] not in RADIO_KINDS:
+        return None, None
+    return path[0], full_config.get_config_for_path(path[:-1])
 
 
 def _final_validate(config):
@@ -217,7 +214,7 @@ def _final_validate(config):
 def _warn_api_reboot_timeout(full):
     # Fine for a proxy Home Assistant keeps connected; otherwise each reboot drops
     # scheduled downlinks and leaves the proxy deaf for several seconds (06 section 9).
-    timeout = full.get("api", {}).get("reboot_timeout")
+    timeout = full.get("api", {}).get(CONF_REBOOT_TIMEOUT)
     if timeout is not None and timeout.total_milliseconds:
         _LOGGER.warning(
             "api: reboot_timeout is %s: this proxy reboots whenever no API client has been "
@@ -234,9 +231,8 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
 
-    kind, radio_conf = _find_radio(CORE.config, config[CONF_RADIO_ID])
-    radio = await cg.get_variable(config[CONF_RADIO_ID])
-    if kind == "sx126x":
+    radio_id, radio = await cg.get_variable_with_full_id(config[CONF_RADIO_ID])
+    if radio_id.type.inherits_from(sx126x.SX126x):
         cg.add_define("USE_CS_PROXY_SX126X")
         cg.add(var.set_sx126x(radio))
     else:
