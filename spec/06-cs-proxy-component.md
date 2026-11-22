@@ -205,13 +205,20 @@ healthy, but a slow component elsewhere can delay it.
 - Downlink capability follows a 10-second sliding window. While a gap over 100 ms
   ended within the last 10 seconds, the component MUST clear the downlink-capable
   bit in any `HELLO` it sends and reject a `DOWNLINK` with `NOT_CAPABLE`. Ten
-  seconds after the last such gap it offers downlinks again, in the next `HELLO`
-  and for any `DOWNLINK` that arrives. The window is twice the 5 seconds a
-  downlink can be scheduled ahead (05 section 5.4), so a downlink is judged on
-  main-loop health over a longer span than the one it then waits through. It is
-  short enough that a single stall withdraws downlinks for a sixth of a `HELLO`
-  interval rather than for one or two whole intervals, and a `HELLO` only goes
-  out without the bit if a stall ended in the 10 seconds before it.
+  seconds after the last such gap it offers downlinks again, in `HELLO` and for
+  any `DOWNLINK` that arrives. The window is twice the 5 seconds a downlink can be
+  scheduled ahead (05 section 5.4), so a downlink is judged on main-loop health
+  over a longer span than the one it then waits through. It is short enough that
+  a single stall withdraws downlinks for a sixth of a `HELLO` interval rather
+  than for one or two whole intervals.
+- The server takes capability from the last `HELLO` (07 section 6.1), so the
+  component MUST send a `HELLO` as soon as the window opens or closes, rather
+  than leave the server on a stale bit until the next periodic one. Without it,
+  a stall in the 10 seconds before a periodic `HELLO` would cost a whole minute
+  of downlinks. This `HELLO` is rate-limited and leaves the periodic schedule
+  alone (05 section 5.2). The `HELLO` that opens the window reports the stall in
+  `max_loop_gap_ms`. With one stall per window, a stall costs at most two extra
+  `HELLO`s; repeated stalls cost at most one every 5 seconds.
 
 Servers prefer proxies with good timing for RX1 (07).
 
@@ -471,10 +478,11 @@ be run against a test server built from the reference tool:
     when either of the two gaps between the component's passes before it was over
     36 ms.
 14. After a single main-loop stall over 100 ms, `DOWNLINK`s are rejected with
-    `NOT_CAPABLE` for 10 seconds and accepted again after that. A `HELLO` sent
-    in those 10 seconds clears the downlink-capable bit and one sent after sets
-    it; the first `HELLO` after the stall reports it in `max_loop_gap_ms` either
-    way.
+    `NOT_CAPABLE` for 10 seconds and accepted again after that. A `HELLO` without
+    the downlink-capable bit goes out at once, reporting the stall in
+    `max_loop_gap_ms`, and one with the bit 10 seconds later. The periodic
+    `HELLO` stays on its 60-second schedule. A second change within 5 seconds
+    of such a `HELLO` is announced when the 5 seconds are up.
 
 ## 15. Upstream improvements (informative)
 

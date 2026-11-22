@@ -205,6 +205,13 @@ does not interpret it except to hand it back in a `DOWNLINK`.
 Sent by the proxy right after boot, then every 60 seconds, and in answer to a
 `HELLO_REQUEST` (section 5.6). It doubles as a keepalive and a status report.
 
+A proxy also sends a `HELLO` as soon as its downlink capability changes, so the
+server need not wait up to 60 seconds to learn of it (06 section 7). It sends at
+most one such `HELLO` per 5 seconds. If the capability changed again in the
+meantime, it sends one when the 5 seconds are up, and only if the bit still
+differs from the last `HELLO`. These `HELLO`s carry a `request_nonce` of 0 and
+do not move the 60-second schedule or answer a pending `HELLO_REQUEST`.
+
 ```
 caps           uint8   bit 0 downlink capable; bits 1-7 reserved (0)
 region_len     uint8
@@ -220,7 +227,7 @@ invalid        uint32  packets dropped by the keyless checks
 rate_limited   uint32  frames dropped by rate limits
 tx_ok          uint32  downlinks transmitted
 tx_failed      uint32  downlinks not transmitted, any reason
-max_loop_gap_ms uint16 longest main-loop gap since the previous HELLO (06 section 7)
+max_loop_gap_ms uint16 longest main-loop gap since the previous HELLO of any kind (06 section 7)
 request_nonce  uint32  nonce of the HELLO_REQUEST this answers; 0 if none
 fw_len         uint8
 fw             firmware name and version, ASCII, for example "cs_proxy 0.1.0"

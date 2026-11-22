@@ -808,33 +808,48 @@ static void test_engine_hello_and_capability() {
   CHECK(hello_caps(r) == CAP_DOWNLINK);
   CHECK(r.io.hello_gaps.size() == 2 && r.io.hello_gaps[1] == 16);
 
-  // A stall over 100 ms half a minute before the next HELLO: reported in it, but the
-  // capability has come back by then (06 section 7).
+  // A stall over 100 ms withdraws downlinks and is announced at once with a HELLO that
+  // reports it (06 section 7).
   r.run_until(r.io.t + 30000000);
   r.io.t += 150000;
   r.loop();
+  const uint64_t first_stall = r.io.t;
   CHECK(r.engine->degraded());
   CHECK(r.io.logged("downlinks withdrawn for 10 s") == 1);
+  CHECK(hello_caps(r) == 0);
+  CHECK(r.io.hello_gaps.back() == 150);
+  // Ten seconds on, the window closes and another HELLO offers downlinks again.
+  r.run_until(first_stall + DEGRADED_WINDOW_US - 1);
+  CHECK(r.take(MSG_HELLO).empty());
+  r.run_until(first_stall + DEGRADED_WINDOW_US);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+  CHECK(r.io.logged("downlinks offered again") == 1);
+  CHECK(!r.engine->degraded());
+  // The periodic HELLO keeps its schedule.
+  r.run_until(first + 2 * HELLO_INTERVAL_US - 1);
+  CHECK(r.take(MSG_HELLO).empty());
   r.run_until(first + 2 * HELLO_INTERVAL_US);
   CHECK(hello_caps(r) == CAP_DOWNLINK);
-  CHECK(r.io.hello_gaps.back() == 150);
-  CHECK(!r.engine->degraded());
+  CHECK(r.io.hello_gaps.back() == 16);
 
-  // A stall just before a HELLO withdraws downlinks in it.
+  // A stall just before a periodic HELLO: announced at once, and the periodic one
+  // still goes out on time, without the bit.
   r.run_until(first + 3 * HELLO_INTERVAL_US - 1000000);
   r.io.t += 200000;
   r.loop();
   const uint64_t stalled = r.io.t;
-  r.run_until(first + 3 * HELLO_INTERVAL_US);
   CHECK(hello_caps(r) == 0);
   CHECK(r.io.hello_gaps.back() == 200);
+  r.run_until(first + 3 * HELLO_INTERVAL_US);
+  CHECK(hello_caps(r) == 0);
 
-  // Another stall inside the window extends it but is not logged again.
+  // Another stall inside the window extends it but is neither logged nor announced.
   r.run_until(stalled + 5000000);
   r.io.t += 120000;
   r.loop();
   const uint64_t again = r.io.t;
   CHECK(r.io.logged("downlinks withdrawn") == 2);
+  CHECK(r.take(MSG_HELLO).empty());
   // While withdrawn, a DOWNLINK is refused as NOT_CAPABLE, up to the end of the window.
   r.run_until(again + DEGRADED_WINDOW_US - 16000);
   r.loop({r.downlink(r.io.t, 1000000, frame("downlink_ack"))});
@@ -842,11 +857,13 @@ static void test_engine_hello_and_capability() {
   CHECK(res.size() == 1 && tx_res(res[0]).result == TX_NOT_CAPABLE);
   r.run_until(again + DEGRADED_WINDOW_US - 1);
   CHECK(r.engine->degraded());
+  CHECK(r.take(MSG_HELLO).empty());
   r.io.t = again + DEGRADED_WINDOW_US;
   CHECK(!r.engine->degraded());
-  // Once the window has passed, downlinks are accepted again without waiting for a HELLO.
+  // Once the window has passed, downlinks are accepted again, announced in the same pass.
   r.loop({r.downlink(r.io.t, 1000000, frame("downlink_ack"))});
-  CHECK(r.take(MSG_TX_RESULT).empty());
+  auto out = r.take();
+  CHECK(out.size() == 1 && out[0].type == MSG_HELLO && out[0].body[0] == CAP_DOWNLINK);
   r.run_until(r.io.t + 1000000);
   CHECK(r.io.transmits.size() == 1);
 
@@ -859,6 +876,76 @@ static void test_engine_hello_and_capability() {
   Rig off([](ProxyConfig &c) { c.downlink_enabled = false; });
   off.loop();
   CHECK(hello_caps(off) == 0);
+}
+
+static uint32_t hello_nonce(const Sent &m);
+
+// Capability HELLOs are rate-limited and never move the periodic schedule (06 section 7).
+static void test_engine_capability_hello_rate() {
+  Rig r;
+  const uint64_t first = r.io.t + 16000;
+  r.run_until(first);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+  // A stall, then the window closes: two HELLOs.
+  r.run_until(first + 20000000);
+  r.io.t += 150000;
+  r.loop();
+  CHECK(hello_caps(r) == 0);
+  const uint64_t closed = r.io.t + DEGRADED_WINDOW_US;
+  r.run_until(closed);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+  // A stall 1 s after that announcement waits until 5 s have passed since it.
+  r.run_until(closed + 1000000);
+  r.io.t += 150000;
+  r.loop();
+  const uint64_t stall2 = r.io.t;
+  CHECK(r.engine->degraded());
+  r.run_until(closed + HELLO_CHANGE_GAP_US - 1);
+  CHECK(r.take(MSG_HELLO).empty());
+  r.run_until(closed + HELLO_CHANGE_GAP_US);
+  CHECK(hello_caps(r) == 0);
+  CHECK(r.io.hello_gaps.back() == 150);  // the stall, kept since the last HELLO
+  // Its window closes more than 5 s later, so that is announced at once.
+  r.run_until(stall2 + DEGRADED_WINDOW_US);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+  // Five HELLOs so far; the periodic one is still due 60 s after the first.
+  CHECK(r.io.hello_gaps.size() == 5);
+  r.run_until(first + HELLO_INTERVAL_US - 1);
+  CHECK(r.take(MSG_HELLO).empty());
+  r.run_until(first + HELLO_INTERVAL_US);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+  r.run_until(first + 2 * HELLO_INTERVAL_US - 1);
+  CHECK(r.take(MSG_HELLO).empty());
+  r.run_until(first + 2 * HELLO_INTERVAL_US);
+  CHECK(hello_caps(r) == CAP_DOWNLINK);
+
+  // A capability HELLO leaves a deferred HELLO_REQUEST alone: it carries no nonce, and
+  // the requested HELLO still goes out on its own schedule.
+  r.loop({r.hello_request(0x55)});
+  auto h = r.take(MSG_HELLO);
+  CHECK(h.size() == 1 && hello_nonce(h[0]) == 0x55u);
+  const uint64_t requested = r.io.t;
+  r.run_until(r.io.t + 1000000);
+  r.loop({r.hello_request(0x66)});
+  CHECK(r.take(MSG_HELLO).empty());
+  r.run_until(r.io.t + 1000000);
+  r.io.t += 150000;
+  r.loop();
+  h = r.take(MSG_HELLO);
+  CHECK(h.size() == 1 && hello_nonce(h[0]) == 0 && h[0].body[0] == 0);
+  r.run_until(requested + HELLO_REQUEST_GAP_US);
+  h = r.take(MSG_HELLO);
+  CHECK(h.size() == 1 && hello_nonce(h[0]) == 0x66u);
+
+  // downlink: false never changes capability, so stalls draw no extra HELLO.
+  Rig off([](ProxyConfig &c) { c.downlink_enabled = false; });
+  off.loop();
+  CHECK(hello_caps(off) == 0);
+  off.run_until(off.io.t + 1000000);
+  off.io.t += 150000;
+  off.loop();
+  off.run_until(off.io.t + DEGRADED_WINDOW_US);
+  CHECK(off.take(MSG_HELLO).empty());
 }
 
 static void test_engine_connection() {
@@ -949,6 +1036,7 @@ static void test_engine_rx1_offset() {
   CHECK(r.take().empty());
   CHECK(r.io.timer == tx_at - TIMER_LEAD_US);
   // The timer wakes the loop 2 ms early; the engine waits out the rest.
+  r.run_until(tx_at - TIMER_LEAD_US - 1000);
   r.io.t = tx_at - TIMER_LEAD_US;
   r.io.start_cost_us = 850;
   r.loop();
@@ -1179,7 +1267,7 @@ static void test_engine_hello_request() {
   CHECK(r.take(MSG_TX_RESULT).size() == 1);
 
   // More within 5 s: one HELLO 5 s after the first, echoing the latest nonce.
-  r.io.t += 1000000;
+  r.run_until(r.io.t + 1000000);
   r.loop({r.hello_request(0x22), r.hello_request(0x33)});
   CHECK(r.take(MSG_HELLO).empty());
   r.run_until(t1 + HELLO_REQUEST_GAP_US - 1);
@@ -1247,6 +1335,7 @@ int main() {
   test_engine_ts_uncertain();
   test_timing_budget();
   test_engine_hello_and_capability();
+  test_engine_capability_hello_rate();
   test_engine_connection();
   test_engine_envelope_checks();
   test_engine_server_restart();

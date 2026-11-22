@@ -18,6 +18,7 @@ namespace esphome::cs_proxy {
 
 static constexpr uint64_t HELLO_INTERVAL_US = 60000000ULL;     // 05 section 5.2
 static constexpr uint64_t HELLO_REQUEST_GAP_US = 5000000ULL;   // 05 section 5.6
+static constexpr uint64_t HELLO_CHANGE_GAP_US = 5000000ULL;    // 05 section 5.2, 06 section 7
 static constexpr uint64_t CONNECT_TIMEOUT_US = 180000000ULL;   // 06 section 9
 static constexpr uint64_t REDISCOVER_AFTER_US = 300000000ULL;  // 06 section 9
 static constexpr uint64_t TS_UNCERTAIN_EXTRA_US = 20000;       // 06 section 7
@@ -137,10 +138,15 @@ class ProxyEngine {
   bool send_(uint8_t type, const std::vector<uint8_t> &body) { return this->send_(type, body.data(), body.size()); }
   bool send_(uint8_t type, const uint8_t *body, size_t body_len);
   void send_tx_result_(uint32_t seq, uint8_t result, int32_t offset_us);
-  void send_hello_();
+  // scheduled: the periodic or requested HELLO. Otherwise it announces a capability
+  // change and leaves the schedule and any pending request alone.
+  void send_hello_(bool scheduled = true);
   void set_connected_(bool connected);
   bool degraded_at_(uint64_t now) const {
     return this->last_stall_us_ != 0 && now - this->last_stall_us_ < DEGRADED_WINDOW_US;
+  }
+  uint8_t caps_at_(uint64_t now) const {
+    return (this->config_.downlink_enabled && !this->degraded_at_(now)) ? CAP_DOWNLINK : 0;
   }
   void log_(LogLevel level, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
@@ -165,6 +171,9 @@ class ProxyEngine {
   uint32_t request_nonce_{0};  // to echo in the next HELLO
   bool requested_hello_sent_{false};
   uint64_t requested_hello_us_{0};
+  uint8_t advertised_caps_{0};  // caps in the last HELLO
+  bool change_hello_sent_{false};
+  uint64_t change_hello_us_{0};
 
   uint64_t last_loop_us_{0};
   // The last two completed gaps between this component's passes, newest first. A
