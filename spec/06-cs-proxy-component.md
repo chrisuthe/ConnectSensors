@@ -1,7 +1,7 @@
 # 06 - `cs_proxy` ESPHome Component
 
 Status: Draft
-Version: 1.0-draft.4
+Version: 1.0-draft.5
 
 This document specifies `cs_proxy`, the ESPHome external component that turns a
 node with a LoRa radio into a ConnectSensors proxy. It covers configuration,
@@ -65,9 +65,9 @@ A complete board example is in section 13.
 | `server.transport` | `udp` or `mqtt` | `udp` | 05 section 2 |
 | `server.host` | hostname or IP | none | Server address for UDP. If omitted, mDNS discovery (05 section 2.1). |
 | `server.port` | int | 47800 | Server UDP port |
-| `server.key` | 32 hex digits | required unless standalone | The proxy key (05 section 4.2) |
+| `server.key` | 32 hex digits | required unless standalone | The proxy key (05 section 4.2). A key of this proxy's own; a shared key requires `downlink.enabled: false`. |
 | `proxy_id` | 16 hex digits | from MAC | Override only when the MAC is not stable |
-| `downlink.enabled` | bool | `true` | Accept `DOWNLINK` messages |
+| `downlink.enabled` | bool | `true` | Accept `DOWNLINK` messages. MUST be `false` with a shared key (05 section 4.2). |
 | `downlink.airtime_budget` | percent | 2% | Transmit budget per rolling hour; MUST NOT exceed 2% (01 section 5) |
 | `dedupe_window` | time | 2 s | 1 s to 3 s (section 6) |
 | `dedupe_cache_size` | int | 64 | 16 to 256 entries |
