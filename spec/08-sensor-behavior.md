@@ -22,7 +22,8 @@ platform. Frames are defined in 02, readings in 03 and pairing in 04.
 | `dev_eui`, `k_root` | Read-only, provisioned | Never by firmware |
 | Uplink counter reservation | Non-volatile | 02 section 8.2 |
 | Pairing state, `k_session`, `k_net_route` | Non-volatile | 04 section 4.6 |
-| Last accepted `fcnt_down` | Non-volatile | On each accepted downlink, or at least before sleeping after one |
+| Root floor: last accepted root downlink counter | Non-volatile | On accepting `KEY_EXCHANGE`, before sending `SYNC` (04 section 4.6). Kept through `LEAVE` and re-pairing; cleared only by a factory reset (02 section 8.4) |
+| Session floor: last accepted session `fcnt_down` | Non-volatile | On each accepted downlink, or at least before sleeping after one. Set to 0 with each new `k_session` |
 | Heartbeat interval | Non-volatile | On `SET_HEARTBEAT` |
 | Settings from application commands | Non-volatile | As the profile defines |
 | Clock | RTC, kept through sleep | Section 3 |
@@ -135,8 +136,8 @@ accepted downlink resets the count to 0.
 | 3 or more | Confirmed heartbeats are attempted at 1, 5, 15 and 60 minutes after the last failure, then every `h`. Normal state-change frames continue as usual. |
 
 A sensor MUST NOT stop transmitting because it has lost contact, and MUST NOT
-forget its pairing because of it. Only `LEAVE` or a factory reset unpairs it
-(04 section 6).
+forget its pairing because of it. Only `LEAVE` or a factory reset (the
+10-second button hold of 04 section 4.5) unpairs it (04 section 6).
 
 ## 7. Receiving downlinks
 
@@ -157,8 +158,8 @@ forget its pairing because of it. Only `LEAVE` or a factory reset unpairs it
 |---|---|
 | `SET_NETWORK` | Store `k_net_route`, switch to normal tags, enter `PAIRED` if pairing (04) |
 | `SET_HEARTBEAT` | Store the new interval; reschedule the next heartbeat from now |
-| `LEAVE` | Erase `k_session` and `k_net_route`, enter `UNPAIRED` (04 section 6.1). The `DL_ACK` for it goes in one final unconfirmed `HEARTBEAT`, sent under the old keys before they are erased. |
-| `KEY_EXCHANGE` | Only valid in `JOINING` (04 section 4.4); ignored in any other state |
+| `LEAVE` | Erase `k_session` and `k_net_route`, enter `UNPAIRED` (04 section 6.1). Keep the root floor and the uplink counter reservation. The `DL_ACK` for it goes in one final unconfirmed `HEARTBEAT`, sent under the old keys before they are erased. |
+| `KEY_EXCHANGE` | Only valid in `JOINING` (04 section 4.4), in a downlink under the root key set whose counter is above the root floor; ignored otherwise |
 | `0x40` (set value) | Apply to a writable channel (03 section 8), then report the new state in the next uplink |
 | `0x41`-`0x7F` | As the device profile defines |
 | Unknown | Skip, using the length byte (02 section 10.3) |
@@ -220,7 +221,7 @@ Devices with an LED SHOULD show:
 | Pairing failed | One long blink |
 | Button press while paired, uplink answered | One quick blink |
 | Button press while paired, no answer | Two long blinks |
-| Factory reset accepted | Solid for 2 seconds |
+| Factory reset done (button held 10 seconds, 04 section 4.5) | Solid for 2 seconds |
 
 Feedback for a button press waits for the answer to the confirmed uplink, so it
 doubles as a range test.
@@ -245,6 +246,13 @@ A sensor implementation MUST pass at least:
 5. A downlink with a wrong `reply_to`, a stale `fcnt_down`, or a bad MIC is
    ignored.
 6. `SET_HEARTBEAT` changes the heartbeat interval, and `LEAVE` unpairs the
-   device without erasing `k_root` or the counter reservation.
+   device without erasing `k_root`, the counter reservation or the root floor.
 7. It never exceeds 1% airtime per hour, even with an input toggling
    continuously.
+8. It reproduces the `root_floor` sequence of `vectors/pairing-v1.json`: after
+   pairing, `LEAVE` and a power cycle, a `KEY_EXCHANGE` whose root counter is at
+   or below the last accepted one is ignored, and a higher one is accepted.
+9. Holding the button for 10 seconds factory-resets it in every pairing state:
+   it erases `k_session`, `k_net_route`, both downlink floors and settings, keeps
+   `k_root` and the uplink counter reservation, and then accepts a
+   `KEY_EXCHANGE` with root counter 1.

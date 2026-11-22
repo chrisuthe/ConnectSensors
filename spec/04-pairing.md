@@ -12,7 +12,8 @@ network key is rotated. The frames involved are defined in 02.
 - One scan and one button press.
 - The pairing code is the only secret a user handles.
 - A sensor paired a second time, for example after being sold, starts a session
-  the previous owner cannot read, even if they kept the code.
+  the previous owner cannot read, even if they kept the code. A factory reset
+  before the new pairing erases the previous owner's keys from the device.
 - Works with no internet connection.
 
 ## 2. Device identity material
@@ -111,12 +112,24 @@ normally completes within 5 seconds.
 | `EXCHANGED` | The server sends `KEY_EXCHANGE` | An uplink with normal tags and `DL_ACK` acknowledges `SET_NETWORK` (`PAIRED`), or 2 minutes pass (back to `SCANNED`, keeping the 10-minute deadline) |
 | `PAIRED` | As above | The device is removed (section 6) |
 
-While a device is `EXCHANGED`, the server MUST also go on accepting a
-retransmitted `JOIN` and answer it with the same `KEY_EXCHANGE` (same
-`server_pub`), because the sensor may not have received the first answer.
+A device has at most one *pending exchange*: the `sensor_pub` of the `JOIN` it
+answers, the `KEY_EXCHANGE` frame the server built for it, and the `k_session`
+derived from it. The server keeps it while the device is `SCANNED` or
+`EXCHANGED`, including after `EXCHANGED` times out back to `SCANNED`, and discards
+it when the device is `PAIRED` or discarded.
 
-A server MUST NOT have more than one pending session per device. A new `JOIN`
-with a different `sensor_pub` replaces the pending exchange.
+- A `JOIN` whose `sensor_pub` equals the pending exchange's is a retransmission,
+  because a sensor never reuses an ephemeral key (02 section 5.3). The server
+  MUST answer it with the cached `KEY_EXCHANGE` frame, byte for byte: same root
+  counter value, same `server_pub`, same `server_time`. It MUST NOT build a new
+  frame, change `k_session` or reset any counter. The sensor may simply not have
+  received the first answer, and resending the same bytes is not nonce reuse. A
+  replayed `JOIN` therefore cannot knock a pairing in progress off its key.
+- A `JOIN` with a different `sensor_pub` replaces the pending exchange with a new
+  one, built with the next root counter value (02 section 8.4).
+
+If the sensor keeps retransmitting a `JOIN` that has been answered, the exchange
+has stalled; the server tells the user what to do (07 section 5.1).
 
 ### 4.3 Sensor states
 
@@ -137,17 +150,22 @@ with a different `sensor_pub` replaces the pending exchange.
    pairing completes.
 2. **JOIN.** The user presses the sensor's pairing button. The sensor generates
    a fresh X25519 key pair, sends `JOIN` (02 section 11.1) under its root key set
-   with bootstrap tags, and enters `JOINING`. It resets its stored last-accepted
-   `fcnt_down` to 0.
+   with bootstrap tags, and enters `JOINING`. It keeps its root floor (02 section
+   8.4): only a factory reset clears it.
 3. **KEY_EXCHANGE.** The server identifies the frame by trying the root key sets
    of `SCANNED` devices (02 section 11.3). It generates its own ephemeral key
-   pair, derives `k_session` (02 section 5.3), resets the device's `fcnt_down`,
-   and answers with a `DOWNLINK` under the root key set, bootstrap tags,
-   `reply_to` = the `JOIN`'s `fcnt`, containing `KEY_EXCHANGE`. It keeps its
-   ephemeral private key only until `k_session` is derived.
-4. **Session.** The sensor accepts the downlink (02 section 10.2), derives
-   `k_session`, erases its ephemeral private key, switches to the session key
-   set, and enters `SESSION`.
+   pair, derives `k_session` (02 section 5.3), and answers with a `DOWNLINK`
+   under the root key set, bootstrap tags, the next value of the device's root
+   downlink counter, `reply_to` = the `JOIN`'s `fcnt`, containing `KEY_EXCHANGE`.
+   It keeps its ephemeral private key only until `k_session` is derived, and the
+   frame and `k_session` as the pending exchange (4.2). The session downlink
+   counter for the new `k_session` starts at 1. A retransmitted `JOIN` is
+   answered as in 4.2.
+4. **Session.** The sensor accepts the downlink (02 section 10.2), which
+   requires its counter to be above the root floor, and stores that counter as
+   the new root floor. It derives `k_session`, erases its ephemeral private key,
+   sets its session floor to 0, switches to the session key set, and enters
+   `SESSION`.
 5. **SYNC.** The sensor sends `SYNC` under the session key set with `DL_ACK` set
    (it accepted a command).
 6. **SET_NETWORK.** The server identifies the `SYNC` by trying the session key
@@ -170,17 +188,34 @@ over with a new key pair.
 - A short press while `UNPAIRED` starts pairing.
 - A short press while `PAIRED` SHOULD send a `DATA_CONFIRMED` with the current
   state, so the user can test range without disturbing anything.
-- A long press (RECOMMENDED: 10 seconds) is a factory reset (section 6.2).
+- Holding the button for 10 seconds is a factory reset (section 6.2), in every
+  state. The sensor MUST carry out the reset when the 10 seconds have passed,
+  while the button is still held, and SHOULD confirm it (08 section 11) so the
+  user knows to let go. A press released earlier is not a reset.
 - A sensor MUST NOT send `JOIN` on its own while `UNPAIRED`, except that it MAY
   send one `JOIN` after its very first power-on, to make out-of-the-box pairing
   one step shorter.
 
+10 seconds is long enough that a short press, a press held while fitting the
+batteries or mounting the device, or a child playing with it does not erase the
+pairing by accident, and short enough to do on purpose without a tool. A device
+whose only button is hard to hold that long MAY use another physical gesture
+(for example holding the button while inserting the batteries), but the reset
+MUST need physical access: no command or frame can trigger it. This section does
+not define a short press in `JOINING` or `SESSION`; whatever it does there, the
+10-second hold takes precedence.
+
 ### 4.6 Persistence
 
-The sensor MUST write `k_session`, `k_net_route` and its state to non-volatile
-storage before sending the uplink in step 7, and MUST NOT write the ephemeral
-private key to non-volatile storage at all. The server MUST persist `k_session`
-and the device record before answering in step 6.
+The sensor MUST write its new root floor to non-volatile storage before sending
+`SYNC` in step 5. It MUST write `k_session`, `k_net_route` and its state to
+non-volatile storage before sending the uplink in step 7, and MUST NOT write the
+ephemeral private key to non-volatile storage at all.
+
+The server MUST persist the root counter reservation (02 section 8.4) and the
+pending exchange (4.2) before sending `KEY_EXCHANGE` in step 3, so that a
+restart cannot make it answer a retransmitted `JOIN` with a different frame. It
+MUST persist `k_session` and the device record before answering in step 6.
 
 ## 5. Proxies during pairing (informative)
 
@@ -204,20 +239,53 @@ When the user removes a device in the server:
    delete it immediately; the sensor then keeps sending frames that nobody reads
    until it is reset.
 
+`LEAVE` does not clear the sensor's root floor, and deleting the record does not
+clear the server's root downlink counter for the device (02 section 8.4), so the
+same server can pair the device again without a factory reset.
+
 ### 6.2 Factory reset on the device
 
-A factory reset erases `k_session`, `k_net_route` and user settings, and returns
-the sensor to `UNPAIRED`. It MUST NOT erase `dev_eui`, `k_root`, or the frame
-counter reservation (02 section 8.2). The old server sees the device go silent
-and raises its supervision alarm (07) until the user removes it.
+A factory reset (the 10-second hold of 4.5) returns the sensor to `UNPAIRED`. It
+MUST erase:
+
+- `k_session`, `k_net_route`, and any ephemeral private key held while `JOINING`;
+- the root floor and the session floor (02 section 8.4);
+- all other pairing state and user settings, such as the heartbeat interval and
+  values set by application commands.
+
+It MUST NOT erase `dev_eui`, `k_root`, or the uplink counter reservation (02
+section 8.2). The old server sees the device go silent and raises its
+supervision alarm (07) until the user removes it.
+
+Erasing the keys is also a privacy property: once reset, the device holds
+nothing of its previous owner's network. In particular `k_net_route` is gone, so
+whoever gets the device next cannot extract it and use it to recognize the
+previous owner's devices by their network tags.
+
+Clearing the root floor is what lets a different server pair the device: its
+root downlink counter starts again at 1 (02 section 8.4). The cost, reuse of root
+nonce values across servers, is accepted in 02 section 13.1.
 
 ### 6.3 Changing owners
 
-The new owner scans the same pairing code and pairs normally. The new session is
+A change of owner REQUIRES a factory reset (6.2) before the new owner pairs the
+device. The reset erases the previous owner's keys (6.2) and clears the root
+floor, without which the sensor would reject the new server's `KEY_EXCHANGE`
+(its root counter starts below the floor). A new server that sees the exchange
+stall prompts the user to do the reset (07 section 5.1). Settings do not carry
+over: the new owner's server or device profile sets them.
+
+The previous owner SHOULD remove the device from their server first (6.1). The
+new owner then scans the same pairing code and pairs normally. The new session is
 independent of the old one. The previous owner, if they still hold the code,
 cannot read the new session passively, but could try to interfere actively
 during the pairing (02 section 13). A new owner who wants to rule that out
 re-flashes the device with a new `k_root` and a new pairing code.
+
+The same applies when the owner's own server loses its state, for example Home
+Assistant reinstalled, or restored from a backup older than the last pairing:
+its root downlink counter has rolled back, and the sensor needs a factory reset
+before it pairs again.
 
 ## 7. Network key rotation
 
@@ -244,7 +312,10 @@ session, the owner re-pairs it.
 | Someone sees the pairing code | They can attempt an active attack during a future pairing, nothing more (02 section 13). Keep the code inside the case. |
 | Someone records the pairing exchange | Without the ephemeral private keys they cannot derive `k_session`, even with `k_root`. |
 | Rogue `JOIN` frames | Only devices in `SCANNED` are tried, so an attacker needs a code the user has just scanned. Bootstrap processing is rate-limited (02 section 11.3). |
-| Replayed `KEY_EXCHANGE` | Rejected by `reply_to` binding (02 section 10.2). |
+| Replayed `KEY_EXCHANGE` | Rejected by `reply_to` binding and the root floor (02 section 10.2). |
+| Nonce reuse under `k_root` | The server's root downlink counter never resets, and a retransmitted `JOIN` gets the identical frame (4.2). Reuse across servers after a factory reset is accepted (02 section 13.1). |
+| Replayed `JOIN` | While the exchange is pending, it draws the identical frame and changes nothing (4.2). Otherwise it is not answered (07 section 4, step 5). |
+| Previous owner's keys on a sold device | Erased by the factory reset a change of owner requires (6.2, 6.3). |
 | Pairing to the wrong network | The user scans a specific code; a sensor only accepts a `KEY_EXCHANGE` answering its own `JOIN` under its own `k_root`. |
 | Ephemeral key left in storage | Forbidden (4.6). |
 
@@ -252,5 +323,13 @@ session, the owner re-pairs it.
 
 - `vectors/pairing-v1.json`: pairing codes that MUST parse, with their fields,
   and codes that MUST be rejected, with the reason.
+- `vectors/pairing-v1.json` (`root_floor`): a sensor's root floor across a
+  re-pairing with the same server, a `KEY_EXCHANGE` from a server whose counter
+  rolled back (discarded), a replayed one (discarded), and a factory reset after
+  which a new server's root downlink 1 is accepted.
+- `vectors/server-v1.json` (`join`): a server answering `JOIN`: retransmissions
+  answered with the identical frame and `k_session`, the stall flagged on the
+  last retry, and new `sensor_pub` values and re-pairing taking the next root
+  counter value.
 - `vectors/frame-v1.json`: the complete pairing exchange from `JOIN` to
   `SET_NETWORK`, with fixed ephemeral keys so the frames are reproducible.

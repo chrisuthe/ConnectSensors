@@ -191,5 +191,100 @@
         "answer": false
       }
     ]
+  },
+  "join": {
+    "stall_retransmissions": 3,
+    "root_fcnt_down_before": 0,
+    "note": "inputs from frame-v1.json",
+    "sequence": [
+      {
+        "event": "join",
+        "join": "c515000000000000000000000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc35d435b8268bda9a",
+        "server_ephemeral_private": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b1",
+        "server_time": 1795226400,
+        "note": "first JOIN: new exchange (frame-v1.json downlink_key_exchange)",
+        "action": "new_exchange",
+        "root_fcnt_down": 1,
+        "frame": "c518000000000000000000000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e5a9ff021ca714c8b3",
+        "k_session": "151466fb0522fa821caffdada6ce9d6c",
+        "stalled": false
+      },
+      {
+        "event": "join",
+        "join": "c515000000000000000000000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc35d435b8268bda9a",
+        "server_ephemeral_private": null,
+        "server_time": null,
+        "note": "retry 1: the cached frame, byte for byte",
+        "action": "resend",
+        "root_fcnt_down": 1,
+        "frame": "c518000000000000000000000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e5a9ff021ca714c8b3",
+        "k_session": "151466fb0522fa821caffdada6ce9d6c",
+        "stalled": false
+      },
+      {
+        "event": "join",
+        "join": "c515000000000000000000000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc35d435b8268bda9a",
+        "server_ephemeral_private": null,
+        "server_time": null,
+        "note": "retry 2",
+        "action": "resend",
+        "root_fcnt_down": 1,
+        "frame": "c518000000000000000000000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e5a9ff021ca714c8b3",
+        "k_session": "151466fb0522fa821caffdada6ce9d6c",
+        "stalled": false
+      },
+      {
+        "event": "join",
+        "join": "c515000000000000000000000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc35d435b8268bda9a",
+        "server_ephemeral_private": null,
+        "server_time": null,
+        "note": "retry 3, the sensor's last: answered, and the exchange is reported stalled",
+        "action": "resend",
+        "root_fcnt_down": 1,
+        "frame": "c518000000000000000000000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e5a9ff021ca714c8b3",
+        "k_session": "151466fb0522fa821caffdada6ce9d6c",
+        "stalled": true
+      },
+      {
+        "event": "join",
+        "join": "c51500000000000000000000000245a16880986cc7254344586adc382e989309d64fd6214cca141af200a8861fc4b6ce80954831eacdbd",
+        "server_ephemeral_private": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "server_time": 1795226520,
+        "note": "button pressed again: new sensor_pub, next root value",
+        "action": "new_exchange",
+        "root_fcnt_down": 2,
+        "frame": "c51800000000000000000000000211975956d4ddd0342e7348be0e15204d1751562c023a70fbd14d7c3c8a88bb254929641317c9c50cce02e52aa7ef81595a15e9",
+        "k_session": "581326f09bdb2cf6d010134eb05c62cb",
+        "stalled": false
+      },
+      {
+        "event": "join",
+        "join": "c51500000000000000000000000245a16880986cc7254344586adc382e989309d64fd6214cca141af200a8861fc4b6ce80954831eacdbd",
+        "server_ephemeral_private": null,
+        "server_time": null,
+        "note": "retry 1 of the new JOIN: same frame, same k_session",
+        "action": "resend",
+        "root_fcnt_down": 2,
+        "frame": "c51800000000000000000000000211975956d4ddd0342e7348be0e15204d1751562c023a70fbd14d7c3c8a88bb254929641317c9c50cce02e52aa7ef81595a15e9",
+        "k_session": "581326f09bdb2cf6d010134eb05c62cb",
+        "stalled": false
+      },
+      {
+        "event": "paired",
+        "note": "SET_NETWORK acknowledged: device PAIRED"
+      },
+      {
+        "event": "join",
+        "join": "c51500000000000000000000004218c24185d62f7c4a7ab165e483781a92f96f9748d4006e88d048d37924dee81f1798ce73d6d6504ad1",
+        "server_ephemeral_private": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+        "server_time": 1795312800,
+        "note": "re-paired a day later: the root counter continues",
+        "action": "new_exchange",
+        "root_fcnt_down": 3,
+        "frame": "c51800000000000000000000000349950d0f08dfc9f528a9365cadd93066aad5279417e90568a2f2a3cf46612733d20c3b47aef4e3ae625f6888e55b5e9fea47e7",
+        "k_session": "3c662b7ee0c95d64fd060bdb490ec2c3",
+        "stalled": false
+      }
+    ]
   }
 }

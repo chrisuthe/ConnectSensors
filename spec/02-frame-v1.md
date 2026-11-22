@@ -209,15 +209,39 @@ therefore tell transmissions apart by time, not by bytes: copies received within
 is a retransmission that MUST reach the server and be answered again (section
 8.5).
 
-### 8.4 Downlink counter
+### 8.4 Downlink counters
 
-- The server keeps a downlink counter `fcnt_down` per device, starting at 1 after
-  pairing and increasing by one per downlink frame it builds.
-- The server MUST persist it with the same reservation scheme as 8.2.
-- A sensor MUST discard a downlink whose `fcnt_down` is not greater than the last
-  one it accepted since its last `JOIN`.
-- A sensor resets its stored last-accepted `fcnt_down` to 0 when it sends `JOIN`,
-  and the server resets the device's `fcnt_down` when it accepts a `JOIN`.
+Downlinks under the root key set and under the session key set have separate
+counters, because a counter only has to be unique per key.
+
+**Root downlink counter.** The server keeps a root downlink counter per device
+(`dev_eui`) for the `DOWNLINK` frames that answer `JOIN`.
+
+- It starts at 1 for the first `KEY_EXCHANGE` the server ever builds for the
+  device and increases by one for each new one.
+- The server MUST NOT reset it: not on `JOIN`, not when re-pairing, not when the
+  device is removed or discarded. It MUST keep it, with the same reservation
+  scheme as 8.2, for as long as it may pair the device again (07 section 2.2).
+- A `KEY_EXCHANGE` resent for a retransmitted `JOIN` is the identical frame and
+  does not use a new value (04 section 4.2).
+
+**Session downlink counter.** The server keeps a downlink counter `fcnt_down` per
+`k_session`. It starts at 1 for the first downlink under a new `k_session`,
+increases by one per downlink frame it builds, and is persisted with the same
+reservation scheme as 8.2. A new `k_session` is a new key, so its counter starts
+again at 1.
+
+**Sensor floors.** A sensor keeps, in non-volatile storage, the last accepted
+counter value for each key set:
+
+- the *root floor*, for downlinks under the root key set. It survives `JOIN`,
+  pairing, `LEAVE` and re-pairing. Only a factory reset sets it back to 0 (04
+  section 6.2).
+- the *session floor*, for downlinks under the session key set. The sensor sets
+  it to 0 when it derives a new `k_session` (04 section 4.4, step 4).
+
+A sensor MUST discard a downlink whose counter is not greater than the floor of
+the key set it was sent under.
 
 ### 8.5 Server acceptance of uplinks
 
@@ -276,7 +300,7 @@ A sensor MUST accept a downlink only if all of the following hold:
 1. It arrived in an RX window of the sensor's most recent uplink.
 2. The MIC verifies.
 3. `reply_to` equals the `fcnt` of that most recent uplink.
-4. `fcnt_down` is greater than the last accepted one (8.4).
+4. Its counter is greater than the floor for its key set (8.4).
 
 Binding every downlink to the uplink it answers means old downlinks cannot be
 replayed, even into a sensor that has just been reset.
@@ -347,7 +371,8 @@ which the sensor uses normal tags again.
 ### 11.3 Server identification of bootstrap frames
 
 - For `JOIN`: the server tries the root key set of each device that is waiting to
-  be paired (scanned but not yet joined).
+  be paired (`SCANNED`, or `EXCHANGED` for a retransmitted `JOIN`, 04 section
+  4.2).
 - For `SYNC`: the server tries the session key set of each device that is paired
   or in the middle of pairing.
 - The server MUST limit how many bootstrap frames it processes per minute, so
@@ -385,15 +410,40 @@ types work without proxy updates.
 | Forged frames | AES-CCM with a 64-bit tag and a per-device key |
 | Replay of uplinks | Counter rules in 8.5 |
 | Replay of downlinks | `reply_to` binding and downlink counter (10.2) |
-| Nonce reuse | Counters never repeat (8.1, 8.2); direction byte separates uplink and downlink |
+| Nonce reuse | Counters never repeat (8.1, 8.2, 8.4); direction byte separates uplink and downlink. One residual case is accepted: see 13.1 |
 | Tracking a device over time | Hourly tags; `dev_eui` never in the clear |
 | Linking via counter values | Not addressed in v1. `fcnt` is in the clear and increases steadily, so an observer can link a device's frames across epochs by counter continuity. A future version may mask it. |
 | Key compromise | Per device. A leaked pairing code lets an attacker who is present during a future pairing interfere with it, but does not reveal any past or future session that it did not take part in (5.3). |
-| Second-hand devices | A previous owner who kept the pairing code cannot read traffic after the device is paired again. They can attempt an active attack during that pairing; owners who need protection from that should re-flash `k_root`. |
+| Second-hand devices | A change of owner requires a factory reset (04 section 6.3), which also erases the previous owner's keys. A previous owner who kept the pairing code cannot read traffic after the device is paired again. They can attempt an active attack during that pairing; owners who need protection from that should re-flash `k_root`. |
 | Proxy dropping frames | Out of scope for the frame format; handled by path diversity and supervision (07) |
 
 The 64-bit MIC gives a forgery probability of 2^-64 per attempt, which is far
 below what LoRa airtime allows an attacker to try.
+
+### 13.1 Root nonce reuse after a factory reset
+
+One server never encrypts two different plaintexts under the same root key and
+nonce: its root downlink counter never resets (8.4), and a retransmitted `JOIN`
+gets the identical frame back (04 section 4.2). Two servers do not share a
+counter, though. After a factory reset the sensor's root floor is 0, and a new
+owner's server, or a server that lost its counter (reinstalled, or restored from
+an old backup), starts again at low values that an earlier server may already
+have used under the same `k_root`. The uplink counter is not affected, because it
+survives a factory reset (8.2).
+
+This residual reuse is accepted:
+
+- Only `KEY_EXCHANGE` frames are ever sent under the root key set (11.1). Two of
+  them under one nonce reveal the XOR of their plaintexts: `reply_to`,
+  `server_time`, `dflags` and a server ephemeral public key. None of these is
+  secret. The security of `k_session` rests on the ephemeral private keys, which
+  never leave either side (5.3).
+- Knowing the keystream for a nonce does not let an attacker forge a frame: the
+  CCM tag is a CBC-MAC under `k_enc`, and a forged `KEY_EXCHANGE` would also have
+  to answer the sensor's current `JOIN` (10.2) and exceed its root floor.
+- The only party that can make a server reuse values is one that already holds
+  `k_root`, such as a previous owner, and they can already attempt an active
+  attack on a pairing (13).
 
 ## 14. Test vectors
 
@@ -401,6 +451,8 @@ below what LoRa airtime allows an attacker to try.
 tags for three epochs, and eight frames covering the whole pairing sequence
 (`JOIN`, `KEY_EXCHANGE`, `SYNC`, `SET_NETWORK`), then `DATA_CONFIRMED` with
 `DL_ACK`, a plain acknowledgement, `HEARTBEAT`, and a `SYNC` after a reboot.
+`KEY_EXCHANGE` is root downlink 1; `SET_NETWORK` and the acknowledgement are
+session downlinks 1 and 2 (8.4).
 
 Inputs:
 
