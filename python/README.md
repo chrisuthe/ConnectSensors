@@ -59,9 +59,9 @@ gets the cached answer back byte for byte. Call `paired()` once SET_NETWORK is
 acknowledged.
 
 The cached answer is `pending`, a `PendingExchange` (`sensor_pub`, `frame`,
-`k_session`, `retransmissions`, `sent`), or `None`. Persist it after every `join()`,
-and before sending a new exchange's frame (04 section 4.6, 07 section 10), and pass
-it back as `pending=` after a restart. `to_dict()` and
+`k_session`, `retransmissions`, `sent`), or `None`. Persist it whenever `join()` or
+`sent()` changes it, and a new exchange's before sending its frame (04 section 4.6,
+07 section 10), and pass it back as `pending=` after a restart. `to_dict()` and
 `PendingExchange.from_dict(d)` convert it to and from JSON-safe values; `k_session`
 is in there, so store it as a secret.
 
