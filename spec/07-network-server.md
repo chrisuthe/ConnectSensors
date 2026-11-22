@@ -144,7 +144,8 @@ the reception history.
 | Margin before RX1 | over 700 ms |
 
 A `DOWNLINK` for RX1 MUST be sent no later than 800 ms after the first copy of the
-uplink arrived. Later than that, the server uses RX2.
+uplink arrived. Later than that, the server uses RX2 if the uplink is confirmed,
+and otherwise does not answer it (section 6.3).
 
 ### 4.3 Reception time
 
@@ -184,7 +185,8 @@ The server sends a downlink in reply to an uplink when any of these hold:
   skew.
 
 It does not answer unconfirmed uplinks otherwise. Sensors open RX1 after every
-uplink (01 section 4), so commands and clock corrections can ride on any uplink.
+uplink (01 section 4), so commands and clock corrections can ride on any uplink,
+in RX1; only confirmed uplinks get RX2 (section 6.3).
 
 The downlink:
 
@@ -257,14 +259,20 @@ RSSI, then the proxy with fewer recent failures.
 
 ### 6.3 RX2 and fallback
 
-- If no candidate qualifies for RX1, or the 800 ms deadline has passed, the server
-  uses RX2 (`tx_offset_us` = 3 000 000) with the best candidate by SNR, now
-  including `TS_UNCERTAIN` receptions.
-- If the RX1 proxy answers `TX_RESULT` with anything but `SENT`, the server sends
-  the same downlink for RX2 through the next best candidate, or through the same
-  proxy if it is the only one.
-- If both fail, the server does nothing more. The sensor retries confirmed
-  uplinks itself (08 section 5), and commands stay queued.
+RX2 is only for answers to confirmed uplinks: sensors open it only after a
+confirmed uplink that RX1 did not answer (08 section 7).
+
+- If the uplink is confirmed and no candidate qualifies for RX1, or the 800 ms
+  deadline has passed, the server uses RX2 (`tx_offset_us` = 3 000 000) with the
+  best candidate by SNR, now including `TS_UNCERTAIN` receptions.
+- If the uplink is confirmed and the RX1 proxy answers `TX_RESULT` with anything
+  but `SENT`, the server sends the same downlink for RX2 through the next best
+  candidate, or through the same proxy if it is the only one.
+- The server MUST NOT use RX2 to answer an unconfirmed uplink. If RX1 is not
+  possible or fails, it sends nothing; commands stay queued and a clock correction
+  waits for the next uplink.
+- If both windows fail, the server does nothing more. The sensor retries
+  confirmed uplinks itself (08 section 5), and commands stay queued.
 - The server MUST NOT ask more than one proxy to transmit in the same window.
 
 ### 6.4 Rebuilding a downlink

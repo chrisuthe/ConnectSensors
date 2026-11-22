@@ -182,8 +182,8 @@ first bytes ("buckets"), so a relay sees only that the subscriber is interested 
 
 ### 6.3 Federated downlinks
 
-When a subscriber decides to answer an uplink (07 section 5) and no local proxy
-can transmit:
+When a subscriber decides to answer a confirmed uplink (07 section 5) and no
+local proxy can transmit:
 
 1. It considers receptions from events carrying `["dl", "1"]`.
 2. It skips any that cannot make RX2: the uplink was first received
@@ -192,7 +192,8 @@ can transmit:
    downlink if more than 2000 ms have already passed.
 3. It picks the reception with the best SNR and sends a downlink request to that
    publisher, on the relays where it received the uplink.
-4. It never requests RX1 through federation.
+4. It never requests RX1 through federation, so it never requests a downlink
+   for an unconfirmed uplink (07 section 6.3).
 5. It sends at most one request per transmission (07 section 4, step 3).
 
 ## 7. Publisher handling of downlink requests
