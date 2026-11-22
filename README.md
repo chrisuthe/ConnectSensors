@@ -16,10 +16,12 @@ Early development: the spec is a draft and nothing is ready for real deployments
   state changes and deep-sleeps. It builds for nRF52; hardware testing is next
   ([#38](https://github.com/chrisuthe/ConnectSensors/issues/38)).
 - **Network server:** the Home Assistant integration
-  ([connect-sensors-ha](https://github.com/chrisuthe/connect-sensors-ha), via HACS)
-  works on the bench rig. It connects proxies, pairs sensors and shows their
-  readings as entities. Commands, supervision and choosing between proxies come
-  next. `devtools/cs_testserver.py` remains for development.
+  ([connect-sensors-ha](https://github.com/chrisuthe/connect-sensors-ha)),
+  [0.1.0](https://github.com/chrisuthe/connect-sensors-ha/releases/tag/v0.1.0) on
+  HACS as a custom repository. It pairs sensors and turns their readings into
+  entities. It also chooses between proxies, supervises devices, sends commands and
+  raises repairs. Tested on the bench rig. `devtools/cs_testserver.py` remains for
+  development.
 - **Python package:** [`connectsensors`](https://pypi.org/project/connectsensors/)
   on PyPI, the reference implementation packaged for network servers.
 - **Not implemented:** federation and relays, EU868, MQTT transport.
