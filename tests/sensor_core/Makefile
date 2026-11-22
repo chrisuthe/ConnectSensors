@@ -19,6 +19,14 @@ shared-copy:
 	  sed 's/cs_proxy/cs_sensor/g' $(PROXY)/$$f | diff -u - <(grep -v '^// Copy of' $(COMPONENT)/$$f) \
 	    || { echo "$(COMPONENT)/$$f has drifted from $(PROXY)/$$f"; exit 1; }; \
 	done
+	@# So are the region tables: ESPHome loads only listed components, so neither can import the other.
+	@for t in REGIONS PENDING_REGIONS; do \
+	  a=$$(sed -n "/^$$t = {/,/^}/p" $(PROXY)/__init__.py); \
+	  b=$$(sed -n "/^$$t = {/,/^}/p" $(COMPONENT)/__init__.py); \
+	  [ -n "$$a" ] || { echo "no $$t table in $(PROXY)/__init__.py"; exit 1; }; \
+	  diff -u <(echo "$$a") <(echo "$$b") \
+	    || { echo "$$t in $(COMPONENT)/__init__.py has drifted from $(PROXY)/__init__.py"; exit 1; }; \
+	done
 
 run: test_core shared-copy
 	./test_core
