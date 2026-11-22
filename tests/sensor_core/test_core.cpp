@@ -1,5 +1,6 @@
 // Host unit tests for the cs_sensor core. Build and run with:  make -C tests/sensor_core
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -1486,6 +1487,74 @@ static void test_airtime_window_is_an_hour() {
   CHECK(rig.radio.sent.size() >= 2);
 }
 
+// ---------------------------------------------------------------- reported readings
+
+static void test_reading_first_value_after_boot() {
+  // #48: a reading with no value at boot is not in the boot uplink, so its first
+  // value is reported when it comes, confirmed if the reading is.
+  const uint64_t t0 = 5 * S;
+  ReportedReading door;  // a template binary sensor with no state yet
+  door.confirmed = true;
+  ReportedReading temp;  // has a value at boot
+  temp.scale = 100;
+  temp.min_interval_ms = 60000;
+  temp.has_value = true;
+  temp.value = 21.5f;
+  ReportedReading battery;  // heartbeats only
+  battery.delta = -1;
+  battery.has_value = true;
+  battery.value = 90;
+  for (auto *r : {&door, &temp, &battery})
+    r->boot(t0);
+  CHECK(!door.due(t0) && !temp.due(t0) && !battery.due(t0));
+  CHECK(temp.has_sent && !door.has_sent);
+
+  // 15 s after boot the door opens: due at once (min_interval 0) and confirmed.
+  const uint64_t t1 = t0 + 15 * S;
+  door.has_value = true;
+  door.value = 1;
+  CHECK(door.changed() && door.due(t1) && door.confirmed);
+  CHECK(!temp.due(t1) && !battery.due(t1));
+  // The glue queues one frame carrying every value.
+  door.sent_us = t1;
+  for (auto *r : {&door, &temp, &battery})
+    r->carried();
+  CHECK(!door.due(t1) && door.has_sent && door.sent == 1);
+
+  // The close after it is a change like any other.
+  door.value = 0;
+  CHECK(door.due(t1 + 2 * S));
+
+  // A first value is subject to min_interval, counted from boot.
+  ReportedReading slow;
+  slow.min_interval_ms = 30000;
+  slow.boot(t0);
+  slow.has_value = true;
+  slow.value = 7;
+  CHECK(slow.changed() && !slow.due(t0 + 10 * S) && slow.due(t0 + 30 * S));
+  CHECK(slow.due_at_us() == t0 + 30 * S);
+
+  // A heartbeats-only reading never causes a frame, even its first value.
+  ReportedReading volts;
+  volts.delta = -1;
+  volts.boot(t0);
+  volts.has_value = true;
+  volts.value = 3.7f;
+  CHECK(!volts.changed() && !volts.due(t0 + MIN));
+
+  // Unknown (NaN) to known is a change; one wire step is one with delta 0.
+  temp.value = NAN;
+  CHECK(temp.changed());
+  temp.carried();
+  temp.value = 21.0f;
+  CHECK(temp.changed());
+  temp.carried();
+  temp.value = 21.004f;
+  CHECK(!temp.changed());
+  temp.value = 21.01f;
+  CHECK(temp.changed());
+}
+
 int main() {
   test_crypto();
   test_frame_vectors();
@@ -1518,6 +1587,7 @@ int main() {
   test_airtime_window_is_an_hour();
   test_deep_sleep_resume();
   test_deep_sleep_unpaired_and_lost_session();
+  test_reading_first_value_after_boot();
   std::printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

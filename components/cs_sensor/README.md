@@ -155,11 +155,16 @@ floor until before it sleeps, as 08 section 2 allows; the core does not yet.
 
 The core needs a CSPRNG for its ephemeral X25519 keys and retry jitter. ESP-IDF's
 RNG is only pseudo-random unless Wi-Fi or Bluetooth is running, which a battery
-sensor does not do. So, in its constructor, before any component sets up the
-ADC, the component takes a 32-byte seed from the SAR ADC noise source
-(`bootloader_random_enable()`). Each request then hashes the seed, a counter and
-fresh `esp_fill_random()` output with SHA-256, and the seed is ratcheted forward.
-`rand()` is never used.
+sensor does not do. So, in `setup()`, the component takes a 32-byte seed from
+the SAR ADC noise source (`bootloader_random_enable()`). Each request then hashes
+the seed, a counter and fresh `esp_fill_random()` output with SHA-256, and the
+seed is ratcheted forward. `rand()` is never used.
+
+The noise source takes over the ADC and powers it down afterwards, and ESP-IDF
+requires it to be done before the ADC driver is set up. So `cs_sensor` sets up
+just before ADC sensors (setup priority `DATA + 1`), and its `loop()` uses the
+radio only once the radio has set up. On nRF52, `random_bytes()` is a hardware
+TRNG and needs no seed.
 
 ## Protocol core
 
@@ -176,6 +181,7 @@ dependency, which the component wraps.
 | `cs_crypto.h/.cpp` | AES-128, AES-128-CCM with an 8-byte tag, HKDF-SHA256 |
 | `cs_x25519.h/.cpp` | X25519 |
 | `cs_sha256.h/.cpp` | SHA-256 and HMAC-SHA256, copied from `cs_proxy` |
+| `cs_clock.h` | The 64-bit microsecond clock, per platform, copied from `cs_proxy` |
 
 Tests: [`tests/sensor_core`](../../tests/sensor_core), run with
 `make -C tests/sensor_core`. They build with plain `g++` under ASan and UBSan.
@@ -223,6 +229,17 @@ The application sets state readings with `set_state()`, asks for a frame with
 `report()` and sends events (a button press) with `send_event()`. The pairing
 button maps to `short_press()` and, after a 10-second hold, `factory_reset()`.
 `on_set_value`, `on_command` and `on_event` call back into the application.
+
+`ReportedReading` decides when a reading's new value is worth a frame: a change
+beyond its `delta` or of one wire step, after its `min_interval`. The boot uplink
+carries the values present at boot; a value that first arrives later is reported
+like a change.
+
+The ESPHome component disables its `loop()` when idle. Reading, button and radio
+callbacks re-enable it, and a `set_timeout` wakes it for `next_wake_us()`, a
+reading's `min_interval`, the 10-second button hold and the end of the pairing
+window. It stays enabled while `hold()` is true, since the core then needs
+frequent passes.
 
 ## Crypto provenance
 

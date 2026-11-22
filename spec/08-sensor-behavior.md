@@ -73,6 +73,9 @@ normally covers it.
   (03 section 5); other changes MAY use `DATA`.
 - A frame for a state change SHOULD carry the current value of every state
   reading, not just the one that changed, when they fit.
+- A state reading whose first value since boot arrives after the boot uplink went
+  out (a slow input, or one with no state yet) MUST be sent as a state change:
+  the server has not seen it.
 
 ### 4.2 Heartbeats
 
@@ -263,3 +266,6 @@ A sensor implementation MUST pass at least:
    it erases `k_session`, `k_net_route`, both downlink floors and settings, keeps
    `k_root` and the uplink counter reservation, and then accepts a
    `KEY_EXCHANGE` with root counter 1.
+10. A state reading that has no value when the boot uplink goes out is sent in a
+    state-change frame when its first value arrives, confirmed if the reading's
+    changes are confirmed.

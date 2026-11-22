@@ -24,9 +24,9 @@
 #include "esphome/components/deep_sleep/deep_sleep_component.h"
 #endif
 
+#include "cs_clock.h"
 #include "sensor_core.h"
 
-#include <esp_timer.h>
 #include <memory>
 #include <vector>
 
@@ -83,7 +83,7 @@ class PreferenceStorage : public Storage {
   Slot slots_[8];
 };
 
-// The platform RNG, mixed through SHA-256 with a seed taken at boot from an
+// The platform RNG, mixed through SHA-256 with a seed taken in setup() from an
 // entropy source that does not need the RF subsystem (see the README).
 class PlatformRandom : public Random {
  public:
@@ -108,12 +108,13 @@ class CSSensor : public Component
 #endif
 {
  public:
-  CSSensor();
   void setup() override;
   void loop() override;
   void dump_config() override;
-  // After the radio (PROCESSOR) and the sensors whose readings it sends.
-  float get_setup_priority() const override { return setup_priority::PROCESSOR - 1.0f; }
+  // Before ADC sensors (DATA): on ESP32 the entropy seed borrows the SAR ADC, which
+  // ESP-IDF requires before the ADC driver is set up. The radio (PROCESSOR) sets up
+  // later, so loop() waits for it before using it.
+  float get_setup_priority() const override { return setup_priority::DATA + 1.0f; }
 
   void on_packet(const std::vector<uint8_t> &packet, float rssi, float snr) override;
 #ifdef USE_CS_SENSOR_SX126X
@@ -168,34 +169,25 @@ class CSSensor : public Component
  protected:
   friend class PlatformRadio;
 
-  struct ReadingSource {
+  // The report decisions and what the server last saw are in ReportedReading (kept
+  // through deep sleep).
+  struct ReadingSource : ReportedReading {
     sensor::Sensor *sensor{nullptr};
     binary_sensor::BinarySensor *binary{nullptr};
     uint8_t channel{0};
     uint8_t kind{0};
-    float scale{1};
-    bool confirmed{false};
-    uint32_t min_interval_ms{0};
-    float delta{0};
-    // Latest value from the ESPHome entity, and whether loop() has taken it yet.
-    bool has_value{false};
+    // loop() has not taken the latest value yet.
     bool fresh{false};
-    float value{NAN};
-    // What the server last saw from this reading (kept through deep sleep).
-    bool has_sent{false};
-    float sent{NAN};
-    uint64_t sent_us{0};
   };
 
   bool make_reading_(const ReadingSource &src, Reading &out) const;
-  bool changed_(const ReadingSource &src) const;
   void take_readings_(uint64_t now);
   void handle_button_(uint64_t now);
   void tx_complete_(bool ok);
   void on_event_(SensorEvent e);
   void publish_diagnostics_();
-  void arm_timer_(uint64_t wake_us);
-  static void timer_cb_(void *arg);
+  Component *radio_component_() const;
+  void schedule_wake_(uint64_t wake_us);
   uint64_t glue_wake_us_() const;
   bool readings_ready_() const;
   void maybe_sleep_(uint64_t now);
@@ -224,7 +216,8 @@ class CSSensor : public Component
   PreferenceStorage storage_;
   PlatformRandom random_;
   std::unique_ptr<SensorCore> core_;
-  esp_timer_handle_t timer_{nullptr};
+  bool wake_pending_{false};
+  uint64_t wake_at_{0};
 
   std::vector<ReadingSource> readings_;
   binary_sensor::BinarySensor *button_{nullptr};
@@ -234,6 +227,7 @@ class CSSensor : public Component
   uint64_t button_down_us_{0};
 
   uint64_t started_us_{0};
+  bool radio_up_{false};
   bool running_{false};
   bool warm_{false};
   float last_rssi_{NAN};

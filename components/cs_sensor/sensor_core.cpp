@@ -4,6 +4,7 @@
 #include "cs_sha256.h"
 #include "cs_x25519.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -229,6 +230,18 @@ bool decode_readings(const uint8_t *data, size_t len, const std::function<void(c
     i += size;
   }
   return true;
+}
+
+bool ReportedReading::changed() const {
+  if (!this->has_value || this->delta < 0)
+    return false;
+  if (!this->has_sent)
+    return true;
+  if (std::isnan(this->value) || std::isnan(this->sent))
+    return std::isnan(this->value) != std::isnan(this->sent);
+  if (this->delta == 0)  // any change the wire can show
+    return std::round(this->value * this->scale) != std::round(this->sent * this->scale);
+  return std::fabs(this->value - this->sent) >= this->delta;
 }
 
 // ---------------------------------------------------------------- pairing code (04 section 3)
