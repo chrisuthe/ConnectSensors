@@ -169,6 +169,15 @@ def main() -> int:
         m, res = proxy.recv()
         check(m["type"] == cs.M_SERVER_STATUS and res == "accepted" and hello_seq_of(m) == proxy.seq,
               "periodic HELLO answered with SERVER_STATUS echoing it")
+
+        # A TX_RESULT's offset_us must not leak into later downlinks: it once
+        # overwrote the RX1 offset, so every downlink after the first went out early.
+        time.sleep(max(0.0, sent_at + 9.0 - time.monotonic()))
+        proxy.send(cs.M_UPLINK, up)
+        m, res = proxy.recv()
+        body = bytes.fromhex(m["body"])
+        check(m["type"] == cs.M_DOWNLINK and struct.unpack(">QIB", body[:13])[1] == 1_000_000,
+              "downlink after a TX_RESULT still targets RX1")
         time.sleep(0.5)
         out = stop_server(srv)
 

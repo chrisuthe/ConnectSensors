@@ -360,9 +360,9 @@ def main() -> int:
                 log(f"{pid.hex()} -> DOWNLINK seq {p.link.seq} answering fcnt {h.fcnt} in {args.window}")
 
         elif m["type"] == cs.M_TX_RESULT:
-            seq, result, offset = struct.unpack(">IBi", body)
+            seq, result, tx_offset = struct.unpack(">IBi", body)
             log(f"{pid.hex()} TX_RESULT seq {seq}: {TX_RESULTS.get(result, result)}, "
-                f"{offset / 1000:.1f} ms after target")
+                f"{tx_offset / 1000:.1f} ms after target")
         else:
             log(f"{pid.hex()} message type 0x{m['type']:02x} ignored")
 
