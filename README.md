@@ -8,15 +8,20 @@ relays.
 
 ## Status
 
-Early development: the spec is a draft and there are no releases.
+Early development: the spec is a draft and nothing is ready for real deployments yet.
 
 - **Proxy (`cs_proxy`):** working on a Heltec V3 bench rig. It forwards uplinks,
   sends downlinks on time, and recovers from server restarts.
 - **Sensor (`cs_sensor`):** working on ESP32 (Heltec V3). It pairs, sends confirmed
   state changes and deep-sleeps. It builds for nRF52; hardware testing is next
   ([#38](https://github.com/chrisuthe/ConnectSensors/issues/38)).
-- **Network server:** only the development server (`devtools/cs_testserver.py`).
-  The Home Assistant integration isn't started.
+- **Network server:** the Home Assistant integration
+  ([connect-sensors-ha](https://github.com/chrisuthe/connect-sensors-ha), via HACS)
+  works on the bench rig. It connects proxies, pairs sensors and shows their
+  readings as entities. Commands, supervision and choosing between proxies come
+  next. `devtools/cs_testserver.py` remains for development.
+- **Python package:** [`connectsensors`](https://pypi.org/project/connectsensors/)
+  on PyPI, the reference implementation packaged for network servers.
 - **Not implemented:** federation and relays, EU868, MQTT transport.
 - **Requires ESPHome 2026.12**, which means the `dev` branch until it's released.
 
