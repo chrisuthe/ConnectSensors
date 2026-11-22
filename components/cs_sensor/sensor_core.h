@@ -253,6 +253,35 @@ constexpr uint32_t COUNTER_BLOCK = 64;
 constexpr size_t STATE_SLOTS = 16;
 constexpr size_t EVENT_SLOTS = 4;
 
+// The RAM state of an idle core, kept across a deep sleep (in RTC memory on ESP32)
+// so that a wake carries on instead of booting: no new counter block, no boot
+// uplink, no TIME_UNSURE, and the heartbeat schedule continues. Keys and anything
+// else in Storage are loaded again, not copied. Plain bytes: the platform stores it
+// as it is, and resume() rejects it if the check or the stored state disagrees.
+struct WarmState {
+  uint32_t magic;
+  uint16_t version;
+  uint16_t size;
+  uint64_t saved_us;
+  uint64_t last_answered_us;
+  uint64_t last_confirmed_sent_us;
+  uint64_t last_full_state_us;
+  uint64_t next_hb_us;
+  uint64_t tx_blocked_until_us;
+  uint64_t air_minute;
+  uint32_t air_buckets[61];
+  uint32_t next_fcnt;
+  uint32_t reserved;
+  uint8_t state;
+  uint8_t flags;
+  uint8_t undelivered;
+  uint8_t pending_hb_count;
+  uint8_t state_count;
+  uint8_t pad[3];
+  Reading state_readings[STATE_SLOTS];
+  uint32_t check;
+};
+
 class SensorCore {
  public:
   SensorCore(const SensorConfig &config, Clock &clock, Radio &radio, Storage &storage, Random &random);
@@ -266,6 +295,12 @@ class SensorCore {
   // Loads stored state and reserves a counter block (08 section 9). Call once after
   // a power-on or reset, after setting the initial state readings.
   void begin();
+  // Deep sleep. suspend() snapshots an idle core and is false while hold() is true.
+  // After the wake, resume() takes the place of begin(); it is false, and the caller
+  // must call begin() instead, if the snapshot is invalid, does not match storage,
+  // or the monotonic clock did not carry on through the sleep.
+  bool suspend(WarmState &out) const;
+  bool resume(const WarmState &in);
   // Drives timers and windows; call often while hold() is true.
   void loop();
   // From the radio.
@@ -326,6 +361,7 @@ class SensorCore {
   void emit_(SensorEvent e);
   bool immediate_work_() const;
   void load_();
+  void load_stored_();
   bool reserve_(uint32_t fcnt);
   bool alloc_fcnt_(uint32_t &out);
   bool save_u32_(Blob id, uint32_t v);

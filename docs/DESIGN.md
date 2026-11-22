@@ -291,7 +291,9 @@ ESPHome supports with an SX126x or SX127x radio, mains or battery. A sensor is
 built in YAML like a proxy; battery operation is ESPHome's `deep_sleep`. The
 protocol lives in `sensor_core`, an ESPHome-free library host-tested against the
 spec vectors (`components/cs_sensor/`), with its crypto in the component so
-ESP32 and nRF52 run identical code. The ESPHome glue is the next step.
+ESP32 and nRF52 run identical code. The ESPHome glue runs on ESP32 first; on
+ESP32 a deep-sleep wake keeps the core's state in RTC memory and is not a boot
+(08 section 9).
 
 ESPHome on nRF52 is feasible: on ESPHome `dev`, a probe for the Seeed XIAO
 nRF52840 with SPI, `sx126x` on the US915 profile, `deep_sleep` and a GPIO binary

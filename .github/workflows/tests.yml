@@ -113,6 +113,10 @@ jobs:
             config: examples/test-transmitter-heltec-v3.yaml
           - name: proxy-sx127x
             config: tests/esphome/proxy-sx127x.yaml
+          - name: sensor-heltec-v3
+            config: examples/sensor-heltec-v3.yaml
+          - name: sensor-heltec-v3-deep-sleep
+            config: examples/sensor-heltec-v3-deep-sleep.yaml
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

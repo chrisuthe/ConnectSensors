@@ -178,6 +178,13 @@ Commands are idempotent, so a repeated one is applied again without harm.
 4. Continue normally once that confirmed uplink is answered, or after its
    retries (section 5) and the contact-loss rules (section 6).
 
+A wake from sleep is not a boot if the sensor kept its working state through the
+sleep (in retained RAM, or a snapshot of it) along with a monotonic clock and its
+RTC. Such a sensor goes on using the counter block it had reserved, keeps its
+heartbeat schedule and the validity of its clock (section 3.1), and sends no boot
+uplink. This is safe because the stored reservation is always ahead of every
+counter used. A wake that lost any of these is a boot.
+
 ## 10. Power (informative)
 
 ### 10.1 Design notes

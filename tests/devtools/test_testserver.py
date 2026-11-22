@@ -9,6 +9,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.dont_write_bytecode = True
@@ -168,6 +169,15 @@ def main() -> int:
         m, res = proxy.recv()
         check(m["type"] == cs.M_SERVER_STATUS and res == "accepted" and hello_seq_of(m) == proxy.seq,
               "periodic HELLO answered with SERVER_STATUS echoing it")
+
+        # A TX_RESULT's offset_us must not leak into later downlinks: it once
+        # overwrote the RX1 offset, so every downlink after the first went out early.
+        time.sleep(max(0.0, sent_at + 9.0 - time.monotonic()))
+        proxy.send(cs.M_UPLINK, up)
+        m, res = proxy.recv()
+        body = bytes.fromhex(m["body"])
+        check(m["type"] == cs.M_DOWNLINK and struct.unpack(">QIB", body[:13])[1] == 1_000_000,
+              "downlink after a TX_RESULT still targets RX1")
         time.sleep(0.5)
         out = stop_server(srv)
 
@@ -222,5 +232,129 @@ def main() -> int:
     return 1 if failures else 0
 
 
+# A real sensor, registered by its pairing code, pairs through a simulated proxy
+# (04 section 4.4) and its traffic is answered, across a server restart with --state.
+SENSOR_EUI = bytes.fromhex("c5c5000000000042")
+SENSOR_ROOT = bytes.fromhex("0f0e0d0c0b0a09080706050403020100")
+OTHER = "c5c5000000000043:" + "11" * 16
+PAIR_BOOT = 0x0A0B0C0D
+PAIR_BOOT_2 = 0x0A0B0C0E
+
+
+def pairing_main() -> int:
+    failures = 0
+
+    def check(cond, what):
+        nonlocal failures
+        print(("ok   " if cond else "FAIL ") + what)
+        failures += not cond
+
+    def handshake(px: SimProxy) -> None:
+        px.send(cs.M_HELLO, hello())
+        m, _ = px.recv()
+        px.send(cs.M_HELLO, hello(nonce_of(m)))
+        m, res = px.recv()
+        check(m["type"] == cs.M_SERVER_STATUS and res == "accepted", "pairing: proxy session up")
+
+    def uplink(px: SimProxy, frame: bytes, rx_time: int = 7_000_000):
+        """Send a frame; return the downlink frame it drew, or None."""
+        px.send(cs.M_UPLINK, cs.uplink_body(rx_time, -80.0, 9.0, 0, frame))
+        try:
+            m, res = px.recv()
+        except socket.timeout:
+            return None
+        body = bytes.fromhex(m["body"])
+        ref, offset, flen = struct.unpack(">QIB", body[:13])
+        check(m["type"] == cs.M_DOWNLINK and res == "accepted" and ref == rx_time and offset == 1_000_000,
+              "pairing: answer is a DOWNLINK for RX1 of that uplink")
+        return body[13:13 + flen]
+
+    code = cs.qr_encode(SENSOR_EUI, SENSOR_ROOT, "US915", "ESPHOME")
+    out = out2 = ""
+    with tempfile.TemporaryDirectory() as tmp:
+        state = os.path.join(tmp, "pairings.json")
+        srv = start_server("--device", code, "--device", OTHER, "--state", state)
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(3)
+            dest = ("127.0.0.1", PORT)
+            proxy = SimProxy(s, dest, PROXY_ID, PAIR_BOOT)
+            handshake(proxy)
+
+            # Steps 2-4: JOIN under the root key set, KEY_EXCHANGE back.
+            sensor = cs.SensorPairing(SENSOR_ROOT, SENSOR_EUI)
+            join = sensor.join(1, bytes([0x42]) * 32)
+            dl = uplink(proxy, join)
+            check(dl is not None and sensor.downlink(dl) == "accept",
+                  "pairing: KEY_EXCHANGE accepted by the sensor")
+            root_fcnt = cs.parse_header(dl).fcnt if dl else 0
+            check(root_fcnt > 1_700_000_000, "pairing: root counter starts above any earlier run's")
+
+            # 04 section 4.2: a retransmitted JOIN gets the same frame back, byte for byte.
+            time.sleep(cs.MERGE_WINDOW_MS / 1000 + 0.2)
+            check(uplink(proxy, join) == dl, "pairing: retransmitted JOIN answered with the cached frame")
+
+            # Steps 5-6: SYNC under the session key set; SET_NETWORK back.
+            session = cs.keys_from(sensor.k_session, SENSOR_EUI)
+            sync = cs.seal(session, cs.T_SYNC, cs.ZERO_TAG, cs.ZERO_TAG, 2,
+                           bytes([cs.UF_DL_ACK | cs.UF_TIME_UNSURE]))
+            dl = uplink(proxy, sync)
+            h, pt = cs.open_frame(session, dl)
+            route = bytes.fromhex(cs.frame_vectors()["derived"]["k_net_route"])
+            check(struct.unpack(">I", pt[:4])[0] == 2 and pt[9:] == cs.command(cs.CMD_SET_NETWORK, route),
+                  "pairing: SYNC answered with SET_NETWORK carrying k_net_route")
+            server_time = struct.unpack(">I", pt[4:8])[0]
+            check(abs(server_time - time.time()) < 5, "pairing: server_time is the server's clock")
+            last_down = h.fcnt
+
+            # Step 7: a confirmed heartbeat with normal tags and DL_ACK completes it.
+            epoch = cs.epoch_of(server_time)
+            ntag, dtag = cs.net_tag(route, epoch), cs.dev_tag(session.k_dev_tag, epoch)
+            hb = cs.seal(session, cs.T_HEARTBEAT_CONFIRMED, ntag, dtag, 3,
+                         bytes([cs.UF_DL_ACK]) + cs.encode_reading(0, 0x01, 1) + cs.encode_reading(0xFF, 0x42, 3700))
+            dl = uplink(proxy, hb)
+            h, pt = cs.open_frame(session, dl)
+            check(struct.unpack(">I", pt[:4])[0] == 3 and h.fcnt > last_down,
+                  "pairing: confirmed heartbeat answered under the session keys")
+            last_down = h.fcnt
+
+            # Normal traffic: a door opening, confirmed, is answered; an unconfirmed frame is not.
+            data = cs.seal(session, cs.T_DATA_CONFIRMED, ntag, dtag, 4, bytes([0]) + cs.encode_reading(0, 0x01, 0))
+            dl = uplink(proxy, data)
+            h, pt = cs.open_frame(session, dl)
+            check(struct.unpack(">I", pt[:4])[0] == 4 and h.fcnt > last_down, "pairing: DATA_CONFIRMED answered")
+            last_down = h.fcnt
+            plain = cs.seal(session, cs.T_DATA, ntag, dtag, 5, bytes([0]) + cs.encode_reading(0, 0x01, 1))
+            check(uplink(proxy, plain) is None, "pairing: unconfirmed DATA not answered")
+            time.sleep(0.3)
+        finally:
+            out = stop_server(srv)
+        check(f"{SENSOR_EUI.hex()} PAIRED" in out, "pairing: server reports the device PAIRED")
+        check("ch0 contact=0" in out, "pairing: server decrypts the door state")
+
+        # A restart with --state keeps the session and both counters.
+        time.sleep(1.0)
+        srv = start_server("--device", code, "--state", state)
+        try:
+            proxy = SimProxy(s, dest, PROXY_ID, PAIR_BOOT_2)
+            handshake(proxy)
+            data = cs.seal(session, cs.T_DATA_CONFIRMED, ntag, dtag, 6, bytes([0]) + cs.encode_reading(0, 0x01, 1))
+            dl = uplink(proxy, data)
+            ok = False
+            if dl is not None:
+                h, pt = cs.open_frame(session, dl)
+                ok = struct.unpack(">I", pt[:4])[0] == 6 and h.fcnt > last_down
+            check(ok, "pairing: after a restart, the stored session answers with a higher counter")
+            stale = cs.seal(session, cs.T_DATA_CONFIRMED, ntag, dtag, 4, bytes([0]) + cs.encode_reading(0, 0x01, 0))
+            check(uplink(proxy, stale) is None, "pairing: an old counter is not answered after a restart")
+        finally:
+            out2 = stop_server(srv)
+    print("--- pairing server output ---\n" + out.strip())
+    print("--- restarted pairing server output ---\n" + out2.strip())
+    print("pairing: all checks pass" if failures == 0 else f"pairing: {failures} failures")
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    rc = main()
+    sys.exit(pairing_main() or rc)

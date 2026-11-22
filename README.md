@@ -16,9 +16,9 @@ component is the first implementation.
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Design overview and open questions |
 | [`spec/`](spec/) | The protocol specification, self-contained, with test vectors and a reference implementation in Python |
 | [`components/cs_proxy/`](components/cs_proxy/) | ESPHome external component: the proxy |
-| [`components/cs_sensor/`](components/cs_sensor/) | Sensor firmware: the host-tested protocol core (`sensor_core`); the ESPHome glue comes next |
-| [`devtools/cs_testserver.py`](devtools/cs_testserver.py) | Development server for testing proxies |
-| [`examples/`](examples/) | ESPHome configurations for a proxy and a test transmitter |
+| [`components/cs_sensor/`](components/cs_sensor/) | ESPHome external component: the sensor, on the host-tested protocol core (`sensor_core`) |
+| [`devtools/cs_testserver.py`](devtools/cs_testserver.py) | Development server for testing proxies and pairing sensors |
+| [`examples/`](examples/) | ESPHome configurations for a proxy, sensors (mains and deep sleep) and a test transmitter |
 | [`tests/`](tests/) | Unit tests for the proxy and sensor cores and a smoke test for the test server |
 
 ## Running the tests
@@ -34,3 +34,7 @@ python3 tests/devtools/test_testserver.py           # test server
 ## Trying a proxy
 
 See [`components/cs_proxy/README.md`](components/cs_proxy/README.md).
+
+## Building a sensor
+
+See [`components/cs_sensor/README.md`](components/cs_sensor/README.md).

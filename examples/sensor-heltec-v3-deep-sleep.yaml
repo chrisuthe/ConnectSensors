@@ -1,0 +1,138 @@
+# ConnectSensors contact sensor on a Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262),
+# US915, on a LiPo cell with ESP32 deep sleep. No Wi-Fi: logs come over USB.
+#
+# The same sensor as sensor-heltec-v3.yaml (read that first), plus:
+# - It sleeps whenever it has nothing to do. The reed switch wakes it on either
+#   edge (INVERT_WAKEUP); the timer wakes it for the next heartbeat.
+# - A wake is not a boot: counters, floors, pairing and the heartbeat schedule
+#   carry on (components/cs_sensor/README.md, "Deep sleep").
+# - After a power-on, a reset, or a wake by PRG, it stays awake for the pairing
+#   window (60 s) so PRG can pair it or hold for a factory reset.
+# - Battery voltage rides on every heartbeat. ADC_Ctrl (GPIO37) is driven low to
+#   enable the divider, as on V3.1 and V3.2 boards; V3.0 boards need it high.
+#   With no cell fitted it reads close to 0 V.
+# - A power loss, EN reset or USB flash loses the RTC clock: that boot sends SYNC
+#   with TIME_UNSURE, and its answer sets the clock (components/cs_sensor/README.md).
+
+substitutions:
+  name: lora-door-battery
+
+esphome:
+  name: ${name}
+  on_boot:
+    priority: 800
+    then:
+      - output.turn_off: vbat_ctrl
+
+esp32:
+  board: heltec_wifi_lora_32_V3
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  hardware_uart: UART0
+
+external_components:
+  - source: github://chrisuthe/ConnectSensors@main
+    components: [cs_sensor]
+
+spi:
+  clk_pin: GPIO9
+  mosi_pin: GPIO10
+  miso_pin: GPIO11
+
+sx126x:
+  id: lora
+  hw_version: sx1262
+  cs_pin: GPIO8
+  rst_pin: GPIO12
+  busy_pin: GPIO13
+  dio1_pin: GPIO14
+  rf_switch: true
+  tcxo_voltage: 1_8V
+  tcxo_delay: 5ms
+  modulation: LORA
+  frequency: 918.5MHz
+  bandwidth: 500_0kHz
+  spreading_factor: 9
+  coding_rate: CR_4_5
+  preamble_size: 8
+  sync_value: [0x14, 0x24]
+  crc_enable: true
+  pa_power: 20
+  rx_start: true
+
+deep_sleep:
+  id: sleeper
+  # No run_duration or sleep_duration: cs_sensor decides both.
+  wakeup_pin:
+    number: GPIO6
+    allow_other_uses: true
+    mode:
+      input: true
+      pullup: true
+  wakeup_pin_mode: INVERT_WAKEUP
+  esp32_ext1_wakeup:
+    pins:
+      - number: GPIO0
+        allow_other_uses: true
+    mode: ANY_LOW
+
+output:
+  - platform: gpio
+    id: vbat_ctrl
+    pin: GPIO37
+
+binary_sensor:
+  - platform: gpio
+    id: door
+    device_class: door
+    pin:
+      number: GPIO6
+      allow_other_uses: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on_off: 50ms
+  - platform: gpio
+    id: pair_button
+    pin:
+      number: GPIO0
+      allow_other_uses: true
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on_off: 20ms
+
+sensor:
+  - platform: adc
+    id: vbat
+    pin: GPIO1
+    attenuation: 12db
+    # 390k / 100k divider on the board.
+    filters:
+      - multiply: 4.9
+    # Read soon after every wake, so the value is there before it sleeps again.
+    update_interval: 1s
+
+cs_sensor:
+  id: cs
+  radio_id: lora
+  region: US915
+  dev_eui: !secret cs_dev_eui
+  root_key: !secret cs_root_key
+  heartbeat: 60min
+  firmware_version: "0.1.0"
+  pairing_button: pair_button
+  battery_voltage: vbat
+  deep_sleep_id: sleeper
+  pairing_window: 60s
+  readings:
+    - channel: 0
+      kind: contact
+      binary_sensor: door
+      confirmed: true
