@@ -25,9 +25,9 @@ switch on GPIO6 and PRG as the pairing button.
 3. Give the code to the server. For the development server:
    `python3 devtools/cs_testserver.py --key <proxy key> --device CS:1:... --state pairings.json`,
    with a [proxy](../cs_proxy/README.md) running.
-4. Flash the sensor and press the pairing button. The server logs `JOIN`,
-   `KEY_EXCHANGE`, `SYNC`, `SET_NETWORK` and `PAIRED`, then every uplink
-   decrypted.
+4. Flash the sensor and press the pairing button near the proxy. The server logs
+   `JOIN`, `KEY_EXCHANGE`, the first session uplink and `PAIRED`, then every
+   uplink decrypted.
 
 ### Configuration
 
@@ -191,9 +191,10 @@ Tests: [`tests/sensor_core`](../../tests/sensor_core), run with
 
 ## What the core does
 
-- **Frames (02):** key derivation for the root and session key sets, net and dev
-  tags with epochs and the reserved-value substitution, bootstrap tags, sealing
-  uplinks, and opening and checking downlinks (02 section 10.2).
+- **Frames (02):** key derivation for the root and session key sets, the 8-byte
+  key-fingerprint tags (02 section 6.1: HMAC seed, Ed25519 public key, SHA-256)
+  per epoch and per bootstrap block, cached and computed ahead of the epoch
+  boundary, sealing uplinks, and opening and checking downlinks (02 section 10.2).
 - **Counters:** uplink counter reservation in blocks of 64 (02 section 8.2),
   and the session and root downlink floors (02 section 8.4). The root floor
   survives `JOIN`, pairing and `LEAVE`; only a factory reset clears it.
@@ -203,10 +204,11 @@ Tests: [`tests/sensor_core`](../../tests/sensor_core), run with
   `firmware_version` in the first one after boot, confirmed uplinks with the
   retry schedule, RX1 and RX2, `DL_ACK`, `PENDING`, contact loss and `SYNC`, clock
   keeping and `TIME_UNSURE`, the 1% airtime budget, and boot.
-- **Pairing (04):** `UNPAIRED`, `JOINING`, `SESSION` and `PAIRED` with every
-  exit 04 section 4.3 defines (a failed `SYNC`, a restart, `LEAVE` mid-pairing),
-  the `JOIN`, `KEY_EXCHANGE`, `SYNC` and `SET_NETWORK` exchange, the pairing
-  button (04 section 4.5), `LEAVE`, and the factory reset.
+- **Pairing (04):** `UNPAIRED`, `JOINING`, the provisional `SESSION` and
+  `PAIRED` with every exit 04 section 4.3 defines (an unanswered first session
+  uplink, a restart, a session downlink that makes it `PAIRED`), the `JOIN`,
+  `KEY_EXCHANGE` and first-session-uplink exchange, the pairing button (04
+  section 4.5), `LEAVE`, and the factory reset.
 - **Pairing code (04 section 3):** builds the `CS:1:...` string, so firmware can
   print its own code.
 

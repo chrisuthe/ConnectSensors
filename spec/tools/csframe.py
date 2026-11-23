@@ -1126,7 +1126,7 @@ def frame_vectors() -> dict:
                  downlink_payload(1, T0, 0, command(CMD_KEY_EXCHANGE, v_pub)),
                  "answer to JOIN, with its tag: server ephemeral public key; the sensor is now provisional"),
             case("heartbeat_first", "session", sess, T_HEARTBEAT_CONFIRMED, nt, 2,
-                 bytes([UF_DL_ACK]) + contact_closed + battery,
+                 bytes([UF_DL_ACK]) + contact_closed,
                  "first frame under session keys, normal tag from KEY_EXCHANGE's server_time; acknowledges "
                  "KEY_EXCHANGE; the server marks the device PAIRED"),
             case("downlink_paired", "session", sess, T_DOWNLINK, nt, 1,

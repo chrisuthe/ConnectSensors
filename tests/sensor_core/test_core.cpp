@@ -56,10 +56,7 @@ static std::string hex(const uint8_t *p, size_t n) {
 
 static std::string hex(const Bytes &v) { return hex(v.data(), v.size()); }
 
-static std::string tag_hex(uint32_t t) {
-  uint8_t b[4] = {uint8_t(t >> 24), uint8_t(t >> 16), uint8_t(t >> 8), uint8_t(t)};
-  return hex(b, 4);
-}
+static std::string tag_hex(const uint8_t *t) { return hex(t, TAG_LEN); }
 
 static const FrameVector &fv(const char *name) {
   for (const auto &v : FRAME_VECTORS) {
@@ -200,21 +197,32 @@ static void test_frame_vectors() {
   CHECK(hex(session.k_enc, 16) == V_SESSION_K_ENC);
   CHECK(hex(session.k_dev_tag, 16) == V_SESSION_K_DEV_TAG);
 
-  Bytes route(16);
-  derive_net_route(unhex(V_K_NET).data(), route.data());
-  CHECK(hex(route) == V_K_NET_ROUTE);
+  // 02 section 6.1, step by step and through the tag functions.
   CHECK(epoch_of(V_TIME) == V_EPOCH);
   for (const auto &t : TAG_VECTORS) {
-    CHECK(tag_hex(net_tag(route.data(), t.epoch)) == t.net);
-    CHECK(tag_hex(dev_tag(session.k_dev_tag, t.epoch)) == t.dev);
+    const KeySet &keys = t.root ? root : session;
+    uint8_t msg[17], seed[32], pub[32], tag[TAG_LEN];
+    std::memcpy(msg, "cs1 tag seed", 12);
+    msg[12] = t.bootstrap ? 'b' : 'e';
+    uint32_t n = t.bootstrap ? tag_block(t.n) : t.n;
+    msg[13] = uint8_t(n >> 24), msg[14] = uint8_t(n >> 16), msg[15] = uint8_t(n >> 8), msg[16] = uint8_t(n);
+    hmac_sha256(keys.k_dev_tag, 16, msg, sizeof(msg), seed);
+    CHECK(hex(seed, 32) == t.seed);
+    cs_ed25519_public_key(seed, pub);
+    CHECK(hex(pub, 32) == t.pub);
+    if (t.bootstrap) {
+      bootstrap_tag(keys.k_dev_tag, t.n, tag);
+    } else {
+      normal_tag(keys.k_dev_tag, t.n, tag);
+    }
+    CHECK(tag_hex(tag) == t.tag);
   }
 
   for (const auto &v : FRAME_VECTORS) {
     const KeySet &keys = v.root ? root : session;
-    Bytes pt = unhex(v.plaintext), frame(FRAME_MAX);
+    Bytes pt = unhex(v.plaintext), frame(FRAME_MAX), tag = unhex(v.tag);
     size_t len = 0;
-    uint32_t nt = uint32_t(std::stoul(v.net_tag, nullptr, 16)), dt = uint32_t(std::stoul(v.dev_tag, nullptr, 16));
-    CHECK(seal_frame(keys, uint8_t(v.type), nt, dt, v.fcnt, pt.data(), pt.size(), frame.data(), len));
+    CHECK(seal_frame(keys, uint8_t(v.type), tag.data(), v.fcnt, pt.data(), pt.size(), frame.data(), len));
     frame.resize(len);
     CHECK(hex(frame) == v.frame);
     FrameHeader h;
@@ -224,15 +232,16 @@ static void test_frame_vectors() {
     CHECK(open_frame(keys, wire.data(), wire.size(), h, back.data(), back_len) == OpenResult::OK);
     back.resize(back_len);
     CHECK(back == pt);
-    CHECK(h.type == v.type && h.fcnt == v.fcnt && h.net_tag == nt && h.dev_tag == dt);
+    CHECK(h.type == v.type && h.fcnt == v.fcnt && tag_hex(h.tag) == v.tag);
     wire[wire.size() - 1] ^= 0x80;
     CHECK(open_frame(keys, wire.data(), wire.size(), h, back.data(), back_len) == OpenResult::BAD_MIC);
   }
   // Out of range lengths are refused before any crypto (02 section 3).
   Bytes big(PAYLOAD_MAX + 1, 0), frame(FRAME_MAX + 8);
   size_t len;
-  CHECK(!seal_frame(root, T_DATA, 0, 0, 1, big.data(), big.size(), frame.data(), len));
-  CHECK(!seal_frame(root, T_DATA, 0, 0, 1, big.data(), 0, frame.data(), len));
+  const uint8_t zero_tag[TAG_LEN] = {0};
+  CHECK(!seal_frame(root, T_DATA, zero_tag, 1, big.data(), big.size(), frame.data(), len));
+  CHECK(!seal_frame(root, T_DATA, zero_tag, 1, big.data(), 0, frame.data(), len));
   FrameHeader h;
   size_t pt_len;
   Bytes short_frame(22, 0xC5);
@@ -548,7 +557,9 @@ struct Server {
     pt.insert(pt.end(), cmds.begin(), cmds.end());
     Bytes out(FRAME_MAX);
     size_t len = 0;
-    seal_frame(this->keys, T_DOWNLINK, 0, 0, use_fcnt ? use_fcnt : ++this->fcnt, pt.data(), pt.size(), out.data(),
+    // The sensor doesn't check a downlink's tag (02 section 6.1), so zeros will do.
+    const uint8_t tag[TAG_LEN] = {0};
+    seal_frame(this->keys, T_DOWNLINK, tag, use_fcnt ? use_fcnt : ++this->fcnt, pt.data(), pt.size(), out.data(),
                len);
     out.resize(len);
     return out;
@@ -574,6 +585,17 @@ static uint32_t fcnt_of(const Tx &t) {
   return uint32_t(t.frame[10]) << 24 | uint32_t(t.frame[11]) << 16 | uint32_t(t.frame[12]) << 8 | t.frame[13];
 }
 static uint8_t type_of(const Tx &t) { return t.frame[1] & 0x0F; }
+static std::string tag_hex(const Tx &t) { return hex(t.frame.data() + 2, TAG_LEN); }
+static std::string normal_hex(const KeySet &k, uint32_t epoch) {
+  uint8_t t[TAG_LEN];
+  normal_tag(k.k_dev_tag, epoch, t);
+  return tag_hex(t);
+}
+static std::string bootstrap_hex(const KeySet &k, uint32_t fcnt) {
+  uint8_t t[TAG_LEN];
+  bootstrap_tag(k.k_dev_tag, fcnt, t);
+  return tag_hex(t);
+}
 
 static Reading contact(uint8_t v) { return Reading::u8(0, 0x01, v); }
 static Reading battery(uint8_t v) { return Reading::u8(0xFF, 0x07, v); }
@@ -588,7 +610,7 @@ static KeySet session_keys(const uint8_t *k_session) {
 // byte for byte, and leaves the sensor PAIRED with fcnt 3 answered. Returns the
 // server's view of the session.
 static Server pair_with_vectors(Rig &rig) {
-  rig.boot();
+  rig.boot({contact(0)});
   rig.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
   rig.core->short_press();
   CHECK(rig.core->state() == PairingState::JOINING);
@@ -601,16 +623,22 @@ static Server pair_with_vectors(Rig &rig) {
   CHECK(rig.core->session_key() && hex(rig.core->session_key(), 16) == V_K_SESSION);
   CHECK(rig.storage.u32(Blob::ROOT_FLOOR) == 1);
 
-  const Tx &sync = rig.wait_tx(2);
-  CHECK(hex(sync.frame) == fv("sync_after_exchange").frame);
+  // 04 section 4.6: a provisional session is not stored.
+  CHECK(!rig.storage.has(Blob::SESSION));
+
+  // The first session uplink: normal tag from KEY_EXCHANGE's server_time, DL_ACK.
+  const Tx &first = rig.wait_tx(2);
+  CHECK(hex(first.frame) == fv("heartbeat_first").frame);
+  CHECK(rig.core->state() == PairingState::SESSION);
 
   // A state change waits while pairing finishes (04 section 4.4 step 7).
   CHECK(rig.core->set_state(contact(1)));
   rig.core->report(true);
-  CHECK(rig.in_rx1(sync, unhex(fv("downlink_set_network").frame)) == DownlinkResult::ACCEPT);
+  CHECK(rig.in_rx1(first, unhex(fv("downlink_paired").frame)) == DownlinkResult::ACCEPT);
   CHECK(rig.core->state() == PairingState::PAIRED);
   CHECK(rig.saw(SensorEvent::PAIRED));
   CHECK(rig.storage.has(Blob::SESSION));
+  CHECK(rig.storage.u32(Blob::SESSION_FLOOR) == 1);
 
   const Tx &data = rig.wait_tx(3);
   CHECK(hex(data.frame) == fv("data_confirmed").frame);
@@ -681,14 +709,13 @@ static void test_root_floor_vectors() {
         break;
       Server server;
       server.keys = session_keys(rig.core->session_key());
-      const Tx &sync = rig.wait_tx(rig.radio.sent.size() + 1);
-      Bytes route = unhex(V_K_NET_ROUTE), cmd = {CMD_SET_NETWORK, 16};
-      cmd.insert(cmd.end(), route.begin(), route.end());
-      CHECK(rig.in_rx1(sync, server.downlink(fcnt_of(sync), V_TIME, 0, cmd)) == DownlinkResult::ACCEPT);
+      // LEAVE in the answer to the first session uplink: PAIRED first, so it is
+      // acknowledged in a final HEARTBEAT (04 section 4.3).
       const Tx &hb = rig.wait_tx(rig.radio.sent.size() + 1);
       CHECK(type_of(hb) == T_HEARTBEAT_CONFIRMED);
       CHECK(rig.in_rx1(hb, server.downlink(fcnt_of(hb), V_TIME, 0, {CMD_LEAVE, 0})) == DownlinkResult::ACCEPT);
-      rig.wait_tx(rig.radio.sent.size() + 1);
+      const Tx &last_hb = rig.wait_tx(rig.radio.sent.size() + 1);
+      CHECK(type_of(last_hb) == T_HEARTBEAT);
       CHECK(rig.core->state() == PairingState::UNPAIRED);
       CHECK(rig.core->root_floor() == st.root_floor);
       CHECK(rig.storage.u32(Blob::ROOT_FLOOR) == st.root_floor);
@@ -701,6 +728,58 @@ static void test_root_floor_vectors() {
       CHECK(false);
     }
   }
+}
+
+// pairing-v1.json provisional: SESSION until a session downlink is accepted.
+static void test_provisional_vectors() {
+  Rig rig;
+  rig.boot();
+  Tx last{};
+  for (const ProvisionalStep &st : PROVISIONAL_STEPS) {
+    std::string ev = st.event;
+    if (ev == "join") {
+      rig.storage.set_u32(Blob::COUNTER, st.fcnt);
+      rig.boot();
+      rig.random.keys.push_back(unhex(st.priv));
+      rig.core->short_press();
+      last = rig.wait_tx(rig.radio.sent.size() + 1);
+      CHECK(hex(last.frame) == st.frame);
+    } else if (ev == "downlink") {
+      rig.tick_to(last.done_us + RX1_DELAY_US);
+      Bytes f = unhex(st.frame);
+      rig.core->on_receive(f.data(), f.size());
+      CHECK(std::string(downlink_result_str(rig.core->last_downlink_result())) == st.result);
+    } else if (ev == "uplink") {
+      // The vector's frame carries the uplink's time; put the sensor's clock there.
+      rig.clock.set_unix_time(st.unix_time);
+      if (std::strcmp(st.state, "SESSION") == 0 && rig.core->state() == PairingState::SESSION) {
+        last = rig.wait_tx(rig.radio.sent.size() + 1);
+        CHECK(fcnt_of(last) == st.fcnt);
+        CHECK(type_of(last) == T_HEARTBEAT_CONFIRMED);
+        // The plaintext depends on the state readings; the tag must match exactly.
+        Bytes want = unhex(st.frame);
+        CHECK(hex(last.frame.data() + 2, TAG_LEN) == hex(want.data() + 2, TAG_LEN));
+      }
+    } else if (ev == "leave") {
+      // A range-test uplink answered with LEAVE; the final HEARTBEAT acknowledges it.
+      Server server;
+      server.keys = session_keys(rig.core->session_key());
+      server.fcnt = 1;
+      rig.core->short_press();
+      const Tx &up = rig.wait_tx(rig.radio.sent.size() + 1);
+      CHECK(rig.in_rx1(up, server.downlink(fcnt_of(up), st.unix_time, 0, {CMD_LEAVE, 0})) == DownlinkResult::ACCEPT);
+      last = rig.wait_tx(rig.radio.sent.size() + 1);
+      CHECK(type_of(last) == T_HEARTBEAT);
+    } else if (ev == "undelivered") {
+      // The first session uplink goes unanswered through all its retries.
+      rig.run(2 * MIN);
+    }
+    const char *names[] = {"UNPAIRED", "JOINING", "SESSION", "PAIRED"};
+    CHECK(std::strcmp(names[int(rig.core->state())], st.state) == 0);
+    CHECK(rig.core->root_floor() == st.root_floor);
+    CHECK((rig.core->session_key() != nullptr) == st.has_session);
+  }
+  CHECK(rig.saw(SensorEvent::PAIRING_FAILED));
 }
 
 // ---------------------------------------------------------------- scenarios
@@ -978,7 +1057,7 @@ static void test_join_unanswered() {
   CHECK(rig.in_rx1(again, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::WRONG_REPLY_TO);
 }
 
-static void test_session_sync_unanswered() {
+static void test_session_first_unanswered() {
   Rig rig;
   rig.boot();
   rig.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
@@ -986,7 +1065,11 @@ static void test_session_sync_unanswered() {
   const Tx &join = rig.wait_tx(1);
   CHECK(rig.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
   rig.run(60 * S);
-  CHECK(rig.radio.sent.size() == 5);  // JOIN, then SYNC and three retries
+  // JOIN, then the first session uplink and three retries: one uplink in SESSION (04 section 4.3).
+  CHECK(rig.radio.sent.size() == 5);
+  for (size_t i = 1; i < rig.radio.sent.size(); i++)
+    CHECK(type_of(rig.radio.sent[i]) == T_HEARTBEAT_CONFIRMED && fcnt_of(rig.radio.sent[i]) == 2);
+  CHECK(rig.saw(SensorEvent::PAIRING_FAILED));
   CHECK(rig.core->state() == PairingState::UNPAIRED);
   CHECK(rig.core->session_key() == nullptr);
   CHECK(rig.core->root_floor() == 1);  // kept: only a factory reset clears it
@@ -1015,21 +1098,27 @@ static void test_pairing_button_and_leave_mid_pairing() {
   CHECK(rig.core->state() == PairingState::SESSION);
   rig.core->short_press();
   CHECK(rig.core->state() == PairingState::SESSION);
-  const Tx &sync = rig.wait_tx(2);
-  CHECK(type_of(sync) == T_SYNC);
+  const Tx &first = rig.wait_tx(2);
+  CHECK(type_of(first) == T_HEARTBEAT_CONFIRMED);
   for (const Tx &t : rig.radio.sent)
     CHECK(type_of(t) != T_JOIN || hex(t.frame) == fv("join").frame);
 
-  // 04 section 6.1: LEAVE in SESSION unpairs at once, with no final HEARTBEAT.
+  // 04 section 4.3: a downlink accepted in SESSION makes the sensor PAIRED first,
+  // so a LEAVE in it is acknowledged in a final HEARTBEAT, as in PAIRED.
   Server server;
   server.keys = session_keys(rig.core->session_key());
-  CHECK(rig.in_rx1(sync, server.downlink(fcnt_of(sync), V_TIME, 0, {CMD_LEAVE, 0})) == DownlinkResult::ACCEPT);
+  CHECK(rig.in_rx1(first, server.downlink(fcnt_of(first), V_TIME, 0, {CMD_LEAVE, 0})) == DownlinkResult::ACCEPT);
+  CHECK(rig.saw(SensorEvent::PAIRED));
+  const Tx &last = rig.wait_tx(3);
+  CHECK(type_of(last) == T_HEARTBEAT);
+  Opened o = open_up(server.keys, last.frame);
+  CHECK(o.ok && (o.pt[0] & UF_DL_ACK));
   CHECK(rig.core->state() == PairingState::UNPAIRED);
   CHECK(rig.saw(SensorEvent::LEFT));
   CHECK(rig.core->session_key() == nullptr);
   CHECK(rig.core->root_floor() == 1);
   rig.run(3600 * S);
-  CHECK(rig.radio.sent.size() == 2);
+  CHECK(rig.radio.sent.size() == 3);
 }
 
 static void test_time_unsure_and_sync() {
@@ -1046,7 +1135,9 @@ static void test_time_unsure_and_sync() {
   const Tx &hb = rig.wait_tx(n + 1);
   Opened o = open_up(keys, hb.frame);
   CHECK(o.ok && type_of(hb) == T_HEARTBEAT_CONFIRMED);
-  CHECK(o.h.net_tag != 0 && o.h.dev_tag != 0);
+  uint32_t now_unix = 0;
+  rig.clock.unix_time(now_unix);
+  CHECK(tag_hex(hb) == normal_hex(keys, epoch_of(now_unix)));
   CHECK(hex(o.pt) == "02" "000100" "ff0750" "ffc203010200");
   CHECK(!rig.core->time_sure());
   CHECK(rig.in_rx1(hb, server.downlink(fcnt_of(hb), V_TIME + 7300)) == DownlinkResult::ACCEPT);
@@ -1055,18 +1146,15 @@ static void test_time_unsure_and_sync() {
   const Tx &d = rig.wait_tx(n + 2);
   o = open_up(keys, d.frame);
   CHECK(o.ok && type_of(d) == T_DATA && o.pt[0] == 0);
-  // The tags follow the clock the downlink set: two epochs on.
-  uint8_t route[16];
-  std::memcpy(route, unhex(V_K_NET_ROUTE).data(), 16);
-  CHECK(o.h.net_tag == net_tag(route, V_EPOCH + 2));
-  CHECK(o.h.dev_tag == dev_tag(keys.k_dev_tag, V_EPOCH + 2));
+  // The tag follows the clock the downlink set: two epochs on.
+  CHECK(tag_hex(d) == normal_hex(keys, V_EPOCH + 2));
 
-  // RTC lost: every uplink is SYNC with bootstrap tags until a downlink sets the clock.
+  // RTC lost: every uplink is SYNC with its block's bootstrap tag until a downlink sets the clock.
   rig.clock.rtc = false;
   rig.boot({contact(1)});
   const Tx &s = rig.wait_tx(n + 3);
   o = open_up(keys, s.frame);
-  CHECK(o.ok && type_of(s) == T_SYNC && o.h.net_tag == 0 && o.h.dev_tag == 0);
+  CHECK(o.ok && type_of(s) == T_SYNC && tag_hex(s) == bootstrap_hex(keys, fcnt_of(s)));
   CHECK(hex(o.pt) == "02000101" "ffc203010200");
   rig.run(60 * S);  // unanswered: retries, then undelivered
   rig.core->report(false);
@@ -1077,7 +1165,7 @@ static void test_time_unsure_and_sync() {
   const Tx &d2 = rig.wait_tx(n + 8);
   o = open_up(keys, d2.frame);
   CHECK(type_of(d2) == T_DATA && o.pt[0] == 0);
-  CHECK(o.h.dev_tag == dev_tag(keys.k_dev_tag, V_EPOCH + 1));
+  CHECK(tag_hex(d2) == normal_hex(keys, V_EPOCH + 1));
 }
 
 static void test_lost_contact() {
@@ -1179,7 +1267,9 @@ static void test_leave() {
   // 08 section 8: one final unconfirmed HEARTBEAT with DL_ACK under the old keys.
   const Tx &last = rig.wait_tx(n + 2);
   Opened o = open_up(server.keys, last.frame);
-  CHECK(o.ok && type_of(last) == T_HEARTBEAT && o.h.net_tag != 0);
+  uint32_t now_unix = 0;
+  rig.clock.unix_time(now_unix);
+  CHECK(o.ok && type_of(last) == T_HEARTBEAT && tag_hex(last) == normal_hex(server.keys, epoch_of(now_unix)));
   CHECK(hex(o.pt) == "01" "000101" "ff075a");
   CHECK(rig.core->state() == PairingState::UNPAIRED);
   CHECK(rig.saw(SensorEvent::LEFT));
@@ -1370,8 +1460,8 @@ static void test_confirmed_every_24h() {
   CHECK(confirmed == 3);
 }
 
-static void test_session_resync() {
-  // A SYNC answered without SET_NETWORK is sent again, a bounded number of times.
+static void test_provisional_exit() {
+  // 04 section 4.3: only a session downlink answering the first session uplink ends SESSION.
   Rig rig;
   rig.boot();
   rig.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
@@ -1380,33 +1470,68 @@ static void test_session_resync() {
   CHECK(rig.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
   Server server;
   server.keys = session_keys(rig.core->session_key());
-  for (uint8_t i = 0; i < MAX_SESSION_SYNCS; i++) {
-    Tx sync = rig.wait_tx(2 + i, 10 * S);
-    CHECK(type_of(sync) == T_SYNC);
-    CHECK(rig.in_rx1(sync, server.downlink(fcnt_of(sync), V_TIME, DF_PENDING, {CMD_SET_HEARTBEAT, 2, 0, 7})) ==
-          DownlinkResult::ACCEPT);
-  }
-  CHECK(rig.core->state() == PairingState::UNPAIRED);
-  CHECK(rig.saw(SensorEvent::PAIRING_FAILED));
-  rig.run(60 * S);
-  CHECK(rig.radio.sent.size() == 1 + MAX_SESSION_SYNCS);
-  CHECK(!rig.core->hold());
+  Tx first = rig.wait_tx(2);
+  CHECK(rig.in_rx1(first, server.downlink(fcnt_of(first) - 1, V_TIME)) == DownlinkResult::WRONG_REPLY_TO);
+  CHECK(rig.core->state() == PairingState::SESSION);
+  // The root key set's KEY_EXCHANGE, replayed, is not a session downlink.
+  CHECK(rig.deliver_after(first, RX2_DELAY_US, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::BAD_MIC);
+  CHECK(rig.core->state() == PairingState::SESSION);
+  CHECK(!rig.storage.has(Blob::SESSION));
 
-  // One stray answer, then SET_NETWORK: paired as usual.
-  Rig r2;
-  r2.boot();
-  r2.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
-  r2.core->short_press();
-  join = r2.wait_tx(1);
-  CHECK(r2.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
-  server.fcnt = 0;
-  Tx s1 = r2.wait_tx(2);
-  CHECK(r2.in_rx1(s1, server.downlink(fcnt_of(s1), V_TIME)) == DownlinkResult::ACCEPT);
-  Tx s2 = r2.wait_tx(3, 10 * S);
-  Bytes route = unhex(V_K_NET_ROUTE), cmd = {CMD_SET_NETWORK, 16};
-  cmd.insert(cmd.end(), route.begin(), route.end());
-  CHECK(r2.in_rx1(s2, server.downlink(fcnt_of(s2), V_TIME, 0, cmd)) == DownlinkResult::ACCEPT);
-  CHECK(r2.core->state() == PairingState::PAIRED);
+  // The answer, on a retry, with a command and PENDING: PAIRED, then the command runs.
+  Tx retry = rig.wait_tx(3, 10 * S);
+  CHECK(hex(retry.frame) == hex(first.frame));
+  CHECK(rig.in_rx1(retry, server.downlink(fcnt_of(retry), V_TIME + 10, DF_PENDING, {CMD_SET_HEARTBEAT, 2, 0, 7})) ==
+        DownlinkResult::ACCEPT);
+  CHECK(rig.core->state() == PairingState::PAIRED);
+  CHECK(rig.storage.has(Blob::SESSION));
+  CHECK(rig.storage.u32(Blob::SESSION_FLOOR) == server.fcnt);
+  CHECK(rig.core->heartbeat_minutes() == 7);
+  // PENDING asks for a HEARTBEAT in 2-4 s, now that the sensor is PAIRED (08 section 7).
+  Tx hb = rig.wait_tx(4, 10 * S);
+  CHECK(type_of(hb) == T_HEARTBEAT);
+  CHECK(hb.start_us >= retry.done_us + RX1_DELAY_US + 2 * S - 200 * MS);
+  Opened o = open_up(server.keys, hb.frame);
+  CHECK(o.ok && (o.pt[0] & UF_DL_ACK));
+
+  // Restarted while PAIRED: the session survives.
+  rig.boot();
+  CHECK(rig.core->state() == PairingState::PAIRED);
+  CHECK(rig.core->session_key() && hex(rig.core->session_key(), 16) == V_K_SESSION);
+}
+
+static void test_tag_cache_and_precompute() {
+  Rig rig;
+  Server server = pair_with_vectors(rig);
+  // Frames within one epoch reuse its tag.
+  uint32_t before = rig.core->tag_computations();
+  size_t n = rig.radio.sent.size();
+  rig.core->report(false);
+  rig.wait_tx(n + 1);
+  CHECK(rig.core->tag_computations() == before);
+  // Idle, within TAG_PRECOMPUTE_LEAD_S of the boundary: the next epoch's tag is computed ahead.
+  uint32_t now_unix = 0;
+  rig.clock.unix_time(now_unix);
+  uint32_t boundary = (epoch_of(now_unix) + 1) * EPOCH_SECONDS;
+  rig.run(3 * S);  // past the DATA frame's RX1 window: idle
+  CHECK(rig.core->tag_computations() == before);
+  rig.clock.set_unix_time(boundary - TAG_PRECOMPUTE_LEAD_S + 10);
+  rig.run(S);
+  CHECK(rig.core->tag_computations() == before + 1);
+  uint8_t want[TAG_LEN];
+  normal_tag(server.keys.k_dev_tag, epoch_of(boundary), want);
+  // Just after the boundary, the frame takes it from the cache.
+  rig.clock.set_unix_time(boundary + 1);
+  rig.core->report(false);
+  const Tx &d = rig.wait_tx(n + 2);
+  CHECK(tag_hex(d) == tag_hex(want));
+  CHECK(rig.core->tag_computations() == before + 1);
+  uint8_t cur[TAG_LEN];
+  CHECK(rig.core->current_tag(T_DATA, cur) && tag_hex(cur) == tag_hex(want));
+  // Far from a boundary nothing is computed ahead.
+  rig.clock.set_unix_time(boundary + 600);
+  rig.run(10 * S);
+  CHECK(rig.core->tag_computations() == before + 1);
 }
 
 static void test_firmware_until_delivered() {
@@ -1666,6 +1791,7 @@ int main() {
   test_pairing_code();
   test_frame_vector_flow();
   test_root_floor_vectors();
+  test_provisional_vectors();
   test_rx_windows_and_answer_in_rx1();
   test_answer_in_rx2();
   test_unanswered_retries();
@@ -1675,7 +1801,7 @@ int main() {
   test_storage_failure();
   test_factory_reset();
   test_join_unanswered();
-  test_session_sync_unanswered();
+  test_session_first_unanswered();
   test_pairing_button_and_leave_mid_pairing();
   test_time_unsure_and_sync();
   test_lost_contact();
@@ -1686,7 +1812,8 @@ int main() {
   test_airtime_budget();
   test_state_limits_and_hints();
   test_confirmed_every_24h();
-  test_session_resync();
+  test_provisional_exit();
+  test_tag_cache_and_precompute();
   test_firmware_until_delivered();
   test_factory_reset_without_erase();
   test_airtime_window_is_an_hour();

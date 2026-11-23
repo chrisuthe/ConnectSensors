@@ -235,7 +235,7 @@
         "note": "first session uplink, normal tag; frame-v1.json heartbeat_first",
         "fcnt": 2,
         "unix_time": 1795226401,
-        "frame": "c514b08e8a4367a5b5ba0000000267a56d11a75af500c1b7476020bab8",
+        "frame": "c514b08e8a4367a5b5ba0000000267a56d1197e3d749ef9f041c",
         "state": "SESSION",
         "root_floor": 1,
         "has_session": true

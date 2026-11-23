@@ -39,15 +39,20 @@ constexpr uint8_t UF_TIME_UNSURE = 0x02;
 constexpr uint8_t DF_PENDING = 0x01;
 
 enum Command : uint8_t {
-  CMD_SET_NETWORK = 0x01,
   CMD_SET_HEARTBEAT = 0x02,
   CMD_LEAVE = 0x03,
   CMD_KEY_EXCHANGE = 0x04,
+  CMD_NOP = 0x05,
   CMD_SET_VALUE = 0x40,
 };
 
 constexpr uint32_t EPOCH_SECONDS = 3600;
 inline uint32_t epoch_of(uint32_t unix_time) { return unix_time / EPOCH_SECONDS; }
+
+constexpr size_t TAG_LEN = 8;
+constexpr uint32_t TAG_BLOCK = 64;  // one bootstrap tag per counter reservation block (02 section 6.1)
+inline bool is_bootstrap(uint8_t type) { return type == T_JOIN || type == T_SYNC; }
+inline uint32_t tag_block(uint32_t fcnt) { return (fcnt - 1) / TAG_BLOCK; }
 
 // k_enc and k_dev_tag derived from a base key (02 section 5.1).
 struct KeySet {
@@ -56,26 +61,25 @@ struct KeySet {
   uint8_t k_dev_tag[16];
 };
 void derive_keys(const uint8_t base[16], const uint8_t dev_eui[8], KeySet &out);
-void derive_net_route(const uint8_t k_net[16], uint8_t out[16]);
 // k_session from an X25519 exchange (02 section 5.3). False on an all-zero shared value.
 bool derive_session(const uint8_t k_root[16], const uint8_t dev_eui[8], const uint8_t own_private[32],
                     const uint8_t peer_public[32], const uint8_t sensor_pub[32], const uint8_t server_pub[32],
                     uint8_t out[16]);
 
-// 4-byte tags, big-endian as sent, with the reserved-value substitution (02 section 6).
-uint32_t net_tag(const uint8_t k_net_route[16], uint32_t epoch);
-uint32_t dev_tag(const uint8_t k_dev_tag[16], uint32_t epoch);
+// Key-fingerprint tags (02 section 6.1): one Ed25519 key generation each.
+// Normal frames take the epoch's tag, JOIN and SYNC the counter block's.
+void normal_tag(const uint8_t k_dev_tag[16], uint32_t epoch, uint8_t out[TAG_LEN]);
+void bootstrap_tag(const uint8_t k_dev_tag[16], uint32_t fcnt, uint8_t out[TAG_LEN]);
 
 struct FrameHeader {
   uint8_t type;
-  uint32_t net_tag;
-  uint32_t dev_tag;
+  uint8_t tag[TAG_LEN];
   uint32_t fcnt;
 };
 
 // Builds a whole frame into out (FRAME_HEADER + len + FRAME_MIC bytes). The
 // direction byte of the nonce follows the type. False if len is out of range.
-bool seal_frame(const KeySet &keys, uint8_t type, uint32_t ntag, uint32_t dtag, uint32_t fcnt,
+bool seal_frame(const KeySet &keys, uint8_t type, const uint8_t tag[TAG_LEN], uint32_t fcnt,
                 const uint8_t *plaintext, size_t len, uint8_t *out, size_t &out_len);
 // Structural checks (02 section 3), then the MIC. Writes the plaintext.
 enum class OpenResult : uint8_t { OK, BAD_FRAME, BAD_MIC };
@@ -204,7 +208,7 @@ class Radio {
 enum class Blob : uint8_t {
   COUNTER = 1,        // uint32 reserved uplink counter (02 section 8.2)
   ROOT_FLOOR = 2,     // uint32 (02 section 8.4)
-  SESSION = 3,        // pairing state, k_session, k_net_route (04 section 4.6)
+  SESSION = 3,        // pairing state, k_session; only once PAIRED (04 section 4.6)
   SESSION_FLOOR = 4,  // uint32
   SETTINGS = 5,       // heartbeat interval
 };
@@ -285,7 +289,8 @@ constexpr uint64_t RETRY_JITTER_US[MAX_RETRIES] = {2000000, 4000000, 10000000};
 constexpr uint8_t SYNC_AFTER_UNDELIVERED = 3;
 constexpr uint64_t LOST_CONTACT_BACKOFF_US[4] = {60000000ULL, 300000000ULL, 900000000ULL, 3600000000ULL};
 constexpr uint8_t MAX_PENDING_HEARTBEATS = 4;
-constexpr uint8_t MAX_SESSION_SYNCS = 4;
+// Compute the next epoch's tag this long before the boundary (08 section 3.2).
+constexpr uint32_t TAG_PRECOMPUTE_LEAD_S = 300;
 constexpr uint64_t MAX_CONFIRMED_GAP_US = 24ULL * 3600 * 1000000;
 constexpr uint32_t COUNTER_BLOCK = 64;
 constexpr size_t STATE_SLOTS = 16;
@@ -374,13 +379,31 @@ class SensorCore {
   uint16_t heartbeat_minutes() const { return this->heartbeat_minutes_; }
   uint8_t undelivered() const { return this->undelivered_; }
   bool time_sure() const { return this->time_sure_; }
+  // The tag a new uplink of this type would carry now: the epoch's, or the block
+  // of next_fcnt(). False without the keys or, for a normal tag, a clock.
+  bool current_tag(uint8_t type, uint8_t out[TAG_LEN]);
+  // For tests: Ed25519 key generations so far, cache misses only.
+  uint32_t tag_computations() const { return this->tag_computations_; }
   // For tests: the session key, or nullptr without one.
   const uint8_t *session_key() const { return this->has_session_ ? this->k_session_ : nullptr; }
   DownlinkResult last_downlink_result() const { return this->last_result_; }
 
  private:
   enum class Phase : uint8_t { IDLE, TX, WAIT_RX, RX, WAIT_RETRY };
-  enum class Purpose : uint8_t { JOIN, SESSION_SYNC, STATE, HEARTBEAT, LEAVE_HEARTBEAT };
+  // SESSION_FIRST: the confirmed uplink of the provisional state (04 section 4.4 step 5).
+  enum class Purpose : uint8_t { JOIN, SESSION_FIRST, STATE, HEARTBEAT, LEAVE_HEARTBEAT };
+
+  // Recently computed tags. Keygens are milliseconds, so they are not repeated
+  // for every frame of an epoch or block.
+  struct TagEntry {
+    bool used{false};
+    bool root{false};
+    bool bootstrap{false};
+    uint32_t n{0};  // epoch, or block
+    uint32_t stamp{0};
+    uint8_t tag[TAG_LEN]{};
+  };
+  static constexpr size_t TAG_CACHE = 4;
 
   struct Uplink {
     Purpose purpose{Purpose::STATE};
@@ -408,6 +431,9 @@ class SensorCore {
   void erase_blob_(Blob id, size_t len);
   void wipe_ephemeral_();
   bool clock_known_();
+  void tag_for_(bool root, bool bootstrap, uint32_t n, uint8_t out[TAG_LEN]);
+  void forget_session_tags_();
+  void precompute_tag_();
 
   void start_next_(uint64_t now);
   bool build_(Purpose purpose, bool confirmed, uint64_t now);
@@ -425,7 +451,7 @@ class SensorCore {
 
   DownlinkResult process_downlink_(const uint8_t *data, size_t len, uint64_t now);
   void execute_commands_(const uint8_t *cmds, size_t len, bool &had_command, uint64_t now);
-  void paired_(uint64_t now);
+  bool paired_(uint64_t now);
   void leave_now_();
 
   SensorConfig config_;
@@ -439,9 +465,7 @@ class SensorCore {
   // Persistent state.
   PairingState state_{PairingState::UNPAIRED};
   uint8_t k_session_[16]{};
-  uint8_t k_net_route_[16]{};
   bool has_session_{false};
-  bool has_route_{false};
   uint32_t root_floor_{0};
   uint32_t session_floor_{0};
   uint32_t reserved_{1};
@@ -467,7 +491,7 @@ class SensorCore {
 
   // Work waiting to be sent.
   bool want_join_{false};
-  bool want_session_sync_{false};
+  bool want_session_first_{false};
   bool want_state_{false};
   bool want_state_confirmed_{false};
   bool want_leave_heartbeat_{false};
@@ -494,11 +518,14 @@ class SensorCore {
   uint64_t last_answered_us_{0};
   bool confirmed_sent_{false};
   uint64_t last_confirmed_sent_us_{0};
-  uint8_t session_syncs_{0};
   bool full_state_sent_{false};
   uint64_t last_full_state_us_{0};
   bool stopped_{false};  // counter exhausted
   DownlinkResult last_result_{DownlinkResult::NO_WINDOW};
+
+  TagEntry tag_cache_[TAG_CACHE]{};
+  uint32_t tag_stamp_{0};
+  uint32_t tag_computations_{0};
 
   // Airtime: one bucket per minute; 61 so the sum always covers a whole hour (08 section 4.4).
   uint32_t air_buckets_[61]{};

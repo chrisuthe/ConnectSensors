@@ -1,6 +1,7 @@
 #include "sensor_core.h"
 
 #include "cs_crypto.h"
+#include "cs_ed25519.h"
 #include "cs_sha256.h"
 #include "cs_x25519.h"
 
@@ -12,9 +13,8 @@ namespace esphome::cs_sensor {
 
 namespace {
 
-constexpr uint8_t ZERO_TAG = 0;
-constexpr uint8_t SESSION_BLOB_FORMAT = 1;
-constexpr size_t SESSION_BLOB_LEN = 2 + 16 + 16;
+constexpr uint8_t SESSION_BLOB_FORMAT = 2;
+constexpr size_t SESSION_BLOB_LEN = 2 + 16;
 constexpr uint32_t FCNT_LAST = 0xFFFFFFFF;
 
 uint32_t be32(const uint8_t *p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]; }
@@ -28,14 +28,22 @@ void put32(uint8_t *p, uint32_t v) {
 
 bool is_downlink(uint8_t type) { return type >= 0x8; }
 
-uint32_t tag_of(const uint8_t key[16], const char *label, uint32_t epoch) {
-  uint8_t msg[7];
-  std::memcpy(msg, label, 3);
-  put32(msg + 3, epoch);
-  uint8_t mac[32];
-  hmac_sha256(key, 16, msg, sizeof(msg), mac);
-  uint32_t t = be32(mac);
-  return t == 0 ? 1 : t;  // 02 section 6.2
+// 02 section 6.1: seed = HMAC(k_dev_tag, "cs1 tag seed" | kind | n), tag =
+// SHA-256("cs1 tag fp" | Ed25519 public key of seed), first 8 bytes.
+void tag_of(const uint8_t k_dev_tag[16], char kind, uint32_t n, uint8_t out[TAG_LEN]) {
+  uint8_t msg[12 + 1 + 4];
+  std::memcpy(msg, "cs1 tag seed", 12);
+  msg[12] = uint8_t(kind);
+  put32(msg + 13, n);
+  uint8_t seed[32];
+  hmac_sha256(k_dev_tag, 16, msg, sizeof(msg), seed);
+  uint8_t fp[10 + 32];
+  std::memcpy(fp, "cs1 tag fp", 10);
+  cs_ed25519_public_key(seed, fp + 10);
+  secure_zero(seed, sizeof(seed));
+  uint8_t digest[32];
+  sha256(fp, sizeof(fp), digest);
+  std::memcpy(out, digest, TAG_LEN);
 }
 
 }  // namespace
@@ -46,10 +54,6 @@ void derive_keys(const uint8_t base[16], const uint8_t dev_eui[8], KeySet &out) 
   std::memcpy(out.dev_eui, dev_eui, 8);
   hkdf_sha256(base, 16, dev_eui, 8, reinterpret_cast<const uint8_t *>("cs1 enc"), 7, out.k_enc, 16);
   hkdf_sha256(base, 16, dev_eui, 8, reinterpret_cast<const uint8_t *>("cs1 tag"), 7, out.k_dev_tag, 16);
-}
-
-void derive_net_route(const uint8_t k_net[16], uint8_t out[16]) {
-  hkdf_sha256(k_net, 16, nullptr, 0, reinterpret_cast<const uint8_t *>("cs1 route"), 9, out, 16);
 }
 
 bool derive_session(const uint8_t k_root[16], const uint8_t dev_eui[8], const uint8_t own_private[32],
@@ -72,8 +76,10 @@ bool derive_session(const uint8_t k_root[16], const uint8_t dev_eui[8], const ui
   return ok;
 }
 
-uint32_t net_tag(const uint8_t k_net_route[16], uint32_t epoch) { return tag_of(k_net_route, "net", epoch); }
-uint32_t dev_tag(const uint8_t k_dev_tag[16], uint32_t epoch) { return tag_of(k_dev_tag, "dev", epoch); }
+void normal_tag(const uint8_t k_dev_tag[16], uint32_t epoch, uint8_t out[TAG_LEN]) { tag_of(k_dev_tag, 'e', epoch, out); }
+void bootstrap_tag(const uint8_t k_dev_tag[16], uint32_t fcnt, uint8_t out[TAG_LEN]) {
+  tag_of(k_dev_tag, 'b', tag_block(fcnt), out);
+}
 
 static void make_nonce(const KeySet &keys, uint32_t fcnt, uint8_t type, uint8_t nonce[13]) {
   std::memcpy(nonce, keys.dev_eui, 8);
@@ -81,14 +87,13 @@ static void make_nonce(const KeySet &keys, uint32_t fcnt, uint8_t type, uint8_t 
   nonce[12] = is_downlink(type) ? 0x01 : 0x00;
 }
 
-bool seal_frame(const KeySet &keys, uint8_t type, uint32_t ntag, uint32_t dtag, uint32_t fcnt,
+bool seal_frame(const KeySet &keys, uint8_t type, const uint8_t tag[TAG_LEN], uint32_t fcnt,
                 const uint8_t *plaintext, size_t len, uint8_t *out, size_t &out_len) {
   if (len < 1 || len > PAYLOAD_MAX || type == 0 || type > 0xF)
     return false;
   out[0] = FRAME_MAGIC;
   out[1] = uint8_t(FRAME_VERSION << 4 | type);
-  put32(out + 2, ntag);
-  put32(out + 6, dtag);
+  std::memcpy(out + 2, tag, TAG_LEN);
   put32(out + 10, fcnt);
   uint8_t nonce[13];
   make_nonce(keys, fcnt, type, nonce);
@@ -102,8 +107,7 @@ OpenResult open_frame(const KeySet &keys, const uint8_t *frame, size_t len, Fram
   if (len < FRAME_MIN || len > FRAME_MAX || frame[0] != FRAME_MAGIC || frame[1] >> 4 != FRAME_VERSION)
     return OpenResult::BAD_FRAME;
   hdr.type = frame[1] & 0x0F;
-  hdr.net_tag = be32(frame + 2);
-  hdr.dev_tag = be32(frame + 6);
+  std::memcpy(hdr.tag, frame + 2, TAG_LEN);
   hdr.fcnt = be32(frame + 10);
   uint8_t nonce[13];
   make_nonce(keys, hdr.fcnt, hdr.type, nonce);
@@ -309,7 +313,6 @@ SensorCore::SensorCore(const SensorConfig &config, Clock &clock, Radio &radio, S
 
 SensorCore::~SensorCore() {
   secure_zero(this->k_session_, sizeof(this->k_session_));
-  secure_zero(this->k_net_route_, sizeof(this->k_net_route_));
   secure_zero(&this->root_keys_, sizeof(this->root_keys_));
   secure_zero(&this->session_keys_, sizeof(this->session_keys_));
   this->wipe_ephemeral_();
@@ -358,7 +361,6 @@ bool SensorCore::save_session_() {
   b[0] = SESSION_BLOB_FORMAT;
   b[1] = uint8_t(this->state_);
   std::memcpy(b + 2, this->k_session_, 16);
-  std::memcpy(b + 18, this->k_net_route_, 16);
   bool ok = this->storage_.save(Blob::SESSION, b, sizeof(b));
   secure_zero(b, sizeof(b));
   return ok;
@@ -393,9 +395,9 @@ void SensorCore::load_stored_() {
   if (this->storage_.load(Blob::SESSION, b, SESSION_BLOB_LEN) && b[0] == SESSION_BLOB_FORMAT &&
       b[1] == uint8_t(PairingState::PAIRED)) {
     std::memcpy(this->k_session_, b + 2, 16);
-    std::memcpy(this->k_net_route_, b + 18, 16);
     derive_keys(this->k_session_, this->config_.dev_eui, this->session_keys_);
-    this->has_session_ = this->has_route_ = true;
+    this->forget_session_tags_();
+    this->has_session_ = true;
     this->state_ = PairingState::PAIRED;
     uint8_t f[4];
     this->session_floor_ = this->storage_.load(Blob::SESSION_FLOOR, f, 4) ? be32(f) : 0;
@@ -418,14 +420,14 @@ void SensorCore::erase_blob_(Blob id, size_t len) {
 
 void SensorCore::erase_session_() {
   secure_zero(this->k_session_, sizeof(this->k_session_));
-  secure_zero(this->k_net_route_, sizeof(this->k_net_route_));
   secure_zero(&this->session_keys_, sizeof(this->session_keys_));
-  this->has_session_ = this->has_route_ = false;
+  this->forget_session_tags_();
+  this->has_session_ = false;
   this->session_floor_ = 0;
   this->erase_blob_(Blob::SESSION, SESSION_BLOB_LEN);
   this->erase_blob_(Blob::SESSION_FLOOR, 4);
   this->state_ = PairingState::UNPAIRED;
-  this->want_join_ = this->want_session_sync_ = this->want_state_ = this->want_state_confirmed_ = false;
+  this->want_join_ = this->want_session_first_ = this->want_state_ = this->want_state_confirmed_ = false;
   this->want_leave_heartbeat_ = this->boot_uplink_ = this->want_pending_hb_ = false;
   this->hb_armed_ = false;
   this->event_count_ = 0;
@@ -433,12 +435,68 @@ void SensorCore::erase_session_() {
   this->dl_ack_ = false;
   this->undelivered_ = 0;
   this->pending_hb_count_ = 0;
-  this->session_syncs_ = 0;
 }
 
 bool SensorCore::clock_known_() {
   uint32_t t;
   return this->clock_.unix_time(t);
+}
+
+// ---- tags
+
+void SensorCore::tag_for_(bool root, bool bootstrap, uint32_t n, uint8_t out[TAG_LEN]) {
+  TagEntry *slot = &this->tag_cache_[0];
+  for (auto &e : this->tag_cache_) {
+    if (e.used && e.root == root && e.bootstrap == bootstrap && e.n == n) {
+      std::memcpy(out, e.tag, TAG_LEN);
+      e.stamp = ++this->tag_stamp_;
+      return;
+    }
+    if (!e.used || (slot->used && e.stamp < slot->stamp))
+      slot = &e;
+  }
+  const uint8_t *key = root ? this->root_keys_.k_dev_tag : this->session_keys_.k_dev_tag;
+  tag_of(key, bootstrap ? 'b' : 'e', n, slot->tag);
+  this->tag_computations_++;
+  slot->used = true;
+  slot->root = root;
+  slot->bootstrap = bootstrap;
+  slot->n = n;
+  slot->stamp = ++this->tag_stamp_;
+  std::memcpy(out, slot->tag, TAG_LEN);
+}
+
+void SensorCore::forget_session_tags_() {
+  for (auto &e : this->tag_cache_) {
+    if (!e.root)
+      e = TagEntry{};
+  }
+}
+
+bool SensorCore::current_tag(uint8_t type, uint8_t out[TAG_LEN]) {
+  bool root = type == T_JOIN;
+  if (!root && !this->has_session_)
+    return false;
+  if (is_bootstrap(type)) {
+    this->tag_for_(root, true, tag_block(this->next_fcnt_), out);
+    return true;
+  }
+  uint32_t t;
+  if (!this->clock_.unix_time(t))
+    return false;
+  this->tag_for_(false, false, epoch_of(t), out);
+  return true;
+}
+
+// 08 section 3.2: the next epoch's tag is ready before a frame needs it.
+void SensorCore::precompute_tag_() {
+  if (!this->has_session_ || (this->state_ != PairingState::PAIRED && this->state_ != PairingState::SESSION))
+    return;
+  uint32_t t;
+  if (!this->clock_.unix_time(t) || EPOCH_SECONDS - t % EPOCH_SECONDS > TAG_PRECOMPUTE_LEAD_S)
+    return;
+  uint8_t tag[TAG_LEN];
+  this->tag_for_(false, false, epoch_of(t) + 1, tag);
 }
 
 // ---- public API
@@ -522,9 +580,9 @@ bool SensorCore::resume(const WarmState &in) {
   this->load_stored_();
   if (uint8_t(this->state_) != in.state) {
     secure_zero(this->k_session_, sizeof(this->k_session_));
-    secure_zero(this->k_net_route_, sizeof(this->k_net_route_));
     secure_zero(&this->session_keys_, sizeof(this->session_keys_));
-    this->has_session_ = this->has_route_ = false;
+    this->forget_session_tags_();
+    this->has_session_ = false;
     this->state_ = PairingState::UNPAIRED;
     return false;
   }
@@ -641,7 +699,7 @@ bool SensorCore::immediate_work_() const {
     case PairingState::JOINING:
       return this->want_join_;
     case PairingState::SESSION:
-      return this->want_session_sync_;
+      return this->want_session_first_;
     case PairingState::PAIRED:
       return this->want_state_ || this->event_count_ || this->want_leave_heartbeat_ || this->boot_uplink_;
     default:
@@ -688,6 +746,8 @@ void SensorCore::loop() {
   switch (this->phase_) {
     case Phase::IDLE:
       this->start_next_(now);
+      if (this->phase_ == Phase::IDLE)
+        this->precompute_tag_();
       break;
     case Phase::TX:
       // A lost TX-done: assume it went, so a window still opens and retries go on.
@@ -739,8 +799,8 @@ void SensorCore::start_next_(uint64_t now) {
         this->want_join_ = false;
       return;
     case PairingState::SESSION:
-      if (this->want_session_sync_ && this->build_(Purpose::SESSION_SYNC, true, now))
-        this->want_session_sync_ = false;
+      if (this->want_session_first_ && this->build_(Purpose::SESSION_FIRST, true, now))
+        this->want_session_first_ = false;
       return;
     case PairingState::PAIRED:
       break;
@@ -828,7 +888,7 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
   size_t pt_len = 1;
   const KeySet *keys = &this->session_keys_;
   uint8_t type;
-  uint32_t ntag = ZERO_TAG, dtag = ZERO_TAG;
+  uint32_t epoch = 0;
   uint8_t uflags = this->time_sure_ ? 0 : UF_TIME_UNSURE;
   bool took_events = false, took_firmware = false;
 
@@ -861,43 +921,35 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
     pt[0] = UF_TIME_UNSURE;
     std::memcpy(pt + 1, this->ephemeral_public_, 32);
     pt_len = 33;
-  } else if (purpose == Purpose::SESSION_SYNC) {
-    // 04 section 4.4 step 5: uflags only.
-    if (!this->has_session_)
-      return false;
-    type = T_SYNC;
-    pt[0] = uint8_t(uflags | (this->dl_ack_ ? UF_DL_ACK : 0));
   } else {
     if (!this->has_session_)
       return false;
     uint32_t unix_time;
     bool clock = this->clock_.unix_time(unix_time);
     if (purpose == Purpose::LEAVE_HEARTBEAT) {
-      // 08 section 8: the DL_ACK for LEAVE needs normal tags; without them, just leave.
-      if (!clock || !this->has_route_) {
+      // 08 section 8: the DL_ACK for LEAVE needs a normal tag; without a clock, just leave.
+      if (!clock) {
         this->leave_now_();
         return false;
       }
       type = T_HEARTBEAT;
-    } else if (!clock || !this->has_route_ || (confirmed && this->undelivered_ >= SYNC_AFTER_UNDELIVERED)) {
-      // 08 sections 3.2 and 6: no tags without a clock, and SYNC after lost contact.
+    } else if (!clock || (confirmed && this->undelivered_ >= SYNC_AFTER_UNDELIVERED)) {
+      // 08 sections 3.2 and 6: no normal tag without a clock, and SYNC after lost contact.
       type = T_SYNC;
       confirmed = true;
     } else if (purpose == Purpose::STATE) {
       type = confirmed ? T_DATA_CONFIRMED : T_DATA;
     } else {
+      // HEARTBEAT, and SESSION_FIRST: a confirmed heartbeat with the full state (04 section 4.4 step 5).
       type = confirmed ? T_HEARTBEAT_CONFIRMED : T_HEARTBEAT;
     }
-    if (type != T_SYNC) {
-      uint32_t epoch = epoch_of(unix_time);
-      ntag = net_tag(this->k_net_route_, epoch);
-      dtag = dev_tag(this->session_keys_.k_dev_tag, epoch);
-    }
+    if (clock)
+      epoch = epoch_of(unix_time);
     if (this->dl_ack_ || purpose == Purpose::LEAVE_HEARTBEAT)
       uflags |= UF_DL_ACK;
     pt[0] = uflags;
     ReadingWriter w;
-    bool firmware = purpose == Purpose::HEARTBEAT && !this->firmware_sent_;
+    bool firmware = (purpose == Purpose::HEARTBEAT || purpose == Purpose::SESSION_FIRST) && !this->firmware_sent_;
     this->encode_state_(w, purpose == Purpose::STATE, firmware, took_events, took_firmware);
     std::memcpy(pt + 1, w.data(), w.size());
     pt_len = 1 + w.size();
@@ -921,8 +973,14 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
     this->confirmed_sent_ = true;
     this->last_confirmed_sent_us_ = now;
   }
+  uint8_t tag[TAG_LEN];
+  if (is_bootstrap(type)) {
+    this->tag_for_(purpose == Purpose::JOIN, true, tag_block(fcnt), tag);
+  } else {
+    this->tag_for_(false, false, epoch, tag);
+  }
   size_t len = 0;
-  seal_frame(*keys, type, ntag, dtag, fcnt, pt, pt_len, u.frame, len);
+  seal_frame(*keys, type, tag, fcnt, pt, pt_len, u.frame, len);
   u.len = uint8_t(len);
   if (purpose != Purpose::JOIN && (pt[0] & UF_DL_ACK))
     this->dl_ack_ = false;
@@ -1010,7 +1068,7 @@ void SensorCore::finish_undelivered_(uint64_t now) {
       this->state_ = PairingState::UNPAIRED;
       this->emit_(SensorEvent::PAIRING_FAILED);
       return;
-    case Purpose::SESSION_SYNC:
+    case Purpose::SESSION_FIRST:
       // 04 section 4.3: pairing fails, keeping the root floor.
       this->erase_session_();
       this->emit_(SensorEvent::PAIRING_FAILED);
@@ -1157,16 +1215,22 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
     std::memcpy(this->k_session_, k, 16);
     secure_zero(k, sizeof(k));
     derive_keys(this->k_session_, this->config_.dev_eui, this->session_keys_);
+    this->forget_session_tags_();
     this->has_session_ = true;
     this->session_floor_ = 0;
+    // 04 section 4.4 step 4: provisional until a session downlink is accepted.
     this->state_ = PairingState::SESSION;
-    this->want_session_sync_ = true;
-    this->session_syncs_ = 0;
+    this->want_session_first_ = true;
     this->dl_ack_ = true;
   } else {
     this->session_floor_ = h.fcnt;
-    if (!this->save_u32_(Blob::SESSION_FLOOR, h.fcnt))
+    if (this->state_ == PairingState::SESSION) {
+      // 04 section 4.3: PAIRED before the downlink's commands run.
+      if (!this->paired_(now))
+        return DownlinkResult::EXCHANGE_FAILED;
+    } else if (!this->save_u32_(Blob::SESSION_FLOOR, h.fcnt)) {
       this->emit_(SensorEvent::STORAGE_FAILED);
+    }
   }
 
   this->clock_.set_unix_time(server_time);
@@ -1190,15 +1254,6 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
     } else if (!(dflags & DF_PENDING)) {
       this->pending_hb_count_ = 0;
     }
-    // Answered without SET_NETWORK: ask again, at most 4 SYNCs in all (04 section 4.3).
-    if (this->state_ == PairingState::SESSION) {
-      if (++this->session_syncs_ < MAX_SESSION_SYNCS) {
-        this->want_session_sync_ = true;
-      } else {
-        this->erase_session_();
-        this->emit_(SensorEvent::PAIRING_FAILED);
-      }
-    }
   }
   return DownlinkResult::ACCEPT;
 }
@@ -1213,17 +1268,6 @@ void SensorCore::execute_commands_(const uint8_t *cmds, size_t len, bool &had_co
     i += 2 + n;
     had_command = true;
     switch (id) {
-      case CMD_SET_NETWORK:
-        if (n != 16 || !this->has_session_)
-          break;
-        std::memcpy(this->k_net_route_, args, 16);
-        this->has_route_ = true;
-        if (this->state_ == PairingState::SESSION) {
-          this->paired_(now);
-        } else if (this->state_ == PairingState::PAIRED && !this->save_session_()) {
-          this->emit_(SensorEvent::STORAGE_FAILED);  // key rotation (04 section 7)
-        }
-        break;
       case CMD_SET_HEARTBEAT: {
         if (n != 2)
           break;
@@ -1272,23 +1316,19 @@ void SensorCore::execute_commands_(const uint8_t *cmds, size_t len, bool &had_co
   }
 }
 
-void SensorCore::paired_(uint64_t now) {
+bool SensorCore::paired_(uint64_t now) {
   this->state_ = PairingState::PAIRED;
-  // 04 section 4.6: keys and state are durable before the uplink of step 7.
+  // 04 section 4.6: keys, state and floor are durable before another uplink.
   if (!this->save_session_() || !this->save_u32_(Blob::SESSION_FLOOR, this->session_floor_)) {
     this->emit_(SensorEvent::STORAGE_FAILED);
     this->erase_session_();
     this->emit_(SensorEvent::PAIRING_FAILED);
-    return;
+    return false;
   }
   this->emit_(SensorEvent::PAIRED);
-  // 04 section 4.4 step 7: a confirmed uplink with the full state, or the waiting state change.
-  if (this->want_state_ || this->event_count_) {
-    this->want_state_confirmed_ = true;
-  } else {
-    this->boot_uplink_ = true;
-  }
+  // The first session uplink carried the full state; a change queued since goes out next.
   this->schedule_heartbeat_(now);
+  return true;
 }
 
 void SensorCore::leave_now_() {
