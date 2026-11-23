@@ -11,8 +11,8 @@ section 5.3).
     cs_mailbox.py --host 127.0.0.1 --insecure-dev        # plain ws://, tests only
 
 The protocol rules (schemas, deterministic CBOR, strict Ed25519, proofs, the
-transmission rule) are spec/tools/csframe.py's; this file is the server around
-them. See mailbox/README.md.
+transmission rule) come from the connectsensors package, whose code is
+spec/tools/csframe.py; this file is the server around them. See mailbox/README.md.
 
 Requires: cryptography, websockets
 """
@@ -33,19 +33,14 @@ from typing import Any
 sys.dont_write_bytecode = True
 
 
-def _load_csframe() -> Any:
-    """The spec's reference module: from the checkout (or the container, which keeps
-    the same layout), else from an installed connectsensors package."""
-    tools = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "spec", "tools"))
-    if os.path.exists(os.path.join(tools, "csframe.py")):
-        sys.path.insert(0, tools)
-        import csframe
-        return csframe
-    from connectsensors import _csframe
-    return _csframe
+# Run in place (the checkout, or the container, which keeps its layout), take
+# connectsensors from ../python; it loads spec/tools/csframe.py there. Installed, take
+# the installed package.
+_PYTHON = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "python"))
+if os.path.exists(os.path.join(_PYTHON, "connectsensors", "__init__.py")):
+    sys.path.insert(0, _PYTHON)
 
-
-cs = _load_csframe()
+import connectsensors as cs  # noqa: E402
 
 from websockets.asyncio.server import ServerConnection, serve  # noqa: E402
 from websockets.exceptions import ConnectionClosed  # noqa: E402

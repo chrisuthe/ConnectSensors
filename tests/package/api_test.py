@@ -1,6 +1,6 @@
 """Tests of the connectsensors server APIs a network server builds on: typed state,
-persisting and restoring JoinResponder, UplinkCollector and CommandAcks, the SENT-gated stall count
-and the exported proxy and sensor sides.
+persisting and restoring JoinResponder, UplinkCollector and CommandAcks, the SENT-gated stall count,
+the exported proxy and sensor sides, and the spec 09 federation helpers.
 
 check.sh runs it against the installed wheel and type-checks it with mypy --strict
 --warn-unreachable, which also catches state attributes typed as always None.
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 
 import connectsensors as cs
 
@@ -191,6 +192,90 @@ def proxy_side() -> None:
     print("ok   ProxyLink")
 
 
+def raises_value_error(f: Callable[[], object]) -> bool:
+    try:
+        f()
+    except ValueError:
+        return True
+    return False
+
+
+def federation() -> None:
+    # Deterministic CBOR round trip; a non-shortest integer is rejected.
+    value = [0, 23, 24, 65536, -1, -500, b"", b"\x01\x02", [1, [b"x"]]]
+    assert cs.uncbor(cs.cbor(value)) == value
+    assert cs.cbor(24) == b"\x18\x18" and raises_value_error(lambda: cs.uncbor(b"\x18\x17"))
+    assert raises_value_error(lambda: cs.cbor(True))
+
+    # Every message type has a schema, and the signed ones are the client's after AUTH.
+    types = [cs.MB_HELLO, cs.MB_AUTH, cs.MB_REGISTER, cs.MB_WITHDRAW, cs.MB_REQUEST, cs.MB_PING,
+             cs.MB_PUBLISH, cs.MB_RESULT, cs.MB_PONG, cs.MB_GREETING, cs.MB_WELCOME, cs.MB_REGISTERED,
+             cs.MB_PONG_S, cs.MB_PING_S, cs.MB_DELIVER, cs.MB_FORWARD, cs.MB_RESULT_S, cs.MB_ERROR]
+    assert sorted(types) == sorted(cs.MB_SCHEMA) and len(set(types)) == 18
+    assert cs.MB_SIGNED == {cs.MB_REGISTER, cs.MB_WITHDRAW, cs.MB_REQUEST, cs.MB_PING, cs.MB_PUBLISH,
+                            cs.MB_RESULT, cs.MB_PONG}
+    assert cs.MB_ERRORS[0] == "OK" and cs.TX_RESULTS[0] == "SENT"
+
+    # Handshake: the server signs the greeting, the client its auth.
+    server_seed, client_seed, other_seed = bytes([1] * 32), bytes([2] * 32), bytes([3] * 32)
+    server_pub, client_pub = cs.ed25519_pub(server_seed), cs.ed25519_pub(client_seed)
+    sid = cs.server_id_of(server_pub)
+    assert len(sid) == 32
+    nonce_c, nonce_s = bytes(range(16)), bytes(range(16, 32))
+    hello = cs.cbor([cs.MB_HELLO, cs.MB_VERSION, nonce_c])
+    assert cs.open_hello(hello) == cs.mb_decode(hello) == [cs.MB_HELLO, cs.MB_VERSION, nonce_c]
+    assert raises_value_error(lambda: cs.open_hello(cs.cbor([cs.MB_HELLO, cs.MB_VERSION + 1, nonce_c])))
+    assert raises_value_error(lambda: cs.mb_decode(b"\x00" * (cs.MB_MAX_MESSAGE + 1)))
+    greeting = cs.greeting_msg("mailbox.example", nonce_c, nonce_s, 7)
+    sig = cs.ed_sign(server_seed, greeting)
+    assert cs.ed_verify_error(server_pub, greeting, sig) is None
+    assert cs.ed_verify_error(server_pub, cs.greeting_msg("other.example", nonce_c, nonce_s, 7), sig) \
+        == "bad signature"
+    auth = cs.auth_msg(sid, nonce_c, nonce_s, client_pub)
+    assert cs.ed_verify_error(client_pub, auth, cs.ed_sign(client_seed, auth)) is None
+    pseud = cs.pseudonym(sid, client_pub)
+    assert len(pseud) == 8 and pseud != cs.pseudonym(sid, cs.ed25519_pub(other_seed))
+
+    # Signed messages: open_signed checks the signature and the sequence number.
+    ping = cs.signed(client_seed, sid, nonce_s, [cs.MB_PING, 1])
+    assert cs.open_signed(ping, client_pub, sid, nonce_s, 1)[:2] == [cs.MB_PING, 1]
+    assert raises_value_error(lambda: cs.open_signed(ping, client_pub, sid, nonce_s, 2))
+    assert raises_value_error(lambda: cs.open_signed(ping, client_pub, sid, bytes(16), 1))
+
+    # Registration: an entry verifies only for the server and owner it was made for.
+    keys = cs.keys_from(K_ROOT, DEV_EUI)
+    tag_seed = cs.tag_seed(keys.k_dev_tag, b"\x00" * 4)
+    entry = cs.reg_entry(tag_seed, sid, client_pub, T0 + 3600)
+    assert entry[0] == cs.ed25519_pub(tag_seed)
+    assert cs.check_entry(entry, sid, client_pub, T0) == "OK"
+    assert cs.check_entry(entry, sid, cs.ed25519_pub(other_seed), T0) == "BAD_PROOF"
+    assert cs.check_entry(entry, sid, client_pub, T0 + 3600) == "BAD_EXPIRES"
+    assert cs.sync_window(1, 0, 15) == (0, 2)
+
+    # Timing: RX2 is reachable on short round trips, not without both or after a wait.
+    assert cs.federated_request_ok(100, 200, 200, 0)
+    assert not cs.federated_request_ok(100, 200, None, 0)
+    assert not cs.federated_request_ok(100, cs.RTT_UNKNOWN, 200, 0)
+    assert not cs.federated_request_ok(100, 200, 200, 2000)
+    assert cs.RXF_TS_UNCERTAIN == 0x01 and cs.RXF_DOWNLINK == 0x02
+
+    # One request per transmission, heard by two publishers.
+    frame = cs.seal(keys, cs.T_DATA_CONFIRMED, cs.normal_tag(keys.k_dev_tag, 0), 5, b"\x00")
+    assert len(cs.frame_key(frame)) == 8
+    ref_a, ref_b = b"A" * 8, b"B" * 8
+    tx = cs.MailboxTransmissions()
+    assert tx.publish(0, frame, "a", [(ref_a, 0)]) == (1, "new")
+    assert tx.publish(10, frame, "b", [(ref_b, 0)]) == (1, "copy")
+    assert tx.publish(20, frame, "b", [(ref_a, 0)]) == (0, "BAD_FRAME")
+    assert tx.request(30, ref_a) == "forward"
+    assert tx.request(40, ref_b) == "ALREADY_ANSWERED"
+    assert tx.request(30 + cs.FORWARD_TIMEOUT_MS, ref_b) == "forward"
+    assert tx.result(40 + cs.FORWARD_TIMEOUT_MS, "a", ref_a, 0) == "ignored"  # timed out
+    assert tx.result(40 + cs.FORWARD_TIMEOUT_MS, "b", ref_b, 0) == "accepted"
+    assert tx.check_request(10 + cs.RX_REF_MS + 1, ref_b) == "UNKNOWN_RX_REF"
+    print("ok   09 federation")
+
+
 def main() -> int:
     typed_state()
     persist_pending_exchange()
@@ -198,6 +283,7 @@ def main() -> int:
     command_acks()
     stall_after_sent()
     proxy_side()
+    federation()
     print(f"connectsensors {cs.__version__}: API tests passed")
     return 0
 

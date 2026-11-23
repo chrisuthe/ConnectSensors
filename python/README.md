@@ -135,6 +135,47 @@ earlier frame cannot. `downlink()` raises `ValueError` if commands ride on an an
 to a late arrival. Persist `reply_to`, `awaiting` and `last_fcnt` and restore with
 `CommandAcks(reply_to, awaiting, last_fcnt)`.
 
+`frame_key(frame)` is the 8-byte identity copies of one transmission share (07
+section 4, step 3).
+
+**Federation (09).** The client and server sides of the mailbox protocol, for a
+home's federation client and for a mailbox server (`mailbox/cs_mailbox.py` in the
+repository is one).
+
+- Encoding: `cbor(value)` and `uncbor(data)` are the deterministic CBOR subset of 09
+  section 12.2 (integers, byte strings, arrays); `uncbor` raises `ValueError` on
+  anything else, including a non-shortest encoding. `mb_decode(data)` decodes one
+  message and checks it against `MB_SCHEMA` (type → field checks). Message types
+  `MB_*` (`MB_HELLO` … `MB_ERROR`); `MB_SIGNED` is the set a client signs after the
+  handshake. `MB_VERSION`, `MB_MAX_MESSAGE` (bytes), and `MB_ERRORS`, the error
+  names indexed by code (09 section 12.6).
+- Handshake and signing (09 sections 2.3, 12.3, 12.4): `server_id_of(server_pub)`,
+  `greeting_msg(host, nonce_c, nonce_s, generation)` (what the server signs),
+  `auth_msg(server_id, nonce_c, nonce_s, client_pub)` (what the client signs),
+  `signed(seed, server_id, nonce_s, message)` (a client message with its signature
+  appended), `ed_sign(seed, msg)` and `ed_verify_error(pub, msg, sig)`, the strict
+  Ed25519 check of 09 section 5.2, which returns why a signature fails or `None`.
+- Server side: `open_hello(data)` and `open_signed(data, client_pub, server_id,
+  nonce_s, seq)` check incoming messages and raise `ValueError`;
+  `pseudonym(server_id, client_pub)` is the name the server shows other clients;
+  `check_entry(entry, server_id, owner_pub, now)` returns a registration entry's
+  status (`"OK"`, `"BAD_PROOF"`, `"BAD_EXPIRES"`). `MailboxTransmissions()` is the
+  one-request-per-transmission rule and result handling (09 sections 7.2 to 7.5):
+  `publish`, `request` (or `check_request` without its effect) and `result`, on a
+  millisecond clock.
+- Registration (09 section 5): `reg_entry(seed, server_id, owner_pub, expires)`
+  builds the `[pub, proof, expires]` entry for a tag seed;
+  `sync_window(last_fcnt, silence_s, h_minutes)` is the first and last `SYNC` block
+  to keep registered.
+- Receptions and timing (09 sections 6.2, 7.3, 7.5, 7.6): reception flags
+  `RXF_TS_UNCERTAIN` and `RXF_DOWNLINK`; `RX_REF_MS`, how long an `rx_ref` can be
+  requested; `FORWARD_TIMEOUT_MS`, after which an unanswered forward stops blocking
+  its transmission; `RTT_UNKNOWN` (65 535), the `rtt_pub` a delivery carries when
+  it is unknown; and `federated_request_ok(age_ms, rtt_pub_ms, rtt_owner_ms, waited_ms)`, whether an
+  owner can still reach RX2 through a delivered reception.
+
+`TX_RESULTS` (05 section 5.5) names the `TX_RESULT` codes, indexed by code.
+
 **For tests.** `ProxyLink(boot_id)` is the proxy's side of the envelope session and
 `SensorPairing(k_root, dev_eui)` the sensor's side of pairing, including the
 provisional state before the first session downlink, so a

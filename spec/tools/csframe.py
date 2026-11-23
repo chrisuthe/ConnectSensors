@@ -805,6 +805,7 @@ MAX_ANSWERS_AGAIN = 3       # one per sensor retry
 
 
 def frame_key(frame: bytes) -> bytes:
+    """A frame's 8-byte identity for grouping copies of one transmission (07 section 4)."""
     return hashlib.sha256(frame).digest()[:8]
 
 
@@ -898,6 +899,7 @@ def unwrap(prev_raw: int, prev_total: int, raw: int, modulus: int) -> tuple[int,
 # ======================================================================== 09
 
 def ed_sign(seed: bytes, msg: bytes) -> bytes:
+    """The Ed25519 signature of msg under the key with this 32-byte seed."""
     return Ed25519PrivateKey.from_private_bytes(seed).sign(msg)
 
 
@@ -984,6 +986,7 @@ def ed_verify_error(pub: bytes, msg: bytes, sig: bytes, strict: bool = True) -> 
 # Deterministic CBOR (RFC 8949 section 4.2.1), limited to what 09 section 12.2
 # uses: unsigned and negative integers, byte strings and arrays.
 def cbor(v: Any) -> bytes:
+    """Encode ints, bytes and lists of them; raises ValueError for anything else."""
     def head(major: int, n: int) -> bytes:
         if n < 24:
             return bytes([major << 5 | n])
@@ -1136,19 +1139,23 @@ def open_hello(data: bytes) -> list[Any]:
 
 
 def server_id_of(server_pub: bytes) -> bytes:
+    """A mailbox server's id, the SHA-256 of its public key (09 section 2.3)."""
     return hashlib.sha256(server_pub).digest()
 
 
 def pseudonym(server_id: bytes, client_pub: bytes) -> bytes:
+    """The 8-byte name a server shows other clients for this one (09 section 2.3)."""
     return hashlib.sha256(b"cs1 mbx pseud" + server_id + client_pub).digest()[:8]
 
 
 def greeting_msg(host: str, nonce_c: bytes, nonce_s: bytes, generation: int) -> bytes:
+    """The bytes a server signs in its greeting (09 section 12.3)."""
     h = host.encode("ascii")
     return b"cs1 mbx greeting" + bytes([len(h)]) + h + nonce_c + nonce_s + struct.pack(">Q", generation)
 
 
 def auth_msg(server_id: bytes, nonce_c: bytes, nonce_s: bytes, client_pub: bytes) -> bytes:
+    """The bytes a client signs in its auth (09 section 12.3)."""
     return b"cs1 mbx auth" + server_id + nonce_c + nonce_s + client_pub
 
 
@@ -1179,6 +1186,8 @@ def reg_msg(server_id: bytes, owner_pub: bytes, expires: int) -> bytes:
 
 
 def reg_entry(seed: bytes, server_id: bytes, owner_pub: bytes, expires: int) -> list[Any]:
+    """A registration entry for the tag of the key with this seed: [pub, proof, expires]
+    (09 section 5.1). seed is the tag's seed (tag_seed); expires is Unix seconds."""
     return [ed25519_pub(seed), ed_sign(seed, reg_msg(server_id, owner_pub, expires)), expires]
 
 
@@ -1260,6 +1269,7 @@ class MailboxTransmissions:
         return "forward"
 
     def request(self, now_ms: int, rx_ref: bytes) -> str:
+        """forward (and record it), UNKNOWN_RX_REF or ALREADY_ANSWERED."""
         status = self.check_request(now_ms, rx_ref)
         if status != "forward":
             return status

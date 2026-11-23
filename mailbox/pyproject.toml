@@ -12,7 +12,7 @@ description = "Reference mailbox server for ConnectSensors federation (spec 09)"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13"
-dependencies = ["connectsensors", "cryptography", "websockets>=14"]
+dependencies = ["connectsensors>=0.4.2", "cryptography", "websockets>=14"]
 
 [project.scripts]
 cs-mailbox = "cs_mailbox:main"
