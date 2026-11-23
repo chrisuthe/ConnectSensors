@@ -281,7 +281,10 @@ messages. It never originates or modifies frames.
 - When disconnected, the proxy keeps forwarding to the configured address and
   keeps accepting `DOWNLINK` messages that pass the envelope checks.
 - With mDNS discovery, a proxy that has been disconnected for 5 minutes repeats
-  discovery.
+  discovery. Only time with an address counts: a proxy that resolved an address and
+  never connected repeats discovery 5 minutes after resolving it, and the time spent
+  looking an address up does not count. Once an address is known again, the proxy
+  sends a `HELLO` at once instead of waiting for its next periodic one.
 - A server restart needs nothing from the proxy beyond 05 section 3.2: it answers
   the restarted server's `HELLO_REQUEST` and follows its `seq` through the
   `SERVER_STATUS` echo. It never reboots to reconnect.
@@ -485,6 +488,9 @@ be run against a test server built from the reference tool:
     `max_loop_gap_ms`, and one with the bit 10 seconds later. The periodic
     `HELLO` stays on its 60-second schedule. A second change within 5 seconds
     of such a `HELLO` is announced when the 5 seconds are up.
+15. A proxy that has been disconnected for 5 minutes with a server address
+    resolves the address again, also when it never connected, and sends a `HELLO`
+    as soon as the address is known again.
 
 ## 15. Upstream improvements (informative)
 

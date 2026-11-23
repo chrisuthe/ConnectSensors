@@ -7,7 +7,6 @@
 import os
 import socket
 import struct
-import subprocess
 import sys
 import tempfile
 import time
@@ -15,13 +14,16 @@ import time
 sys.dont_write_bytecode = True
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "spec", "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import csframe as cs  # noqa: E402
+from procwatch import Watched  # noqa: E402
 
 KEY = bytes.fromhex("5a" * 16)
 PROXY_ID = bytes.fromhex("348518fffe000001")
 PROXY_B = bytes.fromhex("348518fffe000002")
 BOOT = 0x01020304
 OLD_BOOT = 0x0BADB007
+NEW_BOOT = 0x01020305
 
 
 def free_port() -> int:
@@ -36,18 +38,16 @@ def free_port() -> int:
 PORT = free_port()
 
 
-def start_server(*extra: str) -> subprocess.Popen:
-    srv = subprocess.Popen(
-        [sys.executable, "-I", os.path.join(ROOT, "devtools", "cs_testserver.py"), "--port", str(PORT),
-         "--key", KEY.hex(), "--ack", *extra],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    time.sleep(1.0)
+def start_server(*extra: str) -> Watched:
+    srv = Watched([sys.executable, "-I", os.path.join(ROOT, "devtools", "cs_testserver.py"), "--port", str(PORT),
+                   "--key", KEY.hex(), "--ack", *extra])
+    if srv.wait_for(r"Listening on UDP") is None:
+        raise RuntimeError("test server did not start:\n" + srv.stop())
     return srv
 
 
-def stop_server(srv: subprocess.Popen) -> str:
-    srv.terminate()
-    return srv.communicate(timeout=5)[0]
+def stop_server(srv: Watched) -> str:
+    return srv.stop()
 
 
 def now_ms() -> int:
@@ -187,12 +187,11 @@ def main() -> int:
         body = bytes.fromhex(m["body"])
         check(m["type"] == cs.M_DOWNLINK and struct.unpack(">QIB", body[:13])[1] == 1_000_000,
               "downlink after a TX_RESULT still targets RX1")
-        time.sleep(0.5)
+        srv.wait_for(rf"TX_RESULT seq {dl_seq}:")
         out = stop_server(srv)
 
         # Restart the server (#4, #5) with no clock seeding: its seq starts again at 1,
         # far below the proxy's floor. The proxy keeps its boot and its checks.
-        time.sleep(1.0)
         srv = start_server("--no-seq-seed")
         proxy.send(cs.M_UPLINK, up)
         sent_at = time.monotonic()
@@ -232,15 +231,88 @@ def main() -> int:
         m, res = proxy.recv()
         check(m["type"] == cs.M_SERVER_STATUS and m["boot_id"] == BOOT and res == "accepted",
               "the session still belongs to the running proxy's boot")
+
+        # A frame that is not the test device's is logged and not answered, even confirmed.
+        mark = srv.mark()
+        stranger = cs.keys_from(bytes(range(16)), bytes.fromhex("c5c50000000000ff"))
+        foreign = cs.seal(stranger, cs.T_DATA_CONFIRMED, bytes.fromhex("61d306d3"), bytes.fromhex("01020304"), 9,
+                          bytes([0]) + cs.encode_reading(0, 0x01, 1))
+        proxy.send(cs.M_UPLINK, cs.uplink_body(9_000_000, -95.0, 3.0, 0, foreign))
+        check(srv.wait_for(r"UPLINK DATA_CONFIRMED fcnt 9 .*\(not the test device\)", since=mark) is not None,
+              "frame from another device logged as not the test device")
+        check(no_reply(s), "frame from another device not answered")
+
+        # The proxy reboots: a new boot_id takes the session over through the HELLO
+        # handshake, its downlinks carry it, and the old boot gets only a HELLO_REQUEST.
+        mark = srv.mark()
+        rebooted = SimProxy(s, dest, PROXY_ID, NEW_BOOT)
+        join(rebooted, "proxy A after a reboot")
+        check(srv.wait_for(rf"{PROXY_ID.hex()}: session with boot {NEW_BOOT:08x}", since=mark) is not None,
+              "server switches the session to the new boot")
+        rebooted.send(cs.M_UPLINK, cs.uplink_body(11_000_000, -90.0, 7.5, 0, frames["sync_after_reboot"]))
+        m, res = rebooted.recv()
+        check(m["type"] == cs.M_DOWNLINK and m["boot_id"] == NEW_BOOT and res == "accepted",
+              "after a reboot, the DOWNLINK carries the new boot_id")
+        proxy.send(cs.M_UPLINK, up)
+        m = cs.open_envelope(KEY, s.recv(2048))
+        check(m["type"] == cs.M_HELLO_REQUEST and m["boot_id"] == BOOT,
+              "the old boot's UPLINK draws a HELLO_REQUEST for that boot, not a DOWNLINK")
     finally:
         out2 = stop_server(srv)
     check(f"TX_RESULT seq {dl_seq}: SENT, 1.5 ms after target" in out, "TX_RESULT reported")
     check(out.count("two downlink-capable proxies share --key") == 1,
           "a second downlink-capable proxy on the one key draws one warning")
     check("share --key" not in out2, "no warning with a single proxy")
+    check(f"session with boot {NEW_BOOT:08x}" in out2, "server logs the reboot's new session")
     print("--- server output ---\n" + out.strip())
     print("--- restarted server output ---\n" + out2.strip())
     print("all checks pass" if failures == 0 else f"{failures} failures")
+    return 1 if failures else 0
+
+
+def no_reply(s: socket.socket, wait: float = 0.5) -> bool:
+    """Nothing arrives within wait. The caller has already seen the server handle the message."""
+    s.settimeout(wait)
+    try:
+        s.recv(2048)
+        return False
+    except socket.timeout:
+        return True
+    finally:
+        s.settimeout(3)
+
+
+# --window rx2: a confirmed uplink is answered 3 s after it was received (07 section 6.3).
+def rx2_main() -> int:
+    failures = 0
+
+    def check(cond, what):
+        nonlocal failures
+        print(("ok   " if cond else "FAIL ") + what)
+        failures += not cond
+
+    frame = bytes.fromhex(next(f["frame"] for f in cs.frame_vectors()["frames"] if f["name"] == "data_confirmed"))
+    srv = start_server("--window", "rx2")
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(3)
+        proxy = SimProxy(s, ("127.0.0.1", PORT), PROXY_ID, BOOT)
+        proxy.send(cs.M_HELLO, hello())
+        m, _ = proxy.recv()
+        proxy.send(cs.M_HELLO, hello(nonce_of(m)))
+        m, res = proxy.recv()
+        check(m["type"] == cs.M_SERVER_STATUS and res == "accepted", "rx2: proxy session up")
+        rx_time = 8_000_000
+        proxy.send(cs.M_UPLINK, cs.uplink_body(rx_time, -90.0, 7.5, 0, frame))
+        m, res = proxy.recv()
+        body = bytes.fromhex(m["body"])
+        check(m["type"] == cs.M_DOWNLINK and res == "accepted" and struct.unpack(">QI", body[:12]) == (rx_time, 3_000_000),
+              "rx2: confirmed uplink answered with a DOWNLINK 3 s after its receive time")
+        srv.wait_for(r"answering fcnt 3 in rx2")
+    finally:
+        out = stop_server(srv)
+    check("downlinks on (rx2)" in out and "answering fcnt 3 in rx2" in out, "rx2: server reports the RX2 window")
+    print("rx2: all checks pass" if failures == 0 else f"rx2: {failures} failures")
     return 1 if failures else 0
 
 
@@ -338,14 +410,13 @@ def pairing_main() -> int:
             last_down = h.fcnt
             plain = cs.seal(session, cs.T_DATA, ntag, dtag, 5, bytes([0]) + cs.encode_reading(0, 0x01, 1))
             check(uplink(proxy, plain) is None, "pairing: unconfirmed DATA not answered")
-            time.sleep(0.3)
+            srv.wait_for(r"UPLINK DATA fcnt 5 ")
         finally:
             out = stop_server(srv)
         check(f"{SENSOR_EUI.hex()} PAIRED" in out, "pairing: server reports the device PAIRED")
         check("ch0 contact=0" in out, "pairing: server decrypts the door state")
 
         # A restart with --state keeps the session and both counters.
-        time.sleep(1.0)
         srv = start_server("--device", code, "--state", state)
         try:
             proxy = SimProxy(s, dest, PROXY_ID, PAIR_BOOT_2)
@@ -369,4 +440,5 @@ def pairing_main() -> int:
 
 if __name__ == "__main__":
     rc = main()
+    rc = rx2_main() or rc
     sys.exit(pairing_main() or rc)

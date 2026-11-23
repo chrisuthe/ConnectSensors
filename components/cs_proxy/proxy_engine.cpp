@@ -138,12 +138,21 @@ void ProxyEngine::loop_end() {
     this->set_connected_(false);
     this->disconnected_since_us_ = now;
   }
-  // Re-resolve a hostname after a long disconnect, in case its address changed.
-  if (!this->connected_ && this->hello_sent_ && this->disconnected_since_us_ != 0 &&
-      now - this->disconnected_since_us_ > REDISCOVER_AFTER_US) {
-    this->log_(LogLevel::Info, "Resolving server address again");
-    this->io_.rediscover();
-    this->disconnected_since_us_ = now;
+  // Re-resolve a hostname after a long disconnect, in case its address changed. Only
+  // time with an address counts, so a proxy that never connected also gets there and
+  // a slow lookup does not trigger the next one at once.
+  if (!this->connected_) {
+    if (!this->io_.server_known()) {
+      this->disconnected_since_us_ = 0;
+    } else if (this->disconnected_since_us_ == 0) {
+      this->disconnected_since_us_ = now;
+    } else if (now - this->disconnected_since_us_ > REDISCOVER_AFTER_US) {
+      this->log_(LogLevel::Info, "Resolving server address again");
+      this->io_.rediscover();
+      this->disconnected_since_us_ = 0;
+      // HELLO as soon as the address is known again, not at the next 60 s tick.
+      this->hello_sent_ = false;
+    }
   }
 }
 

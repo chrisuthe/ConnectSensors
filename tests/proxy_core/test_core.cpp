@@ -190,6 +190,20 @@ static void test_envelope() {
   CHECK(parse_server_status(ss.data(), ss.size(), st));
   CHECK(st.server_time == 1795226400u && st.hello_seq == 2 && st.tags.size() == 3 && st.tags[1] == 0x61d306d3u);
   CHECK(!parse_server_status(ss.data(), ss.size() - 1, st));
+  // At most 32 tags (05 section 5.3): 32 parse, 33 do not, even with the length right.
+  for (uint32_t n : {32u, 33u, 255u}) {
+    ByteWriter w;
+    w.u32(1795226400);
+    w.u32(0);
+    w.u8(uint8_t(n));
+    for (uint32_t i = 0; i < n; i++)
+      w.u32(0x1000 + i);
+    ServerStatus many;
+    const bool ok = parse_server_status(w.buf.data(), w.buf.size(), many);
+    CHECK(ok == (n <= 32));
+    if (ok)
+      CHECK(many.tags.size() == n && many.tags[n - 1] == 0x1000 + n - 1);
+  }
 
   auto dl = unhex(env("downlink").body);
   DownlinkRequest r{};
@@ -250,6 +264,20 @@ static void test_dedupe() {
   CHECK(c.contains(5, 2000, W) && c.contains(2, 2000, W));
 }
 
+// Inserting a key already cached refreshes it in place: its window restarts and it
+// becomes the newest entry, so it outlives keys inserted after its first copy.
+static void test_dedupe_reinsert() {
+  const uint64_t W = 2000000;
+  DedupeCache c(2);
+  c.insert(1, 1000);
+  c.insert(2, 2000);
+  c.insert(1, 1000 + W - 1);
+  CHECK(c.contains(1, 1000 + W, W));  // would have expired counting from the first insert
+  CHECK(c.contains(2, 1000 + W, W));  // and took no second entry
+  c.insert(3, 1000 + W);              // evicts 2, now the oldest
+  CHECK(c.contains(1, 1000 + W, W) && c.contains(3, 1000 + W, W) && !c.contains(2, 1000 + W, W));
+}
+
 // A sensor's retry is the same bytes 4 s or more later (08 section 5); the
 // default window must merge near-simultaneous copies but forward the retry.
 static void test_dedupe_lets_retries_through() {
@@ -301,6 +329,33 @@ static void test_rate_limits() {
   CHECK(ok == 20);
 }
 
+// 32 per-device buckets; the 33rd dev_tag takes the least recently used one, and a
+// device that comes back after losing its slot starts with a full bucket.
+static void test_rate_limit_eviction() {
+  RateLimiter rl(1000, 2, 5, 5);  // global out of the way
+  auto dev = [](uint32_t tag) { return FrameHeader{2, 1, tag, 1}; };
+  uint64_t t = 1000000;
+  // 1 is drained first, 2 last; the slots fill with 1..32.
+  for (int i = 0; i < 5; i++)
+    CHECK(rl.allow(dev(1), t));
+  for (uint32_t tag = 3; tag <= 32; tag++)
+    CHECK(rl.allow(dev(tag), ++t));
+  for (int i = 0; i < 5; i++)
+    CHECK(rl.allow(dev(2), ++t));
+  CHECK(!rl.allow(dev(1), ++t) && !rl.allow(dev(2), t));  // both drained; 1 is used again
+  // The 33rd evicts the least recently used: 3, not 1 or 2.
+  CHECK(rl.allow(dev(33), ++t));
+  CHECK(!rl.allow(dev(1), ++t) && !rl.allow(dev(2), t));
+  int ok = 0;
+  for (int i = 0; i < 6; i++)
+    ok += rl.allow(dev(3), t);
+  CHECK(ok == 5);  // 3 lost its slot (to 33) and got a fresh one (evicting 4)
+  ok = 0;
+  for (int i = 0; i < 6; i++)
+    ok += rl.allow(dev(33), t);
+  CHECK(ok == 4);  // 33 kept its slot: one token spent above
+}
+
 static void test_receive_pipeline() {
   const uint64_t W = 30000000;
   DedupeCache dedupe(8);
@@ -347,6 +402,32 @@ static void test_budget() {
   CHECK(b.used_us(t + 59ULL * 60000000) == 71900000u);
   CHECK(b.used_us(t + 61ULL * 60000000) == 0);
   CHECK(b.can_spend(200000, t + 61ULL * 60000000));
+}
+
+// The budget is a sliding hour in one-minute buckets: each minute's airtime leaves
+// the total 60 minutes after the minute it was spent in, one bucket at a time.
+static void test_budget_rollover() {
+  const uint64_t MIN = 60000000ULL;
+  const uint64_t t0 = 100 * MIN;  // a minute boundary
+  AirtimeBudget b(20);
+  for (uint64_t m = 0; m < 5; m++)
+    b.spend(1000 * (m + 1), t0 + m * MIN + 30000000);  // mid-minute
+  CHECK(b.used_us(t0 + 59 * MIN + 59999999) == 15000u);
+  CHECK(b.used_us(t0 + 60 * MIN) == 14000u);  // minute 0 has left
+  CHECK(b.used_us(t0 + 61 * MIN) == 12000u);
+  // Skipping minutes drops every bucket passed over, and only those.
+  CHECK(b.used_us(t0 + 63 * MIN + 1) == 5000u);
+  b.spend(700, t0 + 63 * MIN + 2);
+  CHECK(b.used_us(t0 + 64 * MIN) == 700u);
+  // A spend lands in the current minute, after its bucket was cleared of the old hour.
+  b.spend(300, t0 + 64 * MIN);
+  CHECK(b.used_us(t0 + 122 * MIN + 59999999) == 1000u);
+  CHECK(b.used_us(t0 + 123 * MIN) == 300u);
+  CHECK(b.used_us(t0 + 124 * MIN) == 0u);
+  // An idle gap of an hour or more clears everything at once.
+  b.spend(500, t0 + 200 * MIN);
+  CHECK(b.used_us(t0 + 200 * MIN + 1) == 500u);
+  CHECK(b.used_us(t0 + 400 * MIN) == 0u);
 }
 
 static void test_scheduler() {
@@ -406,6 +487,28 @@ static void test_scheduler() {
   CHECK(s3.admit(2, now + 3000000, f.data(), f.size(), air, now, true, room) == TX_DUTY_CYCLE);
   s3.release(s3.due(now + 1000000));
   CHECK(s3.admit(2, now + 3000000, f.data(), f.size(), air, now, true, room) == TX_SENT);
+}
+
+// Four transmit slots: a fifth downlink is BUSY even when its time is free, until a
+// slot is released.
+static void test_scheduler_slots_full() {
+  auto f = frame("downlink_ack");
+  const uint32_t air = lora_airtime_us(f.size(), 9, 500000);
+  AirtimeBudget budget(20);
+  TxScheduler s;
+  const uint64_t now = 10000000;
+  for (uint32_t i = 0; i < TX_SLOTS; i++)
+    CHECK(s.admit(i + 1, now + 500000 * (i + 1), f.data(), f.size(), air, now, true, budget) == TX_SENT);
+  const uint64_t free_time = now + 500000 * (TX_SLOTS + 1);
+  CHECK(s.admit(9, free_time, f.data(), f.size(), air, now, true, budget) == TX_BUSY);
+  // An in-flight slot is still taken.
+  ScheduledTx *first = s.due(now + 500000);
+  CHECK(first != nullptr && first->seq == 1);
+  s.start(first, now + 500000);
+  CHECK(s.admit(9, free_time, f.data(), f.size(), air, now, true, budget) == TX_BUSY);
+  s.release(first);
+  CHECK(s.admit(9, free_time, f.data(), f.size(), air, now, true, budget) == TX_SENT);
+  CHECK(s.admit(10, free_time + 500000, f.data(), f.size(), air, now, true, budget) == TX_BUSY);
 }
 
 static void test_eui64() {
@@ -978,10 +1081,49 @@ static void test_engine_connection() {
   CHECK(r.io.rediscovers == 0);
   r.run_until(lost + REDISCOVER_AFTER_US + 16000);
   CHECK(r.io.rediscovers == 1);
+  // The HELLO goes out as soon as the address is known again, not at the 60 s tick.
+  r.take();
+  r.run_until(r.io.t + 1000000);
+  CHECK(r.take(MSG_HELLO).empty());  // still resolving
+  r.io.server = true;
+  r.loop();
+  CHECK(r.take(MSG_HELLO).size() == 1);
   // A SERVER_STATUS reconnects.
+  r.loop({r.status()});
+  CHECK(r.engine->connected());
+}
+
+// Rediscovery also covers a proxy that never connected: a wrong address resolved at
+// boot is not kept forever (06 section 9). Only time with an address counts.
+static void test_engine_rediscover_never_connected() {
+  Rig r;
+  r.io.server = false;
+  r.run_until(r.io.t + 2 * REDISCOVER_AFTER_US);  // no address at all: nothing to forget
+  CHECK(r.io.rediscovers == 0);
+  r.io.server = true;
+  const uint64_t known = r.io.t + 16000;
+  r.run_until(known);
+  CHECK(r.take(MSG_HELLO).size() == 1);
+  r.run_until(known + REDISCOVER_AFTER_US);
+  CHECK(r.io.rediscovers == 0);
+  r.run_until(known + REDISCOVER_AFTER_US + 16000);
+  CHECK(r.io.rediscovers == 1 && !r.engine->connected());
+  // A lookup slower than the interval does not trigger the next rediscovery at once.
+  r.run_until(r.io.t + REDISCOVER_AFTER_US + 1000000);
+  CHECK(r.io.rediscovers == 1);
+  r.take();
+  r.io.server = true;
+  const uint64_t again = r.io.t + 16000;
+  r.run_until(again);
+  CHECK(r.take(MSG_HELLO).size() == 1 && r.io.rediscovers == 1);
+  r.run_until(again + REDISCOVER_AFTER_US + 16000);
+  CHECK(r.io.rediscovers == 2);
+  // Once connected, none until the connection is lost.
   r.io.server = true;
   r.loop({r.status()});
   CHECK(r.engine->connected());
+  r.run_until(r.io.t + CONNECT_TIMEOUT_US);
+  CHECK(r.io.rediscovers == 2);
 }
 
 // Conformance item 5 and the other envelope paths.
@@ -1328,12 +1470,16 @@ int main() {
   test_seq_guard();
   test_hello_echoes();
   test_dedupe();
+  test_dedupe_reinsert();
   test_dedupe_lets_retries_through();
   test_rate_limits();
+  test_rate_limit_eviction();
   test_receive_pipeline();
   test_airtime();
   test_budget();
+  test_budget_rollover();
   test_scheduler();
+  test_scheduler_slots_full();
   test_eui64();
   test_engine_forwarding();
   test_engine_dedupe_and_offline();
@@ -1343,6 +1489,7 @@ int main() {
   test_engine_hello_and_capability();
   test_engine_capability_hello_rate();
   test_engine_connection();
+  test_engine_rediscover_never_connected();
   test_engine_envelope_checks();
   test_engine_server_restart();
   test_engine_hello_request();
