@@ -497,10 +497,12 @@ Federated downlinks only answer confirmed uplinks, in RX2, so:
   change, or the confirmed heartbeat at least every 4 hours (RECOMMENDED; at most
   24 hours, 08 section 4.2). The first queued command can wait that long. 07
   section 7 states this for the user.
-- An answer carrying `PENDING` makes the sensor send an unconfirmed `HEARTBEAT`
-  2 to 4 seconds later (08 section 7). Federation cannot answer it, so the next
-  queued command waits for the next confirmed uplink. (A confirmed follow-up
-  heartbeat is planned for 08.)
+- An answer carrying `PENDING` arrives in RX2, so the sensor's follow-up 2 to 4
+  seconds later is a `HEARTBEAT_CONFIRMED` (08 section 7). It is published and
+  answered like any confirmed uplink, so the next queued commands follow within
+  seconds, for up to 4 follow-ups in a row. The sensor doesn't retry a
+  follow-up. If one goes unanswered, or the 4 are used up, the remaining
+  commands wait for the next confirmed uplink.
 
 Section 9's credit needs a downlink that carries a command; the owner MAY send
 `NOP` (02 section 10.3) when it has no command to send.

@@ -814,7 +814,8 @@ void SensorCore::loop() {
       break;
     case Phase::WAIT_RETRY: {
       bool can_abandon = this->cur_.attempts > 0 && !this->cur_.has_event &&
-                         (this->cur_.purpose == Purpose::STATE || this->cur_.purpose == Purpose::HEARTBEAT);
+                         (this->cur_.purpose == Purpose::STATE || this->cur_.purpose == Purpose::HEARTBEAT ||
+                          this->cur_.purpose == Purpose::FOLLOW_UP);
       if (can_abandon && this->want_state_) {
         // 08 section 5: newer state replaces pending retries, as a new confirmed frame.
         // Abandoned is not undelivered: that needs the last retry to go unanswered.
@@ -870,7 +871,7 @@ void SensorCore::start_next_(uint64_t now) {
     return;
   }
   if (this->want_pending_hb_ && now >= this->pending_hb_at_us_) {
-    if (this->build_(Purpose::HEARTBEAT, false, now))
+    if (this->build_(Purpose::FOLLOW_UP, this->pending_hb_confirmed_, now))
       this->want_pending_hb_ = false;
     return;
   }
@@ -992,7 +993,9 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
       uflags |= UF_DL_ACK;
     pt[0] = uflags;
     ReadingWriter w;
-    bool firmware = (purpose == Purpose::HEARTBEAT || purpose == Purpose::SESSION_FIRST) && !this->firmware_sent_;
+    bool firmware = (purpose == Purpose::HEARTBEAT || purpose == Purpose::FOLLOW_UP ||
+                     purpose == Purpose::SESSION_FIRST) &&
+                    !this->firmware_sent_;
     this->encode_state_(w, purpose == Purpose::STATE, firmware, took_events, took_firmware);
     std::memcpy(pt + 1, w.data(), w.size());
     pt_len = 1 + w.size();
@@ -1076,6 +1079,13 @@ void SensorCore::window_closed_(uint64_t now) {
     this->finish_unconfirmed_();
     return;
   }
+  if (u.purpose == Purpose::FOLLOW_UP && u.type != T_SYNC) {
+    // 08 section 7: never retried and never undelivered. The next answered uplink
+    // brings PENDING again if commands are still queued. A SYNC (no clock) is
+    // retried like any SYNC (08 section 3.2).
+    this->phase_ = Phase::IDLE;
+    return;
+  }
   uint8_t retries_done = uint8_t(u.attempts - 1);
   if (retries_done < MAX_RETRIES) {
     // 08 section 5: measured from the end of the original transmission.
@@ -1098,7 +1108,8 @@ void SensorCore::finish_answered_(uint64_t now) {
   this->phase_ = Phase::IDLE;
   if (this->cur_.has_firmware)
     this->firmware_sent_ = true;
-  if (this->cur_.confirmed && (this->cur_.purpose == Purpose::STATE || this->cur_.purpose == Purpose::HEARTBEAT))
+  if (this->cur_.confirmed && (this->cur_.purpose == Purpose::STATE || this->cur_.purpose == Purpose::HEARTBEAT ||
+                               this->cur_.purpose == Purpose::FOLLOW_UP))
     this->emit_(SensorEvent::UPLINK_ANSWERED);
 }
 
@@ -1289,10 +1300,15 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
     if (had_command)
       this->dl_ack_ = true;
     // 08 section 7: PENDING asks for a HEARTBEAT in 2-4 s, at most 4 times in a row.
+    // After RX2 it is confirmed, so its own RX2 opens for a server that only uses RX2.
+    // A row restarts with any answered uplink that was not itself a follow-up.
+    if (this->cur_.purpose != Purpose::FOLLOW_UP)
+      this->pending_hb_count_ = 0;
     if ((dflags & DF_PENDING) && this->state_ == PairingState::PAIRED && !this->want_leave_heartbeat_ &&
         this->pending_hb_count_ < MAX_PENDING_HEARTBEATS) {
       this->pending_hb_count_++;
       this->want_pending_hb_ = true;
+      this->pending_hb_confirmed_ = this->rx_index_ == 2;
       this->pending_hb_at_us_ = now + 2000000 + this->jitter_(2000000);
     } else if (!(dflags & DF_PENDING)) {
       this->pending_hb_count_ = 0;

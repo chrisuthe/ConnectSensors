@@ -386,9 +386,11 @@ answer to a retransmitted `JOIN`, which is the cached `KEY_EXCHANGE` frame
   answered only in RX2, after a confirmed uplink (09 section 7.7). Its first
   queued command, or a clock correction, waits for its next confirmed uplink: a
   confirmed state change, or the confirmed heartbeat, sent at least every 4 hours
-  (RECOMMENDED; at most 24 hours, 08 section 4.2). Each later command waits for
-  the next one. The user interface SHOULD say so when a command is queued for
-  such a device.
+  (RECOMMENDED; at most 24 hours, 08 section 4.2). Commands that do not fit in
+  that answer follow within seconds in answers to the sensor's confirmed
+  follow-up heartbeats (08 section 7), up to 4 in a row; any left after that
+  wait for the next confirmed uplink. The user interface SHOULD say so when a
+  command is queued for such a device.
 
 ## 8. Supervision
 

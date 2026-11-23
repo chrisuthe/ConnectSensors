@@ -14,6 +14,13 @@ decrypted and their confirmed ones answered, with or without --ack. They are
 found through a tag table (07 section 3); a JOIN, or a SYNC past the table's
 blocks, falls back to trial decryption, at most 50 a minute (07 section 4).
 
+--queue-nop N, or typing `nop [N]` on stdin, queues NOP commands for every paired
+--device. They go out one per downlink, so PENDING stays set while more remain
+and the sensor's follow-up heartbeats (08 section 7) drain the queue. A command
+stays queued until an uplink acknowledges it with DL_ACK (07 section 7). With
+--window rx1 the server answers an unconfirmed uplink while commands are queued;
+with --window rx2 it cannot (07 section 6.3), so only confirmed follow-ups drain it.
+
 Development only: every proxy uses the one --key. Spec 05 section 4.2 requires a
 key of its own for each proxy that accepts downlinks, so sending downlinks to more
 than one proxy under this key is not compliant; anyone holding it can make all of
@@ -26,6 +33,7 @@ them transmit. The server logs a warning when that happens.
     python3 devtools/cs_testserver.py --device CS:1:...              # a sensor, by pairing code
     python3 devtools/cs_testserver.py --device DEV_EUI:K_ROOT        # or by hex dev_eui and root key
     python3 devtools/cs_testserver.py --device ... --state pairings.json  # keep sessions across restarts
+    python3 devtools/cs_testserver.py --device ... --window rx2 --queue-nop 3  # exercise PENDING
 
 Requires: cryptography (pip install cryptography)
 """
@@ -36,6 +44,7 @@ import argparse
 import json
 import os
 import secrets
+import select
 import socket
 import sys
 import time
@@ -134,6 +143,15 @@ class RealDevice:
         self.session = None
         self.fcnt_down = 0  # session downlink counter, from 1 with each k_session
         self.uplinks = cs.UplinkCollector(0)
+        # Queued commands, each (serial, bytes) so equal NOPs stay distinct; not persisted.
+        self.queue: list[tuple[int, bytes]] = []
+        self.acks: cs.CommandAcks[tuple[int, bytes]] = cs.CommandAcks()
+        self.serial = 0
+
+    def queue_nops(self, n: int) -> None:
+        for _ in range(n):
+            self.serial += 1
+            self.queue.append((self.serial, cs.command(cs.CMD_NOP)))
 
     def to_json(self) -> dict:
         return {"root_fcnt_down": self.join.root_fcnt_down, "state": self.state,
@@ -267,7 +285,13 @@ def main() -> int:
                     help="a sensor to pair: its CS:1:... pairing code, or DEV_EUI:K_ROOT in hex (repeatable)")
     ap.add_argument("--state", metavar="FILE",
                     help="keep the devices' sessions and counters in FILE, so a restart needs no re-pairing")
+    ap.add_argument("--queue-nop", type=int, default=0, metavar="N",
+                    help="queue N NOP commands for each --device, sent one per downlink with PENDING "
+                         "(type `nop [N]` on stdin to queue more)")
     args = ap.parse_args()
+    if args.queue_nop < 0:
+        print("--queue-nop must not be negative", file=sys.stderr)
+        return 2
 
     key = bytes.fromhex(args.key) if args.key else secrets.token_bytes(16)
     if len(key) != 16:
@@ -293,7 +317,8 @@ def main() -> int:
     for dev in real:
         if dev.dev_eui.hex() in stored:
             dev.load_json(stored[dev.dev_eui.hex()])
-        log(f"Device {dev.dev_eui.hex()}: {dev.state}")
+        dev.queue_nops(args.queue_nop)
+        log(f"Device {dev.dev_eui.hex()}: {dev.state}" + (f", {len(dev.queue)} NOP queued" if dev.queue else ""))
     devices = Devices(real)
     devices.refresh(int(time.time()))
 
@@ -334,8 +359,21 @@ def main() -> int:
         log(line + f" {eui} ({keyset} keys, {how}, {got['counter']}): {describe_payload(h.ftype, pt)}")
         if got["counter"] in ("accept", "accept_late") and devices.moved(dev):
             devices.refresh(now, dev)
+        if h.ftype != cs.T_JOIN and dev.state == "PAIRED" and got["counter"] in ("accept", "accept_late"):
+            # 07 section 7: DL_ACK in a newer uplink settles the commands awaiting it.
+            done = dev.acks.uplink(h.fcnt, got["counter"], bool(pt[0] & cs.UF_DL_ACK))
+            if done:
+                dev.queue = [c for c in dev.queue if c not in done]
+                log(f"{eui}: {len(done)} command(s) acknowledged, {len(dev.queue)} queued")
+        # 07 section 5: queued commands ride on any fresh uplink, but an unconfirmed one
+        # only gets RX1 (07 section 6.3).
+        carry = dev.state == "PAIRED" and bool(dev.queue) and got["counter"] != "accept_late"
         if not got["answer"]:
-            return True
+            if not (carry and got["counter"] == "accept" and h.ftype != cs.T_JOIN):
+                return True
+            if args.window != "rx1":
+                log(f"{eui}: {len(dev.queue)} queued; an unconfirmed uplink cannot be answered in RX2")
+                return True
         if h.ftype == cs.T_JOIN:
             # 04 section 4.4 step 3; a retransmitted JOIN gets the same frame back (4.2).
             r = dev.join.join(frame, secrets.token_bytes(32), now)
@@ -355,15 +393,49 @@ def main() -> int:
             dev.state = "PAIRED"
             dev.join.paired()
             log(f"{eui} PAIRED")
-        if h.ftype in CONFIRMED:
+        if h.ftype in CONFIRMED or carry:
+            # One command per downlink, so PENDING is exercised (a real server sends
+            # as many as fit, 07 section 5).
+            cmds = dev.queue[:1] if carry else []
+            flags = cs.DF_PENDING if len(dev.queue) > len(cmds) else 0
+            if cmds:
+                dev.acks.downlink(h.fcnt, cmds)
             dev.fcnt_down += 1
-            dl = cs.seal(keys, cs.T_DOWNLINK, h.tag, dev.fcnt_down, cs.downlink_payload(h.fcnt, now, 0))
+            dl = cs.seal(keys, cs.T_DOWNLINK, h.tag, dev.fcnt_down,
+                         cs.downlink_payload(h.fcnt, now, flags, b"".join(c for _, c in cmds)))
             send(p, cs.M_DOWNLINK, cs.downlink_msg_body(rx_time, offset, dl))
-            log(f"{pid.hex()} -> DOWNLINK ack to {eui} answering fcnt {h.fcnt} in {args.window}")
+            what = (f"NOP{' PENDING' if flags else ''} ({len(dev.queue)} queued)" if cmds else "ack")
+            log(f"{pid.hex()} -> DOWNLINK {what} to {eui} answering fcnt {h.fcnt} in {args.window}")
         save_state()
         return True
 
+    def command_line(line: str) -> None:
+        words = line.split()
+        if not words:
+            return
+        if words[0] == "nop" and len(words) <= 2 and (len(words) == 1 or words[1].isdigit()):
+            n = int(words[1]) if len(words) == 2 else 1
+            for dev in real:
+                dev.queue_nops(n)
+                log(f"{dev.dev_eui.hex()}: {len(dev.queue)} NOP queued")
+            if not real:
+                log("nop: no --device to queue for")
+        else:
+            log(f"unknown command {line.strip()!r}; try `nop [N]`")
+
+    inputs: list = [sock]
+    if sys.stdin is not None and not sys.stdin.closed:
+        inputs.append(sys.stdin)
     while True:
+        ready, _, _ = select.select(inputs, [], [])
+        if sys.stdin in ready:
+            line = sys.stdin.readline()
+            if line:
+                command_line(line)
+            else:
+                inputs.remove(sys.stdin)  # EOF: keep serving without it
+        if sock not in ready:
+            continue
         data, addr = sock.recvfrom(2048)
         try:
             m = cs.open_envelope(key, data)

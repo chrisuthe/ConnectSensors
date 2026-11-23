@@ -445,7 +445,105 @@ def pairing_main() -> int:
     return 1 if failures else 0
 
 
+# --queue-nop and `nop` on stdin: NOPs go out one per downlink with PENDING while
+# more remain, and DL_ACK settles them (07 section 7). In RX1 an unconfirmed
+# follow-up is answered; in RX2 only a confirmed one can be (07 section 6.3).
+QUEUE_BOOT = 0x0A0B0C1F
+
+
+def queue_main() -> int:
+    failures = 0
+
+    def check(cond, what):
+        nonlocal failures
+        print(("ok   " if cond else "FAIL ") + what)
+        failures += not cond
+
+    code = cs.qr_encode(SENSOR_EUI, SENSOR_ROOT, "US915", "ESPHOME")
+    outs = []
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(3)
+    for window, offset in (("rx1", 1_000_000), ("rx2", 3_000_000)):
+        srv = Watched([sys.executable, "-I", os.path.join(ROOT, "devtools", "cs_testserver.py"), "--port",
+                       str(PORT), "--key", KEY.hex(), "--device", code, "--window", window, "--queue-nop", "2"],
+                      stdin=True)
+        try:
+            check(srv.wait_for(r"Listening on UDP") is not None and srv.wait_for(r"2 NOP queued") is not None,
+                  f"queue {window}: server up with 2 NOPs queued")
+            proxy = SimProxy(s, ("127.0.0.1", PORT), PROXY_ID, QUEUE_BOOT)
+            proxy.send(cs.M_HELLO, hello())
+            m, _ = proxy.recv()
+            proxy.send(cs.M_HELLO, hello(nonce_of(m)))
+            proxy.recv()
+            rx = [20_000_000]
+
+            def uplink(frame: bytes):
+                """Send a frame; return (offset, downlink frame) or None."""
+                rx[0] += 10_000_000
+                proxy.send(cs.M_UPLINK, cs.uplink_body(rx[0], -80.0, 9.0, 0, frame))
+                try:
+                    m, _ = proxy.recv()
+                except socket.timeout:
+                    return None
+                body = bytes.fromhex(m["body"])
+                _, off, flen = struct.unpack(">QIB", body[:13])
+                return off, body[13:13 + flen]
+
+            sensor = cs.SensorPairing(SENSOR_ROOT, SENSOR_EUI)
+            _, dl = uplink(sensor.join(1, bytes([0x42]) * 32))
+            sensor.downlink(dl)
+            _, ke = cs.open_frame(sensor.root, dl)
+            server_time = struct.unpack(">I", ke[4:8])[0]
+            session = cs.keys_from(sensor.k_session, SENSOR_EUI)
+            _, dl = uplink(sensor.uplink(cs.T_HEARTBEAT_CONFIRMED, 2, server_time, bytes([cs.UF_DL_ACK])))
+            check(sensor.downlink(dl) == "accept" and sensor.state == "PAIRED", f"queue {window}: paired")
+            ntag = cs.normal_tag(session.k_dev_tag, cs.epoch_of(server_time))
+
+            def answer(got):
+                """(PENDING, commands) of a downlink, checking it targets this window."""
+                if got is None:
+                    return None
+                off, dl = got
+                _, pt = cs.open_frame(session, dl)
+                check(off == offset, f"queue {window}: downlink targets {window}")
+                return bool(pt[8] & cs.DF_PENDING), pt[9:]
+
+            nop = cs.command(cs.CMD_NOP)
+            # A confirmed uplink draws the first NOP, with PENDING: one more remains.
+            got = answer(uplink(cs.seal(session, cs.T_DATA_CONFIRMED, ntag, 3, bytes([0]))))
+            check(got == (True, nop), f"queue {window}: confirmed uplink answered with NOP and PENDING")
+            if window == "rx1":
+                # The unconfirmed follow-up acknowledges it and draws the last NOP in RX1.
+                got = answer(uplink(cs.seal(session, cs.T_HEARTBEAT, ntag, 4, bytes([cs.UF_DL_ACK]))))
+                check(got == (False, nop), "queue rx1: unconfirmed follow-up answered with the last NOP")
+                check(uplink(cs.seal(session, cs.T_DATA, ntag, 5, bytes([cs.UF_DL_ACK]))) is None,
+                      "queue rx1: queue empty once acknowledged; unconfirmed uplink not answered")
+                srv.wait_for(r"0 queued")
+                # `nop` on stdin queues one more; the next unconfirmed uplink carries it.
+                mark = srv.mark()
+                srv.send("nop")
+                check(srv.wait_for(r"1 NOP queued", since=mark) is not None, "queue rx1: stdin `nop` queues one")
+                got = answer(uplink(cs.seal(session, cs.T_DATA, ntag, 6, bytes([0]))))
+                check(got == (False, nop), "queue rx1: queued NOP rides on an unconfirmed uplink")
+            else:
+                # An unconfirmed follow-up can't be answered in RX2, but its DL_ACK still counts.
+                check(uplink(cs.seal(session, cs.T_HEARTBEAT, ntag, 4, bytes([cs.UF_DL_ACK]))) is None,
+                      "queue rx2: unconfirmed follow-up not answered")
+                check(srv.wait_for(r"1 command\(s\) acknowledged, 1 queued") is not None,
+                      "queue rx2: its DL_ACK settles the first NOP")
+                # The confirmed follow-up (08 section 7) draws the last one, without PENDING.
+                got = answer(uplink(cs.seal(session, cs.T_HEARTBEAT_CONFIRMED, ntag, 5, bytes([0]))))
+                check(got == (False, nop), "queue rx2: confirmed follow-up answered with the last NOP")
+                srv.wait_for(r"answering fcnt 5")
+        finally:
+            outs.append(srv.stop())
+    print("--- queue server output ---\n" + "\n".join(o.strip() for o in outs))
+    print("queue: all checks pass" if failures == 0 else f"queue: {failures} failures")
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
     rc = main()
     rc = rx2_main() or rc
-    sys.exit(pairing_main() or rc)
+    rc = pairing_main() or rc
+    sys.exit(queue_main() or rc)

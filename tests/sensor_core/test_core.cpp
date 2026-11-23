@@ -535,6 +535,9 @@ struct Rig {
     return this->core->last_downlink_result();
   }
   DownlinkResult in_rx1(const Tx &t, const Bytes &frame) { return this->deliver_after(t, RX1_DELAY_US, frame); }
+  DownlinkResult in_rx2(const Tx &t, const Bytes &frame) {
+    return this->deliver_after(t, RX2_DELAY_US + 20 * MS, frame);
+  }
 
   bool saw(SensorEvent e) const {
     for (SensorEvent x : this->events) {
@@ -1315,6 +1318,104 @@ static void test_pending() {
   }
 }
 
+static void test_pending_rx1_unconfirmed() {
+  // 08 section 7: after RX1 the follow-up stays unconfirmed, so it opens RX1 only.
+  Rig rig;
+  Server server = pair_with_vectors(rig);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(true);
+  Tx t = rig.wait_tx(n + 1);
+  CHECK(rig.in_rx1(t, server.downlink(fcnt_of(t), V_TIME + 100, DF_PENDING, {CMD_NOP, 0})) ==
+        DownlinkResult::ACCEPT);
+  Tx f = rig.wait_tx(n + 2, 5 * S);
+  CHECK(type_of(f) == T_HEARTBEAT);
+  rig.tick_to(f.done_us + 2990 * MS);
+  CHECK(!rig.radio.rx);
+  rig.run(60 * S);
+  CHECK(rig.radio.sent.size() == n + 2);
+  CHECK(rig.core->undelivered() == 0);
+  CHECK(!rig.core->hold());
+}
+
+static void test_pending_rx2_confirmed() {
+  Rig rig;
+  Server server = pair_with_vectors(rig);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(true);
+  Tx t = rig.wait_tx(n + 1);
+  CHECK(rig.in_rx2(t, server.downlink(fcnt_of(t), V_TIME + 100, DF_PENDING, {CMD_NOP, 0})) ==
+        DownlinkResult::ACCEPT);
+  uint64_t at = rig.clock.now;
+  // A confirmed HEARTBEAT 2 to 4 s later, with DL_ACK for the NOP, and its own RX2.
+  Tx f = rig.wait_tx(n + 2, 5 * S);
+  CHECK(type_of(f) == T_HEARTBEAT_CONFIRMED);
+  CHECK(f.start_us >= at + 2 * S && f.start_us <= at + 4 * S + MS);
+  rig.tick_to(f.done_us + 2981 * MS);
+  CHECK(rig.radio.rx);
+  CHECK(rig.in_rx2(f, server.downlink(fcnt_of(f), V_TIME + 105)) == DownlinkResult::ACCEPT);
+  CHECK(rig.saw(SensorEvent::UPLINK_ANSWERED));
+  rig.run(60 * S);
+  CHECK(rig.radio.sent.size() == n + 2);
+  CHECK(!rig.core->hold());
+}
+
+static void test_pending_follow_up_unanswered() {
+  // 08 section 7: an unanswered confirmed follow-up is not retried and is not undelivered.
+  Rig rig;
+  Server server = pair_with_vectors(rig);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(true);
+  Tx t = rig.wait_tx(n + 1);
+  CHECK(rig.in_rx2(t, server.downlink(fcnt_of(t), V_TIME + 100, DF_PENDING)) == DownlinkResult::ACCEPT);
+  Tx f = rig.wait_tx(n + 2, 5 * S);
+  CHECK(type_of(f) == T_HEARTBEAT_CONFIRMED);
+  rig.tick_to(f.done_us + 3500 * MS);
+  CHECK(!rig.core->hold());
+  rig.run(120 * S);
+  CHECK(rig.radio.sent.size() == n + 2);
+  CHECK(rig.core->undelivered() == 0);
+  CHECK(!rig.saw(SensorEvent::UPLINK_UNDELIVERED));
+  // The unconfirmed one likewise.
+  rig.core->report(true);
+  t = rig.wait_tx(n + 3);
+  CHECK(rig.in_rx1(t, server.downlink(fcnt_of(t), V_TIME + 300, DF_PENDING)) == DownlinkResult::ACCEPT);
+  f = rig.wait_tx(n + 4, 5 * S);
+  CHECK(type_of(f) == T_HEARTBEAT);
+  rig.run(120 * S);
+  CHECK(rig.radio.sent.size() == n + 4);
+  CHECK(rig.core->undelivered() == 0);
+  CHECK(!rig.saw(SensorEvent::UPLINK_UNDELIVERED));
+}
+
+static void test_pending_rx2_limit() {
+  // Confirmed follow-ups answered in RX2 with PENDING again: at most 4 in a row.
+  // One answered in RX1 makes the next unconfirmed.
+  Rig rig;
+  Server server = pair_with_vectors(rig);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(true);
+  Tx t = rig.wait_tx(n + 1);
+  for (int i = 0; i < 5; i++) {
+    bool rx1 = i >= 3;  // the last answer comes after an unconfirmed follow-up: RX1 only
+    Bytes dl = server.downlink(fcnt_of(t), V_TIME + 100 + uint32_t(i), DF_PENDING);
+    CHECK((rx1 ? rig.in_rx1(t, dl) : rig.in_rx2(t, dl)) == DownlinkResult::ACCEPT);
+    if (i < 4) {
+      t = rig.wait_tx(n + 2 + size_t(i), 5 * S);
+      CHECK(type_of(t) == (rx1 ? T_HEARTBEAT : T_HEARTBEAT_CONFIRMED));
+    } else {
+      rig.run(10 * S);
+      CHECK(rig.radio.sent.size() == n + 5);
+    }
+  }
+  CHECK(rig.core->undelivered() == 0);
+  // The next uplink that is not a follow-up starts a new row, even with commands still queued.
+  rig.core->report(true);
+  t = rig.wait_tx(n + 6);
+  CHECK(rig.in_rx2(t, server.downlink(fcnt_of(t), V_TIME + 200, DF_PENDING)) == DownlinkResult::ACCEPT);
+  t = rig.wait_tx(n + 7, 5 * S);
+  CHECK(type_of(t) == T_HEARTBEAT_CONFIRMED);
+}
+
 static void test_abandon_retries() {
   Rig rig;
   Server server = pair_with_vectors(rig);
@@ -1851,6 +1952,10 @@ int main() {
   test_commands();
   test_leave();
   test_pending();
+  test_pending_rx1_unconfirmed();
+  test_pending_rx2_confirmed();
+  test_pending_follow_up_unanswered();
+  test_pending_rx2_limit();
   test_abandon_retries();
   test_airtime_budget();
   test_state_limits_and_hints();

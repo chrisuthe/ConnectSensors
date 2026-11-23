@@ -140,7 +140,8 @@ the uplink is unanswered and the sensor retransmits it.
 - After the last retry the uplink is *undelivered*. A state change will still
   reach the server in the next heartbeat, which carries the full state. A
   `button` event is lost.
-- Unconfirmed uplinks are never retried.
+- Unconfirmed uplinks are never retried, and neither is the confirmed follow-up
+  heartbeat of section 7. An unanswered follow-up is not undelivered.
 
 ## 6. Losing contact
 
@@ -167,9 +168,20 @@ forget its pairing because of it. Only `LEAVE` or a factory reset (the
   answered, and executes the commands in order (section 8). It MUST set `DL_ACK`
   in its next new uplink if the downlink contained at least one command (02
   section 10.2).
-- If the downlink has `PENDING` set, the sensor SHOULD send a `HEARTBEAT` 2 to 4
-  seconds later (random), so the server can deliver the next command. It MUST
-  NOT do this more than 4 times in a row.
+- If the downlink has `PENDING` set, the sensor SHOULD send a follow-up
+  heartbeat 2 to 4 seconds later (random), so the server can deliver the next
+  command. It MUST NOT do this more than 4 times in a row: a row is the
+  follow-ups sent since the last accepted downlink that answered an uplink other
+  than a follow-up.
+  - If it accepted the downlink in RX1, the follow-up is a `HEARTBEAT`.
+  - If it accepted it in RX2, the follow-up is a `HEARTBEAT_CONFIRMED`, so RX2
+    opens after it too. A server that answered in RX2 may only be able to answer
+    there: a federated owner (09 section 7.7), or a local server after its RX2
+    fallback (07 section 6.3).
+  - A follow-up is never retried, and one that goes unanswered does not count
+    as undelivered (section 6). The server keeps the commands queued (07
+    section 7) and sets `PENDING` again in its next answer. Retries would keep
+    the sensor awake for up to 40 s for a frame that carries no new state.
 
 ## 8. Commands
 
@@ -300,3 +312,8 @@ A sensor implementation MUST pass at least:
     and the bootstrap tags of both key sets at `fcnt` 1, 64, 65 and 129. A
     `JOIN` and a `SYNC` carry the bootstrap tag of their `fcnt`'s block, and every
     other uplink the normal tag of its epoch.
+13. After accepting a downlink with `PENDING`, it sends a follow-up 2 to 4 s
+    later: a `HEARTBEAT` if the downlink came in RX1, and a
+    `HEARTBEAT_CONFIRMED` followed by RX1 and RX2 if it came in RX2. An
+    unanswered follow-up is not retried and leaves the count of section 6
+    unchanged, and at most 4 follow-ups go out in a row.

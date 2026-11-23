@@ -292,6 +292,10 @@ Where the spec is silent or ambiguous, the core takes the conservative reading:
   near 1440 minutes the two conflict, and the 24-hour MUST wins.
 - `firmware_version` rides on heartbeats until one carrying it is answered, or
   goes out unconfirmed.
+- The follow-up heartbeat that `PENDING` asks for (08 section 7) is confirmed
+  only when that downlink came in RX2. It gets no retries and is never
+  undelivered, unless it had to go out as `SYNC` for want of a clock (08
+  section 3.2), which cannot happen right after a downlink set the clock.
 - Without a clock, unconfirmed frames are sent as `SYNC` too, since normal tags
   cannot be computed (08 section 3.2).
 - On `LEAVE`, the keys are erased when the final `HEARTBEAT` finishes

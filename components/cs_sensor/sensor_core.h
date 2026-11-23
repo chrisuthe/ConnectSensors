@@ -398,7 +398,8 @@ class SensorCore {
  private:
   enum class Phase : uint8_t { IDLE, TX, WAIT_RX, RX, WAIT_RETRY };
   // SESSION_FIRST: the confirmed uplink of the provisional state (04 section 4.4 step 5).
-  enum class Purpose : uint8_t { JOIN, SESSION_FIRST, STATE, HEARTBEAT, LEAVE_HEARTBEAT };
+  // FOLLOW_UP: the HEARTBEAT that PENDING asks for (08 section 7).
+  enum class Purpose : uint8_t { JOIN, SESSION_FIRST, STATE, HEARTBEAT, LEAVE_HEARTBEAT, FOLLOW_UP };
 
   // Recently computed tags. Keygens are milliseconds, so they are not repeated
   // for every frame of an epoch or block.
@@ -505,6 +506,7 @@ class SensorCore {
   bool want_leave_heartbeat_{false};
   bool boot_uplink_{false};
   bool want_pending_hb_{false};
+  bool pending_hb_confirmed_{false};
   uint64_t pending_hb_at_us_{0};
   uint8_t pending_hb_count_{0};
   bool hb_armed_{false};
