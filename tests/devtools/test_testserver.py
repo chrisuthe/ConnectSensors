@@ -240,7 +240,7 @@ def main() -> int:
         proxy.send(cs.M_UPLINK, cs.uplink_body(9_000_000, -95.0, 3.0, 0, foreign))
         check(srv.wait_for(r"UPLINK DATA_CONFIRMED fcnt 9 .*\(not the test device\)", since=mark) is not None,
               "frame from another device logged as not the test device")
-        no_reply(s, "frame from another device not answered")
+        check(no_reply(s), "frame from another device not answered")
 
         # The proxy reboots: a new boot_id takes the session over through the HELLO
         # handshake, its downlinks carry it, and the old boot gets only a HELLO_REQUEST.
@@ -270,18 +270,16 @@ def main() -> int:
     return 1 if failures else 0
 
 
-def no_reply(s: socket.socket, what: str, wait: float = 0.5) -> bool:
+def no_reply(s: socket.socket, wait: float = 0.5) -> bool:
     """Nothing arrives within wait. The caller has already seen the server handle the message."""
     s.settimeout(wait)
     try:
         s.recv(2048)
-        ok = False
+        return False
     except socket.timeout:
-        ok = True
+        return True
     finally:
         s.settimeout(3)
-    print(("ok   " if ok else "FAIL ") + what)
-    return ok
 
 
 # --window rx2: a confirmed uplink is answered 3 s after it was received (07 section 6.3).

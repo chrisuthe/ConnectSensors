@@ -137,6 +137,7 @@ int main(int argc, char **argv) {
   std::memcpy(cfg.proxy_id, default_id, 8);
   int port = 0;
   bool have_key = false;
+  bool args_ok = argc % 2 == 1;
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string opt = argv[i], val = argv[i + 1];
     if (opt == "--port") {
@@ -144,13 +145,14 @@ int main(int argc, char **argv) {
     } else if (opt == "--key") {
       have_key = unhex(val, cfg.key, 16);
     } else if (opt == "--proxy-id") {
-      if (!unhex(val, cfg.proxy_id, 8))
-        port = 0;
+      args_ok = args_ok && unhex(val, cfg.proxy_id, 8);
     } else if (opt == "--boot") {
       cfg.boot_id = uint32_t(std::strtoul(val.c_str(), nullptr, 16));
+    } else {
+      args_ok = false;
     }
   }
-  if (port <= 0 || !have_key) {
+  if (!args_ok || port <= 0 || !have_key) {
     std::fprintf(stderr, "usage: %s --port N --key HEX32 [--proxy-id HEX16] [--boot HEX]\n", argv[0]);
     return 2;
   }
