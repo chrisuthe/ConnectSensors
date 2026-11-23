@@ -93,9 +93,9 @@ void CSProxy::on_packet(const std::vector<uint8_t> &packet, float rssi, float sn
   this->engine_->on_packet(packet.data(), packet.size(), rssi, snr);
 }
 
-// The loop stays enabled: it is the probe for main-loop health (06 section 7). Its
-// passes time the radio's packets (TS_UNCERTAIN) and give HELLO's max_loop_gap_ms,
-// which decides downlink capability, so it must run on every main-loop pass.
+// The loop stays enabled: it is the probe for main-loop health (06 section 7). The
+// gaps between its passes decide TS_UNCERTAIN and downlink capability, so it must run
+// on every main-loop pass.
 void CSProxy::loop() {
   const uint64_t now = this->engine_->loop_start();
   this->poll_server_address_(now);

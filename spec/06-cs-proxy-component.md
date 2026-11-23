@@ -181,20 +181,44 @@ healthy, but a slow component elsewhere can delay it.
 - `rx_time_us` MUST be taken from the monotonic microsecond clock
   (`esp_timer_get_time()` on ESP32) at the start of the listener callback.
 - The component runs its own `loop()` every main-loop pass and records the time
-  of each pass. When a packet arrives, if more than the main-loop interval
+  of each pass. The limit for a gap is the main-loop interval
   (`App.get_loop_interval()`, normally 16 ms, counted as at most 16 ms) plus
-  20 ms has passed since the component's previous pass, the main loop was stalled
-  and the packet may have waited. The component MUST then set `TS_UNCERTAIN` in
-  the `UPLINK`. The loop interval is allowed for because an idle main loop sleeps
+  20 ms. The loop interval is allowed for because an idle main loop sleeps
   between passes; the radio interrupt wakes it, so sleeping does not delay packet
-  delivery. The cap keeps the unflagged error within 36 ms, the figure in the
-  timing budget (01 section 4.1); a node configured with a longer loop interval
-  flags more receptions instead.
+  delivery. The cap keeps a stall that goes unflagged within 36 ms, the figure in
+  the timing budget (01 section 4.1); a node configured with a longer loop
+  interval flags more receptions instead.
+- When a packet arrives, the component MUST set `TS_UNCERTAIN` in the `UPLINK` if
+  the time since its previous pass, or either of the two gaps between its passes
+  before that, exceeds the limit. The radio component can run before or after this
+  one in a pass. An idle radio stops its own loop and its interrupt restarts it,
+  which puts it last in the pass, so it usually delivers a packet just after this
+  component's pass. The packet can then have arrived any time after the previous
+  pass began, and that pass began after this component's pass before it. Its
+  wait can therefore span three gaps, the one still open and the two before it,
+  and a stall in any of them (in the scheduler, which runs `interval` and
+  `set_timeout` work ahead of the component loops, or in a component earlier in
+  the pass) may have delayed it. Each gap is held to the limit separately, so several shorter delays
+  that together pass 36 ms are not caught.
 - The component tracks the longest gap between its own loop passes and reports it
-  in `HELLO` as `max_loop_gap_ms`, then resets it.
-- If `max_loop_gap_ms` for the last interval exceeded 100 ms, the component MUST
-  clear the downlink-capable bit in the next `HELLO`, and set it again after an
-  interval below 100 ms.
+  in `HELLO` as `max_loop_gap_ms`, then resets it. This is for reporting only.
+- Downlink capability follows a 10-second sliding window. While a gap over 100 ms
+  ended within the last 10 seconds, the component MUST clear the downlink-capable
+  bit in any `HELLO` it sends and reject a `DOWNLINK` with `NOT_CAPABLE`. Ten
+  seconds after the last such gap it offers downlinks again, in `HELLO` and for
+  any `DOWNLINK` that arrives. The window is twice the 5 seconds a downlink can be
+  scheduled ahead (05 section 5.4), so a downlink is judged on main-loop health
+  over a longer span than the one it then waits through. It is short enough that
+  a single stall withdraws downlinks for a sixth of a `HELLO` interval rather
+  than for one or two whole intervals.
+- The server takes capability from the last `HELLO` (07 section 6.1), so the
+  component MUST send a `HELLO` as soon as the window opens or closes, rather
+  than leave the server on a stale bit until the next periodic one. Without it,
+  a stall in the 10 seconds before a periodic `HELLO` would cost a whole minute
+  of downlinks. This `HELLO` is rate-limited and leaves the periodic schedule
+  alone (05 section 5.2). The `HELLO` that opens the window reports the stall in
+  `max_loop_gap_ms`. With one stall per window, a stall costs at most two extra
+  `HELLO`s; repeated stalls cost at most one every 5 seconds.
 
 Servers prefer proxies with good timing for RX1 (07).
 
@@ -206,8 +230,12 @@ On a `DOWNLINK` message that passes the envelope checks (05 section 3), the
 component applies the rejection rules of 05 section 5.4, then:
 
 1. Computes the frame's airtime from the radio settings (01 section 5.1 formula).
-2. Checks the airtime budget: the sum of transmit time in the last 60 one-minute
-   buckets plus this frame MUST NOT exceed `airtime_budget` of an hour.
+2. Checks the airtime budget: the transmit time spent in the last 60 one-minute
+   buckets, plus the airtime of every downlink already scheduled or in flight,
+   plus this frame MUST NOT exceed `airtime_budget` of an hour. A downlink's
+   airtime is thus reserved when it is accepted, and is either spent once the
+   radio has had the frame (section 8.2) or freed if it is never handed to the
+   radio (`TOO_LATE`, `BUSY`, or a radio that refuses it outright).
 3. Checks the schedule: at most 4 downlinks may be scheduled, and none may
    overlap another one's `[tx_at, tx_at + airtime + 40 ms]`.
 4. Schedules the transmission for `tx_at`.
@@ -233,8 +261,11 @@ Rejections are reported immediately with `TX_RESULT`.
   frame is in the radio's FIFO and the transmit command has been issued.
   `offset_us` is that time minus `tx_at`, as defined in 05 section 5.5; it excludes
   the radio's own ramp-up to the preamble.
-- On transmit completion it reports `SENT` with that `offset_us`, and adds the
-  airtime to the budget. On a radio error it reports `RADIO_ERROR`.
+- On transmit completion it reports `SENT` with that `offset_us`. A radio error
+  or timeout after `start_transmit_async` accepted the frame is reported as
+  `RADIO_ERROR`. Either way the frame's airtime is added to the budget: the radio
+  may have sent part or all of it. A frame the radio refused outright never went
+  on air and spends nothing.
 - The radio cannot receive while it transmits. Frames sent by sensors during that
   time are lost to this proxy; other proxies and sensor retransmissions cover
   that.
@@ -424,7 +455,9 @@ be run against a test server built from the reference tool:
    uplink-type frame is not transmitted.
 6. A `DOWNLINK` for RX1 is transmitted with `offset_us` (05 section 5.5) between
    0 and 40 000 when the main loop is healthy.
-7. Downlinks that would exceed the airtime budget are rejected with `DUTY_CYCLE`.
+7. Downlinks that would exceed the airtime budget are rejected with `DUTY_CYCLE`,
+   counting the airtime of downlinks already scheduled but not yet sent. A
+   downlink the radio accepted and then failed (`RADIO_ERROR`) spends its airtime.
 8. A configuration whose radio settings differ from the region profile fails to
    compile.
 9. A frame heard while the network is down or no server address is known is not
@@ -443,7 +476,15 @@ be run against a test server built from the reference tool:
     publish every 10 seconds, and `frames_heard` counts the frames heard.
 13. A packet heard more than 36 ms after the component's previous loop pass is
     forwarded with `TS_UNCERTAIN`, also when the configured main-loop interval
-    is longer than 16 ms (section 7).
+    is longer than 16 ms (section 7). So is a packet heard within 36 ms of a pass
+    when either of the two gaps between the component's passes before it was over
+    36 ms.
+14. After a single main-loop stall over 100 ms, `DOWNLINK`s are rejected with
+    `NOT_CAPABLE` for 10 seconds and accepted again after that. A `HELLO` without
+    the downlink-capable bit goes out at once, reporting the stall in
+    `max_loop_gap_ms`, and one with the bit 10 seconds later. The periodic
+    `HELLO` stays on its 60-second schedule. A second change within 5 seconds
+    of such a `HELLO` is announced when the 5 seconds are up.
 
 ## 15. Upstream improvements (informative)
 
