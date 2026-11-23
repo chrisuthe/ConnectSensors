@@ -1081,10 +1081,49 @@ static void test_engine_connection() {
   CHECK(r.io.rediscovers == 0);
   r.run_until(lost + REDISCOVER_AFTER_US + 16000);
   CHECK(r.io.rediscovers == 1);
+  // The HELLO goes out as soon as the address is known again, not at the 60 s tick.
+  r.take();
+  r.run_until(r.io.t + 1000000);
+  CHECK(r.take(MSG_HELLO).empty());  // still resolving
+  r.io.server = true;
+  r.loop();
+  CHECK(r.take(MSG_HELLO).size() == 1);
   // A SERVER_STATUS reconnects.
+  r.loop({r.status()});
+  CHECK(r.engine->connected());
+}
+
+// Rediscovery also covers a proxy that never connected: a wrong address resolved at
+// boot is not kept forever (06 section 9). Only time with an address counts.
+static void test_engine_rediscover_never_connected() {
+  Rig r;
+  r.io.server = false;
+  r.run_until(r.io.t + 2 * REDISCOVER_AFTER_US);  // no address at all: nothing to forget
+  CHECK(r.io.rediscovers == 0);
+  r.io.server = true;
+  const uint64_t known = r.io.t + 16000;
+  r.run_until(known);
+  CHECK(r.take(MSG_HELLO).size() == 1);
+  r.run_until(known + REDISCOVER_AFTER_US);
+  CHECK(r.io.rediscovers == 0);
+  r.run_until(known + REDISCOVER_AFTER_US + 16000);
+  CHECK(r.io.rediscovers == 1 && !r.engine->connected());
+  // A lookup slower than the interval does not trigger the next rediscovery at once.
+  r.run_until(r.io.t + REDISCOVER_AFTER_US + 1000000);
+  CHECK(r.io.rediscovers == 1);
+  r.take();
+  r.io.server = true;
+  const uint64_t again = r.io.t + 16000;
+  r.run_until(again);
+  CHECK(r.take(MSG_HELLO).size() == 1 && r.io.rediscovers == 1);
+  r.run_until(again + REDISCOVER_AFTER_US + 16000);
+  CHECK(r.io.rediscovers == 2);
+  // Once connected, none until the connection is lost.
   r.io.server = true;
   r.loop({r.status()});
   CHECK(r.engine->connected());
+  r.run_until(r.io.t + CONNECT_TIMEOUT_US);
+  CHECK(r.io.rediscovers == 2);
 }
 
 // Conformance item 5 and the other envelope paths.
@@ -1450,6 +1489,7 @@ int main() {
   test_engine_hello_and_capability();
   test_engine_capability_hello_rate();
   test_engine_connection();
+  test_engine_rediscover_never_connected();
   test_engine_envelope_checks();
   test_engine_server_restart();
   test_engine_hello_request();
