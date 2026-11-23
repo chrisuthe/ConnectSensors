@@ -46,7 +46,7 @@ void ProxyEngine::on_packet(const uint8_t *data, size_t len, float rssi, float s
       return;
     case RxVerdict::RATE_LIMITED:
       this->counters_.rate_limited++;
-      this->log_(LogLevel::Debug, "Rate limited frame from dev_tag %08" PRIx32, h.dev_tag);
+      this->log_(LogLevel::Debug, "Rate limited frame with tag %016" PRIx64, h.tag);
       return;
     default:
       break;
@@ -69,8 +69,8 @@ void ProxyEngine::on_packet(const uint8_t *data, size_t len, float rssi, float s
   this->send_(MSG_UPLINK, this->body_buf_.data(), this->body_buf_.size());
   this->counters_.forwarded++;
   this->log_(LogLevel::Debug,
-             "Forwarded type %u net %08" PRIx32 " dev %08" PRIx32 " fcnt %" PRIu32 " rssi %.1f snr %.1f%s", h.type,
-             h.net_tag, h.dev_tag, h.fcnt, rssi, snr, flags ? " (timestamp uncertain)" : "");
+             "Forwarded type %u tag %016" PRIx64 " fcnt %" PRIu32 " rssi %.1f snr %.1f%s", h.type, h.tag, h.fcnt,
+             rssi, snr, flags ? " (timestamp uncertain)" : "");
   if (this->io_.log_enabled(LogLevel::Verbose)) {
     static const char *const digits = "0123456789abcdef";
     char frame_hex[2 * FRAME_MAX + 1];
@@ -260,10 +260,9 @@ void ProxyEngine::handle_server_status_(const Envelope &e, uint64_t now) {
     this->log_(LogLevel::Debug, "Ignored stale or replayed SERVER_STATUS seq %" PRIu32, e.seq);
     return;
   }
-  this->server_tags_ = st.tags;
   this->last_status_us_ = now;
   if (!this->connected_)
-    this->log_(LogLevel::Info, "Connected to server (%u network tags)", unsigned(st.tags.size()));
+    this->log_(LogLevel::Info, "Connected to server");
   this->set_connected_(true);
   this->disconnected_since_us_ = 0;
 }

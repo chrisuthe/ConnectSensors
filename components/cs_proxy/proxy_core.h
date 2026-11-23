@@ -25,8 +25,7 @@ enum class FrameCheck : uint8_t { OK, BAD_LENGTH, BAD_MAGIC, BAD_VERSION, BAD_TY
 
 struct FrameHeader {
   uint8_t type;
-  uint32_t net_tag;
-  uint32_t dev_tag;
+  uint64_t tag;  // 02 section 6.1, big-endian as sent
   uint32_t fcnt;
 };
 
@@ -36,6 +35,7 @@ FrameCheck check_uplink(const uint8_t *data, size_t len);
 bool is_valid_downlink(const uint8_t *data, size_t len);
 // Header fields; only call after a successful check.
 FrameHeader parse_header(const uint8_t *data);
+// JOIN or SYNC: bootstrap frames are known by type, since every tag value is valid.
 bool is_bootstrap(const FrameHeader &h);
 // First 8 bytes of SHA-256 over the whole frame, big-endian.
 uint64_t frame_key(const uint8_t *data, size_t len);
@@ -88,7 +88,7 @@ class RateLimiter {
  private:
   static constexpr size_t DEVICE_SLOTS = 32;
   struct Slot {
-    uint32_t dev_tag{0};
+    uint64_t tag{0};
     uint64_t last_used_us{0};
     bool used{false};
     TokenBucket bucket;
@@ -239,7 +239,6 @@ std::vector<uint8_t> tx_result_body(uint32_t downlink_seq, uint8_t result, int32
 struct ServerStatus {
   uint32_t server_time;
   uint32_t hello_seq;  // 0: not an answer to a HELLO
-  std::vector<uint32_t> tags;
 };
 bool parse_server_status(const uint8_t *body, size_t len, ServerStatus &out);
 

@@ -94,10 +94,13 @@ static void test_frames() {
   }
   auto f = frame("data_confirmed");
   FrameHeader h = parse_header(f.data());
-  CHECK(h.net_tag == 0x61d306d3u && h.dev_tag == 0x452268f4u && h.fcnt == 3);
+  CHECK(h.tag == 0xb08e8a4367a5b5baull && h.fcnt == 3);
   CHECK(!is_bootstrap(h));
   auto j = frame("join");
   CHECK(is_bootstrap(parse_header(j.data())));
+  CHECK(parse_header(j.data()).tag == 0x222b42cec0e14ae7ull);
+  CHECK(is_bootstrap(parse_header(frame("sync_after_reboot").data())));
+  CHECK(!is_bootstrap(parse_header(frame("heartbeat_first").data())));
 
   auto bad = f;
   bad[0] = 0xC4;
@@ -188,22 +191,12 @@ static void test_envelope() {
   auto ss = unhex(env("server_status").body);
   ServerStatus st{};
   CHECK(parse_server_status(ss.data(), ss.size(), st));
-  CHECK(st.server_time == 1795226400u && st.hello_seq == 2 && st.tags.size() == 3 && st.tags[1] == 0x61d306d3u);
+  CHECK(ss.size() == 8 && st.server_time == 1795226400u && st.hello_seq == 2);
+  // Conformance item 18: exactly 8 bytes (05 section 5.3).
   CHECK(!parse_server_status(ss.data(), ss.size() - 1, st));
-  // At most 32 tags (05 section 5.3): 32 parse, 33 do not, even with the length right.
-  for (uint32_t n : {32u, 33u, 255u}) {
-    ByteWriter w;
-    w.u32(1795226400);
-    w.u32(0);
-    w.u8(uint8_t(n));
-    for (uint32_t i = 0; i < n; i++)
-      w.u32(0x1000 + i);
-    ServerStatus many;
-    const bool ok = parse_server_status(w.buf.data(), w.buf.size(), many);
-    CHECK(ok == (n <= 32));
-    if (ok)
-      CHECK(many.tags.size() == n && many.tags[n - 1] == 0x1000 + n - 1);
-  }
+  auto longer = ss;
+  longer.push_back(0);
+  CHECK(!parse_server_status(longer.data(), longer.size(), st));
 
   auto dl = unhex(env("downlink").body);
   DownlinkRequest r{};
@@ -304,16 +297,16 @@ static void test_dedupe_lets_retries_through() {
 
 static void test_rate_limits() {
   RateLimiter rl(20, 2, 5, 5);
-  FrameHeader dev{2, 0x11111111, 0x22222222, 1};
+  FrameHeader dev{2, 0x1111111122222222ull, 1};
   int ok = 0;
   for (int i = 0; i < 10; i++)
     ok += rl.allow(dev, 1000000);
   CHECK(ok == 5);                      // burst 5
   CHECK(rl.allow(dev, 1000000 + 500000));   // 2/s refills one token in 0.5 s
   CHECK(!rl.allow(dev, 1000000 + 500001));
-  FrameHeader other{2, 0x11111111, 0x33333333, 1};
+  FrameHeader other{2, 0x1111111133333333ull, 1};
   CHECK(rl.allow(other, 1000000));     // a different device has its own bucket
-  FrameHeader boot{5, 0, 0, 1};
+  FrameHeader boot{5, 0, 1};
   ok = 0;
   for (int i = 0; i < 10; i++)
     ok += rl.allow(boot, 5000000);
@@ -323,17 +316,17 @@ static void test_rate_limits() {
   RateLimiter g(20, 2, 5, 5);
   ok = 0;
   for (uint32_t i = 0; i < 25; i++) {
-    FrameHeader h{2, 1, 100 + i, 1};
+    FrameHeader h{2, 100 + i, 1};
     ok += g.allow(h, 1000);
   }
   CHECK(ok == 20);
 }
 
-// 32 per-device buckets; the 33rd dev_tag takes the least recently used one, and a
+// 32 per-device buckets; the 33rd tag takes the least recently used one, and a
 // device that comes back after losing its slot starts with a full bucket.
 static void test_rate_limit_eviction() {
   RateLimiter rl(1000, 2, 5, 5);  // global out of the way
-  auto dev = [](uint32_t tag) { return FrameHeader{2, 1, tag, 1}; };
+  auto dev = [](uint64_t tag) { return FrameHeader{2, tag, 1}; };
   uint64_t t = 1000000;
   // 1 is drained first, 2 last; the slots fill with 1..32.
   for (int i = 0; i < 5; i++)
@@ -354,6 +347,36 @@ static void test_rate_limit_eviction() {
   for (int i = 0; i < 6; i++)
     ok += rl.allow(dev(33), t);
   CHECK(ok == 4);  // 33 kept its slot: one token spent above
+}
+
+// Conformance item 17: buckets keyed on the whole 8-byte tag, bootstrap by frame type.
+static void test_rate_limit_keys() {
+  RateLimiter rl(1000, 2, 5, 5);  // global out of the way
+  const uint64_t t = 1000000;
+  // Two tags equal in their first 4 bytes are two devices.
+  FrameHeader a{2, 0xAAAAAAAA00000001ull, 1}, b{2, 0xAAAAAAAA00000002ull, 1};
+  int ok = 0;
+  for (int i = 0; i < 6; i++)
+    ok += rl.allow(a, t);
+  CHECK(ok == 5);
+  CHECK(rl.allow(b, t));
+  // Every uplink type but JOIN and SYNC uses the per-tag bucket, also with an all-zero tag.
+  RateLimiter z(1000, 2, 5, 5);
+  ok = 0;
+  for (uint8_t type : {1, 2, 3, 4, 7, 1, 2})
+    ok += z.allow(FrameHeader{type, 0, 1}, t);
+  CHECK(ok == 5);
+  // JOIN and SYNC share the bootstrap bucket whatever their tags, the per-tag one untouched.
+  RateLimiter bs(1000, 2, 5, 5);
+  ok = 0;
+  for (uint64_t i = 0; i < 8; i++)
+    ok += bs.allow(FrameHeader{uint8_t(i % 2 ? 5 : 6), i == 0 ? 0 : 0xB000000000000000ull + i, 1}, t);
+  CHECK(ok == 5);
+  CHECK(!bs.allow(FrameHeader{5, 0x1234ull, 1}, t));
+  ok = 0;
+  for (int i = 0; i < 5; i++)
+    ok += bs.allow(FrameHeader{2, 0xB000000000000001ull, 1}, t);
+  CHECK(ok == 5);
 }
 
 static void test_receive_pipeline() {
@@ -656,8 +679,6 @@ struct Rig {
     ByteWriter w;
     w.u32(1795226400);
     w.u32(hello_seq);
-    w.u8(1);
-    w.u32(0x61d306d3);
     return w.buf;
   }
   std::vector<uint8_t> status(uint32_t hello_seq = 0) { return msg(MSG_SERVER_STATUS, status_body(hello_seq)); }
@@ -857,7 +878,7 @@ static void test_engine_ts_uncertain() {
   r.io.t += 1000;
   r.loop();
   r.io.t += 1000;
-  CHECK(heard_flags(r, "sync_after_exchange") == UPLINK_TS_UNCERTAIN);
+  CHECK(heard_flags(r, "heartbeat_first") == UPLINK_TS_UNCERTAIN);
   // Three passes on, the stall cannot have delayed a packet heard now.
   r.io.t += 1000;
   r.loop();
@@ -1071,7 +1092,7 @@ static void test_engine_connection() {
   r.loop();
   CHECK(!r.engine->connected());
   r.loop({r.status()});
-  CHECK(r.engine->connected() && r.engine->server_tags().size() == 1);
+  CHECK(r.engine->connected());
   CHECK(r.io.connected_events.size() == 1 && r.io.connected_events[0]);
   const uint64_t last = r.io.t;
   // Still connected at exactly 180 s; disconnected just after.
@@ -1154,7 +1175,8 @@ static void test_engine_envelope_checks() {
   auto unknown = r.msg(0x8F, {1, 2, 3});
   ByteWriter w;
   w.u32(1);
-  w.u8(3);  // three tags promised, none present
+  w.u32(0);
+  w.u8(0);  // 9 bytes: the old layout's empty tag list (05 section 5.3)
   auto bad_status = r.msg(MSG_SERVER_STATUS, w.buf);
   // An older seq than one already accepted.
   auto stale = r.server->build(MSG_DOWNLINK, Rig::BOOT, 1, Rig::downlink_body(ref, 1000000, f));
@@ -1430,15 +1452,6 @@ static uint32_t hello_nonce(const Sent &m) {
   return at + 4 <= m.body.size() ? rd32(m.body.data() + at) : 0xFFFFFFFFu;
 }
 
-static std::vector<uint8_t> two_tag_status(uint32_t hello_seq) {
-  ByteWriter w;
-  w.u32(1795226400);
-  w.u32(hello_seq);
-  w.u8(2);
-  w.u32(0x11111111);
-  w.u32(0x22222222);
-  return w.buf;
-}
 
 // Conformance item 10: a restarted server is followed through the SERVER_STATUS echo.
 static void test_engine_server_restart() {
@@ -1458,9 +1471,8 @@ static void test_engine_server_restart() {
   r.loop({r.msg(MSG_DOWNLINK, {1, 2, 3})});
   CHECK(r.take(MSG_TX_RESULT).empty());
   // Unsolicited, echoing a HELLO already echoed, or one never sent: all held to the floor.
-  r.loop({r.msg(MSG_SERVER_STATUS, two_tag_status(0)), r.msg(MSG_SERVER_STATUS, two_tag_status(h1)),
-          r.msg(MSG_SERVER_STATUS, two_tag_status(h1 + 100))});
-  CHECK(r.engine->server_tags().size() == 1);
+  r.loop({r.msg(MSG_SERVER_STATUS, Rig::status_body(0)), r.msg(MSG_SERVER_STATUS, Rig::status_body(h1)),
+          r.msg(MSG_SERVER_STATUS, Rig::status_body(h1 + 100))});
   CHECK(r.io.logged("Ignored stale or replayed SERVER_STATUS") == stale + 3);
 
   // Its HELLO_REQUEST draws a HELLO at once, and its answer resyncs the floor.
@@ -1469,9 +1481,9 @@ static void test_engine_server_restart() {
   CHECK(hellos.size() == 1 && hello_nonce(hellos[0]) == 0xABCD0001u);
   const uint32_t h2 = hellos.empty() ? 0 : hellos[0].seq;
   r.server_seq = 0;
-  auto st = r.msg(MSG_SERVER_STATUS, two_tag_status(h2));
+  auto st = r.msg(MSG_SERVER_STATUS, Rig::status_body(h2));
   r.loop({st});
-  CHECK(r.engine->server_tags().size() == 2 && r.engine->connected());
+  CHECK(r.engine->connected());
   CHECK(r.io.logged("Server restarted") == 1);
   // A replay of it finds its echo used up.
   r.loop({st});
@@ -1482,7 +1494,7 @@ static void test_engine_server_restart() {
   auto out = r.take(MSG_TX_RESULT);
   CHECK(out.size() == 1 && tx_res(out[0]).result == TX_INVALID && tx_res(out[0]).seq == 2);
   r.loop({r.status()});
-  CHECK(r.engine->server_tags().size() == 1);
+  CHECK(r.io.logged("Ignored stale or replayed SERVER_STATUS") == stale + 4);
 }
 
 // Conformance item 11.
@@ -1568,6 +1580,7 @@ int main() {
   test_dedupe_lets_retries_through();
   test_rate_limits();
   test_rate_limit_eviction();
+  test_rate_limit_keys();
   test_receive_pipeline();
   test_airtime();
   test_budget();
