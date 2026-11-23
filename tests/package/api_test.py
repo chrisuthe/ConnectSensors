@@ -97,7 +97,7 @@ def persist_pending_exchange() -> None:
 def persist_uplink_counter() -> None:
     def frame(fcnt: int) -> bytes:
         keys = cs.keys_from(K_ROOT, DEV_EUI)
-        return cs.seal(keys, cs.T_DATA, cs.ZERO_TAG, cs.ZERO_TAG, fcnt, b"\x00")
+        return cs.seal(keys, cs.T_DATA, cs.normal_tag(keys.k_dev_tag, 0), fcnt, b"\x00")
 
     col = cs.UplinkCollector(3)
     assert col.receive(frame(10), 0)["counter"] == "accept"
@@ -185,7 +185,7 @@ def proxy_side() -> None:
     hello = cs.open_envelope(key, cs.envelope(key, cs.M_HELLO, pid, boot, 1, cs.hello_body(
         cs.CAP_DOWNLINK, "US915", 918_500_000, 9, 500, 1, [0] * 7, 5, "t")))
     proxy.sent(hello, 0)
-    status = cs.envelope(key, cs.M_SERVER_STATUS, pid, boot, 1, cs.server_status_body(T0, [], 1))
+    status = cs.envelope(key, cs.M_SERVER_STATUS, pid, boot, 1, cs.server_status_body(T0, 1))
     assert proxy.receive(cs.open_envelope(key, status), 10) == {"result": "accepted"}
     assert proxy.receive(cs.open_envelope(key, status), 20) == {"result": "ignored"}
     print("ok   ProxyLink")

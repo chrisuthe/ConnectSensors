@@ -34,12 +34,12 @@
     },
     {
       "name": "server_status",
-      "note": "server switches to the boot and answers HELLO seq 2 with its time and the tags for epochs e-1..e+1",
+      "note": "server switches to the boot and answers HELLO seq 2 with its time",
       "type": 129,
       "boot_id": 439041101,
       "seq": 1,
-      "body": "6b00fb200000000203f3b45e7661d306d3a3793a8a",
-      "message": "0181348518fffe0000011a2b3c4d000000016b00fb200000000203f3b45e7661d306d3a3793a8a7123136548d7978350f8d746c90841ba"
+      "body": "6b00fb2000000002",
+      "message": "0181348518fffe0000011a2b3c4d000000016b00fb20000000023aebb90bb13551ee5b82c8246809d06d"
     },
     {
       "name": "uplink",
@@ -47,8 +47,8 @@
       "type": 1,
       "boot_id": 439041101,
       "seq": 3,
-      "body": "00000000075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da1e",
-      "message": "0101348518fffe0000011a2b3c4d0000000300000000075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da1e9565c4fa443141e53e611f0d363eaee9"
+      "body": "00000000075bcd15fc31003f001ac512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb",
+      "message": "0101348518fffe0000011a2b3c4d0000000300000000075bcd15fc31003f001ac512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb0c2beb495991c26078ca43383d3e5ae8"
     },
     {
       "name": "downlink",
@@ -56,8 +56,8 @@
       "type": 130,
       "boot_id": 439041101,
       "seq": 2,
-      "body": "00000000075bcd15000f42401fc51861d306d3452268f4000000026ffd6957eed987af59b22ffb7183d2da29",
-      "message": "0182348518fffe0000011a2b3c4d0000000200000000075bcd15000f42401fc51861d306d3452268f4000000026ffd6957eed987af59b22ffb7183d2da298ba47555be469ae021a21663e33a5b8d"
+      "body": "00000000075bcd15000f42401fc518b08e8a4367a5b5ba000000026ffd6957eed987af597d329c7f52e5e4be",
+      "message": "0182348518fffe0000011a2b3c4d0000000200000000075bcd15000f42401fc518b08e8a4367a5b5ba000000026ffd6957eed987af597d329c7f52e5e4be0b6b8c16880024723ad6b60845171562"
     },
     {
       "name": "tx_result",
@@ -74,8 +74,8 @@
       "type": 1,
       "boot_id": 439041101,
       "seq": 5,
-      "body": "0000000009259095fbf0ffe7011dc51361d306d3452268f400000004bba7002d94c1c391408357c83bf8e7",
-      "message": "0101348518fffe0000011a2b3c4d000000050000000009259095fbf0ffe7011dc51361d306d3452268f400000004bba7002d94c1c391408357c83bf8e78e5d608ccbcebff1330ced23efd1fcf6"
+      "body": "0000000009259095fbf0ffe7011dc513b08e8a4367a5b5ba00000004bba7002d94c1c3960a5fa51855c19a",
+      "message": "0101348518fffe0000011a2b3c4d000000050000000009259095fbf0ffe7011dc513b08e8a4367a5b5ba00000004bba7002d94c1c3960a5fa51855c19aa78ed1cc72c8c282948db6ffbcb5623c"
     },
     {
       "name": "tx_result_early",
@@ -146,14 +146,14 @@
       "name": "bad_mac",
       "note": "one bit changed",
       "rule": "05 section 3",
-      "message": "0101348518fffe0000011a2b3c4d0000000300000100075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da1e9565c4fa443141e53e611f0d363eaee9",
+      "message": "0101348518fffe0000011a2b3c4d0000000300000100075bcd15fc31003f001ac512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb0c2beb495991c26078ca43383d3e5ae8",
       "reason": "bad MAC"
     },
     {
       "name": "version_2",
       "note": "version 2, with a valid MAC",
       "rule": "05 section 3",
-      "message": "0201348518fffe0000011a2b3c4d0000000300000000075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da1eb60e5278c6c6c94a55146ce7476b4e52",
+      "message": "0201348518fffe0000011a2b3c4d0000000300000000075bcd15fc31003f001ac512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb7ec6684c47223a5f1499cf4de66c30c0",
       "reason": "not a v1 envelope"
     },
     {
@@ -167,7 +167,7 @@
       "name": "uplink_frame_len",
       "note": "frame_len one more than the bytes that follow; valid MAC",
       "rule": "05 section 5.1",
-      "message": "0101348518fffe0000011a2b3c4d0000000400000000075bcd15fc31003f001ac51261d306d3452268f400000003787421e751d0f9c8ee50da7b7f899d718ea5c6e81e04f4d1b114f2",
+      "message": "0101348518fffe0000011a2b3c4d0000000400000000075bcd15fc31003f001ac512b08e8a4367a5b5ba00000003787421e72a60f966573f9c2a319b251be2411cdab93e3ccbcfee54",
       "reason": "bad UPLINK length"
     },
     {
@@ -223,7 +223,7 @@
         "t_ms": 40,
         "to": "proxy",
         "note": "SERVER_STATUS answering that HELLO",
-        "message": "0181348518fffe0000011a2b3c4d000000016b00fb2000000002006423c5c44e18ca1987a87a6985d32f7f",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb20000000023aebb90bb13551ee5b82c8246809d06d",
         "result": "accepted"
       },
       {
@@ -273,8 +273,8 @@
       {
         "t_ms": 3000,
         "to": "proxy",
-        "note": "unsolicited SERVER_STATUS at an epoch boundary",
-        "message": "0181348518fffe0000011a2b3c4d000000056b00fb200000000000aaadf44d56007a5651f6df9f54b59648",
+        "note": "unsolicited SERVER_STATUS (hello_seq 0)",
+        "message": "0181348518fffe0000011a2b3c4d000000056b00fb200000000054d8b3fe07f9e6ea648ed68a34cf6770",
         "result": "accepted"
       },
       {
@@ -335,14 +335,14 @@
         "t_ms": 12040,
         "to": "proxy",
         "note": "SERVER_STATUS seq 1, at or below the proxy's floor, echoing that HELLO: resync",
-        "message": "0181348518fffe0000011a2b3c4d000000016b00fb200000000500c5c641d4b55ffe15bb9c17990e9c5d16",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb2000000005e85dcbc4cfa5c53ece80cb4a2a85fa12",
         "result": "resync"
       },
       {
         "t_ms": 12045,
         "to": "proxy",
         "note": "the same SERVER_STATUS replayed: its echo is used up",
-        "message": "0181348518fffe0000011a2b3c4d000000016b00fb200000000500c5c641d4b55ffe15bb9c17990e9c5d16",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb2000000005e85dcbc4cfa5c53ece80cb4a2a85fa12",
         "result": "ignored"
       },
       {
@@ -372,7 +372,7 @@
         "t_ms": 17040,
         "to": "proxy",
         "note": "SERVER_STATUS answering it",
-        "message": "0181348518fffe0000011a2b3c4d000000036b00fb200000000600d5e8c8f6235c5768c1c9f9e3f8f7e445",
+        "message": "0181348518fffe0000011a2b3c4d000000036b00fb20000000065dd804fba4524203c7796476bf73023e",
         "result": "accepted"
       },
       {
@@ -396,7 +396,7 @@
         "t_ms": 22000,
         "to": "proxy",
         "note": "SERVER_STATUS from before the restart replayed: its echo is used up",
-        "message": "0181348518fffe0000011a2b3c4d000000016b00fb2000000002006423c5c44e18ca1987a87a6985d32f7f",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb20000000023aebb90bb13551ee5b82c8246809d06d",
         "result": "ignored"
       }
     ]

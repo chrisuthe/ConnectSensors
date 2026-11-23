@@ -8,9 +8,11 @@ confirmed uplinks from that device with a real downlink in RX1. Copies of one
 transmission are answered once; a sensor's retry is answered again (07 section 4).
 
 Real sensors registered with --device are paired when their pairing button is
-pressed (04 section 4.4: JOIN, KEY_EXCHANGE, SYNC, SET_NETWORK), and from then on
-their uplinks are decrypted and their confirmed ones answered, with or without
---ack. The network key is the one from the test vectors.
+pressed (04 section 4.4: JOIN, KEY_EXCHANGE, then the first session uplink, which
+marks the device PAIRED and is answered), and from then on their uplinks are
+decrypted and their confirmed ones answered, with or without --ack. They are
+found through a tag table (07 section 3); a JOIN, or a SYNC past the table's
+blocks, falls back to trial decryption, at most 50 a minute (07 section 4).
 
 Development only: every proxy uses the one --key. Spec 05 section 4.2 requires a
 key of its own for each proxy that accepts downlinks, so sending downlinks to more
@@ -66,16 +68,8 @@ class TestDevice:
         k_root = bytes.fromhex(i["k_root"])
         self.root = cs.keys_from(k_root, self.dev_eui)
         self.session = cs.keys_from(bytes.fromhex(v["derived"]["k_session"]), self.dev_eui)
-        self.k_net_route = bytes.fromhex(v["derived"]["k_net_route"])
         self.fcnt_down = 1000  # above every downlink counter used in the vectors
         self.uplinks = cs.UplinkCollector(0)
-
-    def net_tags(self, now: int) -> list[bytes]:
-        e = cs.epoch_of(now)
-        tags = [cs.net_tag(self.k_net_route, x) for x in (e - 1, e, e + 1)]
-        # The vectors were made at a fixed time; include its tag so they are "ours" too.
-        tags.append(cs.net_tag(self.k_net_route, cs.epoch_of(cs.T0)))
-        return tags
 
     def open(self, frame: bytes):
         for name, keys in (("session", self.session), ("root", self.root)):
@@ -131,11 +125,10 @@ class RealDevice:
     10-minute and 2-minute timeouts of 04 section 4.2 are not modelled.
     """
 
-    def __init__(self, dev_eui: bytes, k_root: bytes, k_net_route: bytes):
+    def __init__(self, dev_eui: bytes, k_root: bytes):
         self.dev_eui = dev_eui
         self.root = cs.keys_from(k_root, dev_eui)
         self.join = cs.JoinResponder(k_root, dev_eui, root_counter_seed())
-        self.k_net_route = k_net_route
         self.state = "SCANNED"
         self.k_session = None
         self.session = None
@@ -160,18 +153,85 @@ class RealDevice:
         self.state = state
 
     def open(self, frame: bytes, h) -> tuple[str, cs.DeviceKeys, bytes] | None:
-        """Identify a frame as this device's (02 section 11.3): JOIN under the root
-        key set, everything else under the session key set."""
-        tries = [("root", self.root)] if h.ftype == cs.T_JOIN else []
-        if h.ftype != cs.T_JOIN and self.session is not None:
-            tries.append(("session", self.session))
+        """Try this device's keys on a frame: JOIN under the root key set,
+        everything else under the session key set. A JOIN is tried even when
+        PAIRED, as if the code had been scanned again (04 section 4.4, step 1)."""
+        if h.ftype == cs.T_JOIN:
+            tries = [("root", self.root)]
+        else:
+            tries = [("session", self.session)] if self.session is not None else []
         for name, keys in tries:
             try:
                 _, pt = cs.open_frame(keys, frame)
                 return name, keys, pt
-            except Exception:
+            except ValueError:
                 continue
         return None
+
+
+BOOTSTRAP_PER_MINUTE = 50  # trial decryptions of bootstrap frames (07 section 4, step 4)
+
+
+class Devices:
+    """The --device sensors and their tag table (07 section 3)."""
+
+    def __init__(self, devices: list[RealDevice]):
+        self.devices = {d.dev_eui.hex(): d for d in devices}
+        self.table = cs.TagTable()
+        self.epoch: int | None = None
+        self.blocks: dict[str, int] = {}
+        self.fallbacks: list[float] = []
+
+    def refresh(self, now: int, dev: RealDevice | None = None) -> None:
+        """Rebuild entries at an epoch change, or one device's after its keys or
+        its counter block changed."""
+        epoch = cs.epoch_of(now)
+        todo = list(self.devices.values()) if epoch != self.epoch else [dev] if dev else []
+        self.epoch = epoch
+        for d in todo:
+            eui = d.dev_eui.hex()
+            if d.session is None:
+                self.table.remove(eui)
+                self.blocks.pop(eui, None)
+                continue
+            last = d.uplinks.counter.last
+            self.table.update(eui, d.session.k_dev_tag, epoch, last)
+            self.blocks[eui] = (max(last, 1) - 1) // cs.TAG_BLOCK
+
+    def moved(self, dev: RealDevice) -> bool:
+        """The device's last_fcnt moved into a new block."""
+        return self.blocks.get(dev.dev_eui.hex()) != (max(dev.uplinks.counter.last, 1) - 1) // cs.TAG_BLOCK
+
+    def identify(self, frame: bytes, h) -> tuple[RealDevice, str, cs.DeviceKeys, bytes, str] | None:
+        route, candidates = cs.identify_route(self.table, frame, local=True)
+        if route == "table":
+            tries = [self.devices[c] for c in candidates]
+        elif route == "fallback":
+            if not self._fallback_allowed():
+                return None
+            tries = list(self.devices.values())
+        else:
+            return None
+        for dev in tries:
+            opened = dev.open(frame, h)
+            if opened is not None:
+                return (dev, *opened, route)
+        if route == "table" and cs.is_bootstrap(h.ftype) and self._fallback_allowed():
+            # A colliding entry: still a bootstrap frame nobody verified (07 section 4).
+            for dev in self.devices.values():
+                if dev not in tries:
+                    opened = dev.open(frame, h)
+                    if opened is not None:
+                        return (dev, *opened, "fallback")
+        return None
+
+    def _fallback_allowed(self) -> bool:
+        t = time.monotonic()
+        self.fallbacks = [x for x in self.fallbacks if t - x < 60]
+        if len(self.fallbacks) >= BOOTSTRAP_PER_MINUTE:
+            return False
+        self.fallbacks.append(t)
+        return True
 
 
 class Proxy:
@@ -225,7 +285,7 @@ def main() -> int:
         except ValueError as ex:
             print(f"--device {spec}: {ex}", file=sys.stderr)
             return 2
-        real.append(RealDevice(dev_eui, k_root, device.k_net_route))
+        real.append(RealDevice(dev_eui, k_root))
     stored = {}
     if args.state and os.path.exists(args.state):
         with open(args.state) as f:
@@ -234,6 +294,8 @@ def main() -> int:
         if dev.dev_eui.hex() in stored:
             dev.load_json(stored[dev.dev_eui.hex()])
         log(f"Device {dev.dev_eui.hex()}: {dev.state}")
+    devices = Devices(real)
+    devices.refresh(int(time.time()))
 
     def save_state() -> None:
         if not args.state:
@@ -258,19 +320,20 @@ def main() -> int:
 
     def real_uplink(p: Proxy, pid: bytes, line: str, frame: bytes, h, rx_time: int, now: int) -> bool:
         """A registered sensor's uplink: pairing (04 section 4.4) or normal traffic."""
-        for dev in real:
-            opened = dev.open(frame, h)
-            if opened is not None:
-                break
-        else:
+        devices.refresh(now)
+        found = devices.identify(frame, h)
+        if found is None:
             return False
-        keyset, keys, pt = opened
+        dev, keyset, keys, pt, route = found
         eui = dev.dev_eui.hex()
         got = dev.uplinks.receive(frame, int(time.monotonic() * 1000))
         if got["result"] == "copy":
             log(line + f" {eui}: copy of the same transmission")
             return True
-        log(line + f" {eui} ({keyset} keys, {got['counter']}): {describe_payload(h.ftype, pt)}")
+        how = "by tag" if route == "table" else "by trial decryption"
+        log(line + f" {eui} ({keyset} keys, {how}, {got['counter']}): {describe_payload(h.ftype, pt)}")
+        if got["counter"] in ("accept", "accept_late") and devices.moved(dev):
+            devices.refresh(now, dev)
         if not got["answer"]:
             return True
         if h.ftype == cs.T_JOIN:
@@ -279,26 +342,24 @@ def main() -> int:
             if r["action"] == "new_exchange":
                 dev.set_session(r["k_session"], "EXCHANGED")
                 dev.fcnt_down = 0
+                devices.refresh(now, dev)  # the pending k_session's tags (07 section 3)
             save_state()
             send(p, cs.M_DOWNLINK, cs.downlink_msg_body(rx_time, offset, r["frame"]))
             stalled = " (stalled: the sensor keeps repeating JOIN)" if r["stalled"] else ""
             log(f"{pid.hex()} -> DOWNLINK KEY_EXCHANGE to {eui} ({r['action']}, root counter "
                 f"{dev.join.root_fcnt_down}){stalled}")
             return True
-        cmds = b""
-        if dev.state == "EXCHANGED" and h.ftype == cs.T_SYNC:
-            cmds = cs.command(cs.CMD_SET_NETWORK, dev.k_net_route)  # step 6
-        elif dev.state == "EXCHANGED" and h.net_tag != cs.ZERO_TAG and pt[0] & cs.UF_DL_ACK:
-            dev.state = "PAIRED"  # step 7: normal tags acknowledge SET_NETWORK
+        if dev.state == "EXCHANGED":
+            # 04 section 4.4 step 6: the first session uplink verified; answering it
+            # completes pairing on the sensor.
+            dev.state = "PAIRED"
             dev.join.paired()
             log(f"{eui} PAIRED")
         if h.ftype in CONFIRMED:
             dev.fcnt_down += 1
-            dl = cs.seal(keys, cs.T_DOWNLINK, h.net_tag, h.dev_tag, dev.fcnt_down,
-                         cs.downlink_payload(h.fcnt, now, 0, cmds))
+            dl = cs.seal(keys, cs.T_DOWNLINK, h.tag, dev.fcnt_down, cs.downlink_payload(h.fcnt, now, 0))
             send(p, cs.M_DOWNLINK, cs.downlink_msg_body(rx_time, offset, dl))
-            what = "SET_NETWORK" if cmds else "ack"
-            log(f"{pid.hex()} -> DOWNLINK {what} to {eui} answering fcnt {h.fcnt} in {args.window}")
+            log(f"{pid.hex()} -> DOWNLINK ack to {eui} answering fcnt {h.fcnt} in {args.window}")
         save_state()
         return True
 
@@ -337,7 +398,7 @@ def main() -> int:
                 f"{h['bw_khz']} kHz, up {h['uptime_s']}s, downlink {'yes' if h['caps'] & 1 else 'no'}, "
                 f"loop gap {h['max_loop_gap_ms']} ms, "
                 f"heard/fwd/dup/invalid/rl/tx_ok/tx_fail = {'/'.join(map(str, h['counters']))}")
-            send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, device.net_tags(now), m["seq"]))
+            send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, m["seq"]))
             if h["caps"] & 1 and (args.ack or real) and pid not in downlink_proxies:
                 downlink_proxies.add(pid)
                 if len(downlink_proxies) == 2:
@@ -366,7 +427,7 @@ def main() -> int:
             if args.ack and h.ftype in CONFIRMED and got["answer"]:
                 device.fcnt_down += 1
                 dl_pt = cs.downlink_payload(h.fcnt, now, 0)
-                dl = cs.seal(keys, cs.T_DOWNLINK, h.net_tag, h.dev_tag, device.fcnt_down, dl_pt)
+                dl = cs.seal(keys, cs.T_DOWNLINK, h.tag, device.fcnt_down, dl_pt)
                 send(p, cs.M_DOWNLINK, cs.downlink_msg_body(rx_time, offset, dl))
                 log(f"{pid.hex()} -> DOWNLINK seq {p.link.seq} answering fcnt {h.fcnt} in {args.window}")
 

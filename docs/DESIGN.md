@@ -101,17 +101,19 @@ The normative definition is [spec/02-frame-v1.md](../spec/02-frame-v1.md), with
 radio parameters in [spec/01-radio-profiles.md](../spec/01-radio-profiles.md).
 Summary:
 
-- 14-byte cleartext header (magic `0xC5`, version/type, `net_tag`, `dev_tag`,
+- 14-byte cleartext header (magic `0xC5`, version/type, an 8-byte `tag`,
   `fcnt`), 1-64 bytes of AES-128-CCM ciphertext, 8-byte MIC. Frames are 23-86
   bytes.
 - Uplink types `0x1`-`0x7` (`DATA`, `DATA_CONFIRMED`, `HEARTBEAT`,
   `HEARTBEAT_CONFIRMED`, `JOIN`, `SYNC`); downlink types `0x8`-`0xF` (`DOWNLINK`).
   Proxies forward uplink types and drop downlink types.
 - Per-device `k_root` and `dev_eui` from the pairing QR code; `k_enc` and
-  `k_dev_tag` derived with HKDF. A per-network `k_net_route` is given to sensors
-  with `SET_NETWORK`.
-- Hourly rotating tags from HMAC-SHA256. `JOIN` and `SYNC` use all-zero bootstrap
-  tags and are identified by the server by trial decryption.
+  `k_dev_tag` derived with HKDF. There is no network key.
+- Tags are key fingerprints: the hash of an Ed25519 public key derived from
+  `k_dev_tag`, per hour for normal frames and per block of 64 counter values for
+  `JOIN` and `SYNC`. Only the key holder can prove a tag is its own. The server
+  finds devices through a tag table, with trial decryption as the fallback for
+  locally heard bootstrap frames.
 - Uplink counters persist by block reservation and never repeat, even across a
   factory reset. Retransmissions are identical bytes.
 - Every downlink carries `reply_to` (the uplink it answers), `server_time` and
@@ -265,10 +267,9 @@ lexicons in `spec/lexicons/`:
 | Malicious proxy floods server/relay | Proxy HMAC (LAN) or signatures (relay); rate limits; blocklists |
 | Stolen proxy key used to forge downlinks | A proxy that accepts downlinks has a key of its own; an optional shared key is only for receive-only proxies (spec 05 section 4.2) |
 | Jamming | Cannot be prevented; detected via supervision timeouts |
-| Tracking devices over time | Hourly rotating `net_tag` and `dev_tag` |
+| Tracking devices over time | Hourly rotating per-device key-fingerprint tags; nothing shared between a network's devices |
 | Relay operator traffic analysis | Ephemeral events; multiple independent relays; optional cover traffic |
 | Lost/compromised device key | Per-device keys; remove device and re-pair |
-| Compromised `K_net` | Rotate network key via `COMMAND(set_network)` to every device |
 | Nonce reuse after reset | Flash-persisted `fcnt` with jump-ahead; root downlink counter never reset (spec 02 section 13.1) |
 
 ---

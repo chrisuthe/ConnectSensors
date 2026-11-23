@@ -23,7 +23,7 @@ Sections marked *informative* contain no requirements.
 | Proxy | A receiver (normally an ESPHome node) that forwards frames without holding any keys. |
 | Server | The network server that owns a network: verifies, decrypts and acts on frames. Normally a Home Assistant integration. |
 | Owner | The person or system that controls a server and its keys. |
-| Network | The set of sensors paired to one server, sharing one network key. |
+| Network | The set of sensors paired to one server. There is no network-wide key: each sensor has its own keys (02 section 5). |
 | Relay | A federation service that passes frames between proxies and servers in different homes. |
 | Uplink | A frame sent by a sensor. |
 | Downlink | A frame sent by a server, transmitted by a proxy, to a sensor. |

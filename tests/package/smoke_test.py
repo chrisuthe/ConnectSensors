@@ -32,10 +32,12 @@ def main(root: str) -> int:
     frame = bytes.fromhex(join["frame"])
     h, pt = cs.open_frame(keys, frame)
     assert (h.ftype, h.fcnt, pt.hex()) == (cs.T_JOIN, join["fcnt"], join["plaintext"])
-    assert cs.seal(keys, h.ftype, h.net_tag, h.dev_tag, h.fcnt, pt) == frame
-    route = cs.derive_net_route(bytes.fromhex(inputs["k_net"]))
+    assert cs.seal(keys, h.ftype, h.tag, h.fcnt, pt) == frame
+    assert h.tag == cs.bootstrap_tag(keys.k_dev_tag, h.fcnt)
+    session = cs.keys_from(bytes.fromhex(fv["derived"]["k_session"]), bytes.fromhex(inputs["dev_eui"]))
     epoch = cs.epoch_of(inputs["time"])
-    assert cs.net_tag(route, epoch).hex() == fv["derived"]["net_tag"][str(epoch)]
+    want = next(t["tag"] for t in fv["tags"]["normal"] if t["epoch"] == epoch)
+    assert cs.normal_tag(session.k_dev_tag, epoch).hex() == want
     print(f"ok   frame {join['name']}")
 
     # Pairing codes.
@@ -57,12 +59,11 @@ def main(root: str) -> int:
     assert got == {"result": "hello_request", "nonce": 0x5EED0001}, got
     got = link.receive(cs.open_envelope(key, hello(2, got["nonce"])), 10)
     assert got == {"result": "switched"}, got
-    tags = [cs.net_tag(route, e) for e in (epoch - 1, epoch, epoch + 1)]
     status = cs.envelope(key, cs.M_SERVER_STATUS, pid, boot, link.next_seq(),
-                         cs.server_status_body(inputs["time"], tags, 2))
+                         cs.server_status_body(inputs["time"], 2))
     m = cs.open_envelope(key, status)
     s = cs.parse_server_status(bytes.fromhex(m["body"]))
-    assert (m["type"], m["seq"], s["hello_seq"], s["tags"]) == (cs.M_SERVER_STATUS, 1, 2, tags)
+    assert (m["type"], m["seq"], s["hello_seq"], s["server_time"]) == (cs.M_SERVER_STATUS, 1, 2, inputs["time"])
     print("ok   ServerLink HELLO / SERVER_STATUS")
 
     # Bodies from a proxy: round trips, and malformed ones raise ValueError.

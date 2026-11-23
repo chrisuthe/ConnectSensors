@@ -21,6 +21,12 @@ typed (`py.typed`).
 
 The protocol is a draft, and so is this API: expect breaking changes before 1.0.
 
+**0.4.0 breaks pairing compatibility.** Frame tags are now one 8-byte key
+fingerprint instead of `net_tag` and `dev_tag`, the network key and `SET_NETWORK`
+are gone, and pairing ends on the first session uplink instead of a `SYNC` and
+`SET_NETWORK`. A server on 0.4.0 can't pair or read sensors built for 0.3.x, and the
+other way round: re-flash the sensors and proxies, then pair the sensors again.
+
 ## API
 
 Section numbers refer to the specification documents.
@@ -34,12 +40,16 @@ rolling-hour budgets of 01 section 5 are `SENSOR_AIRTIME_MS_PER_HOUR` (36 s) and
 downlinks it sent through a proxy in the last hour to stay under the proxy's.
 
 **Frames (02).** `keys_from(base, dev_eui)` derives a `DeviceKeys` from `k_root` or
-`k_session`. `seal(keys, ftype, net_tag, dev_tag, fcnt, plaintext)` builds a frame;
+`k_session`. `seal(keys, ftype, tag, fcnt, plaintext)` builds a frame;
 `open_frame(keys, frame)` checks its MIC and returns `(ParsedHeader, plaintext)`, or
 raises `ValueError` with the reason. `parse_header(frame)` does a proxy's keyless
 checks and returns `None` for anything that isn't a v1 frame, including type `0x0`.
-Tags: `derive_net_route(k_net)`, `epoch_of(unix)`, `net_tag(k_net_route, epoch)`,
-`dev_tag(keys.k_dev_tag, epoch)`. Downlinks:
+Tags (02 section 6) are 8-byte key fingerprints: `normal_tag(keys.k_dev_tag,
+epoch_of(unix))` for normal frames, `bootstrap_tag(keys.k_dev_tag, fcnt)` for `JOIN`
+and `SYNC` (`is_bootstrap(ftype)`), and `uplink_tag(keys, ftype, fcnt, unix)` picks
+one. A downlink carries the tag of the uplink it answers. The steps are exposed too:
+`epoch_index`, `block_index`, `tag_seed`, `ed25519_pub`, `tag_of_pub` and
+`tag(k_dev_tag, index)`. Downlinks:
 `downlink_payload(reply_to, server_time, flags, commands)` and `command(cmd_id, args)`.
 Key exchange: `x25519_pub(priv)`, `derive_session(...)`. Constants: frame types
 `T_*`, uplink and downlink flags `UF_*` and `DF_*`, commands `CMD_*`, sizes
@@ -57,8 +67,9 @@ an invalid payload: truncated, kind `0x00`, or a repeated `(channel, kind)`.
 device: `join(frame, server_priv, server_time)` returns `action` (`"new_exchange"` or
 `"resend"`), `frame`, `k_session` and `stalled`. Persist its `root_fcnt_down` and keep
 it after the device is removed: the root counter never resets. A retransmitted JOIN
-gets the cached answer back byte for byte. Call `paired()` once SET_NETWORK is
-acknowledged.
+gets the cached answer back byte for byte. Call `paired()` once the first uplink
+under the pending `k_session` verifies: the device is then `PAIRED` (04 section 4.2),
+and that uplink is answered like any other.
 
 The cached answer is `pending`, a `PendingExchange` (`sensor_pub`, `frame`,
 `k_session`, `retransmissions`, `sent`), or `None`. Persist it whenever `join()` or
@@ -105,6 +116,16 @@ Persist `collector.counter.last` and `collector.counter.seen` (the late arrivals
 accepted below it; 07 section 10) and restore with `UplinkCollector(last, seen)`, or
 `UplinkCounter(last, seen)`. Which copies were merged is held in memory only.
 
+`TagTable()` maps tags to devices (07 section 3). Call `update(device, k_dev_tag,
+epoch, last_fcnt)` whenever a device's session key or `last_fcnt` changes and at each
+epoch boundary; it keeps the normal tags of `epoch - 1` to `epoch + 1` and the `SYNC`
+tags of the block holding `last_fcnt` and the `SYNC_BLOCKS_AHEAD` (2) after it. For an
+`EXCHANGED` device, use the pending `k_session`. `identify_route(table, frame, local)`
+says how to find a frame's device: `("table", candidates)` to try in turn,
+`("fallback", [])` for a locally heard `JOIN` or `SYNC` that missed the table, which
+is identified by trial decryption under the bootstrap limit (07 section 4), or
+`("drop", [])`.
+
 `CommandAcks()` per device settles queued commands on `DL_ACK` (07 section 7). Call
 `downlink(reply_to, commands)` for each downlink sent with commands, and
 `uplink(fcnt, counter, dl_ack)` for each frame the collector accepts; it returns the
@@ -115,13 +136,14 @@ to a late arrival. Persist `reply_to`, `awaiting` and `last_fcnt` and restore wi
 `CommandAcks(reply_to, awaiting, last_fcnt)`.
 
 **For tests.** `ProxyLink(boot_id)` is the proxy's side of the envelope session and
-`SensorPairing(k_root, dev_eui)` the sensor's side of JOIN and KEY_EXCHANGE, so a
+`SensorPairing(k_root, dev_eui)` the sensor's side of pairing, including the
+provisional state before the first session downlink, so a
 server's tests can simulate both on the public API.
 
 ## Server-side example
 
-One proxy, one paired device whose session key is known. Error handling and device
-lookup are left out.
+One proxy, one paired device whose session key is known. Error handling and the tag
+table are left out.
 
 ```python
 import secrets
@@ -155,9 +177,7 @@ def handle(data: bytes, reply) -> None:
 
     body = bytes.fromhex(m["body"])
     if m["type"] == cs.M_HELLO:
-        now = int(time.time())
-        tags = [cs.net_tag(k_net_route, e) for e in range(cs.epoch_of(now) - 1, cs.epoch_of(now) + 2)]
-        send(cs.M_SERVER_STATUS, cs.server_status_body(now, tags, m["seq"]))
+        send(cs.M_SERVER_STATUS, cs.server_status_body(int(time.time()), m["seq"]))
     elif m["type"] == cs.M_UPLINK:
         u = cs.parse_uplink(body)
         h = cs.parse_header(u["frame"])
@@ -171,7 +191,7 @@ def handle(data: bytes, reply) -> None:
             print(cs.decode_readings(plaintext[1:]))  # after the uplink flags byte
         if got["answer"]:
             fcnt_down += 1  # persist it
-            ack = cs.seal(session, cs.T_DOWNLINK, h.net_tag, h.dev_tag, fcnt_down,
+            ack = cs.seal(session, cs.T_DOWNLINK, h.tag, fcnt_down,
                           cs.downlink_payload(h.fcnt, int(time.time()), 0))
             send(cs.M_DOWNLINK, cs.downlink_msg_body(u["rx_time_us"], 1_000_000, ack))  # RX1
 ```

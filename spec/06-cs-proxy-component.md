@@ -1,7 +1,7 @@
 # 06 - `cs_proxy` ESPHome Component
 
 Status: Draft
-Version: 1.0-draft.5
+Version: 1.0-draft.6
 
 This document specifies `cs_proxy`, the ESPHome external component that turns a
 node with a LoRa radio into a ConnectSensors proxy. It covers configuration,
@@ -72,8 +72,8 @@ A complete board example is in section 13.
 | `dedupe_window` | time | 2 s | 1 s to 3 s (section 6) |
 | `dedupe_cache_size` | int | 64 | 16 to 256 entries |
 | `rate_limit.global` | rate | 20/s | Token bucket, burst equal to the rate |
-| `rate_limit.per_device` | rate | 2/s | Per `dev_tag`, burst 5 |
-| `rate_limit.bootstrap` | rate | 5/s | Shared by all bootstrap frames (`dev_tag` 0), burst 5 |
+| `rate_limit.per_device` | rate | 2/s | Per 8-byte `tag` (02 section 6.1), burst 5 |
+| `rate_limit.bootstrap` | rate | 5/s | Shared by all bootstrap frames (types `JOIN` and `SYNC`), burst 5 |
 | `federation.enabled` | bool | `false` | Standalone mode (section 3.4); only allowed without `server`. Not accepted yet, nor are the other `federation.*` options. |
 | `federation.relays` | list of `wss://` URLs | none | Required in standalone mode; at least 2 RECOMMENDED |
 | `federation.downlinks` | bool | `false` | Accept downlink requests from relays (09 section 7) |
@@ -167,7 +167,10 @@ block: UDP sends are non-blocking, and MQTT publishes are queued.
   `dedupe_window` is capped at 3 seconds and a retransmission is always
   forwarded (02 section 8.3).
 - Rate limits are token buckets, refilled continuously. The per-device buckets are
-  kept in a table of 32 entries keyed by `dev_tag`, least recently used replaced.
+  kept in a table of 32 entries keyed by the frame's 8-byte `tag`, least recently
+  used replaced. Bootstrap frames, recognized by their type (`JOIN` or `SYNC`),
+  take a token from the shared bootstrap bucket instead of a per-device one.
+  Every frame then takes one from the global bucket.
 - Frames dropped by rate limits are not inserted into the dedupe cache, so a
   retransmission can still get through once tokens return.
 
@@ -296,7 +299,6 @@ messages. It never originates or modifies frames.
 
 - The proxy is *connected* while it has received a `SERVER_STATUS` within the last
   3 `HELLO` intervals (180 s).
-- The latest `SERVER_STATUS` tag set is kept in memory for diagnostics (05 section 5.3).
 - When disconnected, the proxy keeps forwarding to the configured address and
   keeps accepting `DOWNLINK` messages that pass the envelope checks.
 - With mDNS discovery, a proxy that has been disconnected for 5 minutes repeats
@@ -361,7 +363,7 @@ Device class `connectivity`, diagnostic.
 ## 11. Logging
 
 - `INFO`: startup (`proxy_id`, region, server address), connection changes.
-- `DEBUG`: one line per forwarded frame: type, tags, `fcnt`, RSSI, SNR. One line
+- `DEBUG`: one line per forwarded frame: type, `tag`, `fcnt`, RSSI, SNR. One line
   per downlink result.
 - `VERBOSE`: frame hex.
 - The proxy key MUST NOT be logged at any level.
@@ -514,6 +516,12 @@ be run against a test server built from the reference tool:
     after the frame has been received, and the frame is forwarded. While the
     radio keeps reporting one, the downlink is transmitted anyway with
     `offset_us` at most 40 000 when the main loop is healthy.
+17. Frames with the same 8-byte `tag` share one per-device bucket, and frames
+    whose tags differ in any byte, including only the last four, do not. `JOIN`
+    and `SYNC` frames take from the bootstrap bucket whatever their tag,
+    including an all-zero one, and other types never do.
+18. A `SERVER_STATUS` whose body is 8 bytes is accepted; one of any other length
+    is discarded (05 section 5.3).
 
 ## 15. Upstream improvements (informative)
 

@@ -89,6 +89,7 @@ def main() -> int:
         proxy.send("uplink " + frames["join"])
         check(srv.wait_for(rf"{PROXY_ID} UPLINK JOIN fcnt 1 .*test device \(root keys", since=s0) is not None,
               "JOIN forwarded and opened under the root keys")
+        downlink_cycle(srv, proxy, "heartbeat_first", "HEARTBEAT_CONFIRMED", 2)
         downlink_cycle(srv, proxy, "data_confirmed", "DATA_CONFIRMED", 3)
         s0 = srv.mark()
         proxy.send("uplink " + frames["heartbeat"])

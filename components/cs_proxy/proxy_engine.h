@@ -132,7 +132,6 @@ class ProxyEngine {
   bool connected() const { return this->connected_; }
   // A main-loop gap over DEGRADED_GAP_US ended within the last DEGRADED_WINDOW_US.
   bool degraded() const { return this->degraded_at_(this->io_.now_us()); }
-  const std::vector<uint32_t> &server_tags() const { return this->server_tags_; }
   uint64_t airtime_used_us() { return this->budget_.used_us(this->io_.now_us()); }
 
  protected:
@@ -190,7 +189,6 @@ class ProxyEngine {
   uint64_t last_rssi_publish_us_{0};
   bool counters_published_{false};
   uint64_t last_counters_us_{0};
-  std::vector<uint32_t> server_tags_;
 
   ProxyCounters counters_;
   // Reused for every forwarded frame, so the receive path does not allocate.

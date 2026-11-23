@@ -44,10 +44,10 @@ bool is_valid_downlink(const uint8_t *data, size_t len) {
 }
 
 FrameHeader parse_header(const uint8_t *data) {
-  return FrameHeader{uint8_t(data[1] & 0x0F), be32(data + 2), be32(data + 6), be32(data + 10)};
+  return FrameHeader{uint8_t(data[1] & 0x0F), be64(data + 2), be32(data + 10)};
 }
 
-bool is_bootstrap(const FrameHeader &h) { return h.net_tag == 0 && h.dev_tag == 0; }
+bool is_bootstrap(const FrameHeader &h) { return h.type == FRAME_JOIN || h.type == FRAME_SYNC; }
 
 uint64_t frame_key(const uint8_t *data, size_t len) {
   uint8_t digest[32];
@@ -124,7 +124,7 @@ bool RateLimiter::allow(const FrameHeader &h, uint64_t now_us) {
   } else {
     Slot *slot = nullptr;
     for (auto &s : this->slots_) {
-      if (s.used && s.dev_tag == h.dev_tag) {
+      if (s.used && s.tag == h.tag) {
         slot = &s;
         break;
       }
@@ -144,9 +144,9 @@ bool RateLimiter::allow(const FrameHeader &h, uint64_t now_us) {
           slot = &s;
       }
     }
-    if (!slot->used || slot->dev_tag != h.dev_tag) {
+    if (!slot->used || slot->tag != h.tag) {
       slot->used = true;
-      slot->dev_tag = h.dev_tag;
+      slot->tag = h.tag;
       slot->bucket = TokenBucket(this->device_rate_, this->device_burst_);
     }
     slot->last_used_us = now_us;
@@ -337,16 +337,10 @@ std::vector<uint8_t> tx_result_body(uint32_t downlink_seq, uint8_t result, int32
 }
 
 bool parse_server_status(const uint8_t *body, size_t len, ServerStatus &out) {
-  if (len < 9)
-    return false;
-  uint8_t n = body[8];
-  if (n > 32 || len != 9 + size_t(n) * 4)
+  if (len != 8)  // 05 section 5.3
     return false;
   out.server_time = be32(body);
   out.hello_seq = be32(body + 4);
-  out.tags.clear();
-  for (uint8_t i = 0; i < n; i++)
-    out.tags.push_back(be32(body + 9 + 4 * i));
   return true;
 }
 

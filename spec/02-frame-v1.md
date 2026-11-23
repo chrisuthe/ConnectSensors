@@ -1,7 +1,7 @@
 # 02 - Frame Format v1
 
 Status: Draft
-Version: 1.0-draft.2
+Version: 1.0-draft.3
 
 This document defines the bytes a sensor transmits and receives over LoRa: layout,
 frame types, keys, rotating tags, encryption, frame counters, and the downlink
@@ -12,7 +12,9 @@ including the key exchange that produces session keys, is in 04.
 
 - A proxy can validate, deduplicate and route a frame without any key.
 - Only the owner's server can read a frame, or create one a sensor will accept.
-- An observer cannot link frames from one device across hours.
+- An observer cannot link frames from one device across hours, or group the
+  devices of one network.
+- Only the holder of a device's keys can prove which tags are the device's.
 - Small: 22 bytes of overhead.
 
 ## 2. Layout
@@ -21,8 +23,7 @@ including the key exchange that produces session keys, is in 04.
 Offset  Size  Field
 0       1     magic      0xC5
 1       1     ver_type   version (high nibble) | type (low nibble)
-2       4     net_tag    rotating network tag
-6       4     dev_tag    rotating device tag
+2       8     tag        rotating key-fingerprint tag (section 6)
 10      4     fcnt       frame counter (uint32)
 14      N     ciphertext AES-128-CCM encryption of the payload, 1 <= N <= 64
 14+N    8     mic        CCM authentication tag
@@ -58,8 +59,8 @@ The high bit of the type nibble gives the direction: `0x1`-`0x7` are uplinks,
 
 - *Confirmed* means the sensor expects a `DOWNLINK` that answers it (section 10)
   and retries if none arrives (08, Sensor behavior).
-- *Normal* tags are computed as in section 6. *Bootstrap* tags are both
-  `00000000`; see section 11.
+- *Normal* tags are derived from the epoch, *bootstrap* tags from the frame
+  counter (section 6.1). A `DOWNLINK` carries the tag of the uplink it answers.
 - `HEARTBEAT` frames carry periodic status. Servers use them for supervision
   (07). A sensor SHOULD send a confirmed heartbeat often enough to keep its clock
   within the tag window (section 6.3).
@@ -90,18 +91,11 @@ k_dev_tag = HKDF-SHA256(ikm = base, salt = dev_eui, info = "cs1 tag", L = 16)
 - The *session key set* uses `base = k_session` (5.3). It is used for every other
   frame.
 
-### 5.2 Network keys
+### 5.2 No network key
 
-Each server has a 16-byte random network key `k_net` per network. It never
-leaves the server.
-
-```
-k_net_route = HKDF-SHA256(ikm = k_net, salt = none, info = "cs1 route", L = 16)
-```
-
-The server gives `k_net_route` to each sensor in a `SET_NETWORK` command
-(section 10.3), always under the session key set. Proxies and relays never
-receive any key.
+There is no network-wide key. A frame's tag is derived from the device's own key
+set (section 6), so devices of one network share nothing an observer can see.
+Proxies and relays never receive any key.
 
 ### 5.3 Session key
 
@@ -129,33 +123,62 @@ The procedure and its states are defined in 04.
 
 ### 6.1 Tags
 
+A frame's `tag` is the fingerprint of an Ed25519 public key (RFC 8032) derived
+from the device's key set:
+
 ```
-epoch   = floor(unix_time / 3600)
-net_tag = trunc32(HMAC-SHA256(k_net_route, "net" | uint32(epoch)))
-dev_tag = trunc32(HMAC-SHA256(k_dev_tag,   "dev" | uint32(epoch)))
+epoch = floor(unix_time / 3600)
+index = "e" | uint32(epoch)               normal frames
+      | "b" | uint32((fcnt - 1) / 64)     bootstrap frames (JOIN, SYNC)
+seed  = HMAC-SHA256(k_dev_tag, "cs1 tag seed" | index)       32 bytes
+pub   = Ed25519 public key for the private key seed (RFC 8032 section 5.1.5)
+tag   = trunc64(SHA-256("cs1 tag fp" | pub))
 ```
 
-A sensor MUST compute tags from its own clock at the time it builds the frame.
-A retransmission (section 8.3) that crosses an epoch boundary keeps its original
-tags, because it is the same bytes.
+- `k_dev_tag` is from the key set the frame is sent under (5.1): the root key
+  set for `JOIN`, the session key set for every other uplink.
+- The tag block is 64 counter values, whatever block size `B` a sensor
+  reserves with (8.2). With the RECOMMENDED `B` of 64, `fcnt` starting at 1 and
+  each boot starting on a reservation boundary, one bootstrap tag covers the
+  counter values of one reservation block: 1-64, 65-128, and so on.
+- A `DOWNLINK` carries the tag of the uplink it answers, whichever key set it
+  is sent under. A sensor does not check a downlink's tag; the MIC and
+  `reply_to` decide (10.2).
 
-### 6.2 Reserved value
+A sensor MUST compute a normal tag from its own clock at the time it builds the
+frame. A retransmission (section 8.3) that crosses an epoch boundary keeps its
+original tag, because it is the same bytes.
 
-A computed tag equal to `00000000` collides with the bootstrap value. A sensor
-whose computed `net_tag` or `dev_tag` is `00000000` MUST use `00000001` instead,
-and servers MUST apply the same substitution when building tag tables.
+Properties (informative):
+
+- Without `k_dev_tag`, tags are unpredictable and unlinkable across epochs and
+  blocks, and devices of one network share nothing.
+- The holder of `k_dev_tag` can derive `seed`, so it can prove a tag is its own
+  by signing with the key behind `pub` (09). Someone who only saw the tag would
+  need a 64-bit SHA-256 preimage to find a usable `pub`.
+- A sensor generates one Ed25519 public key per epoch in which it transmits, and
+  one per block while it sends bootstrap frames. It never signs. It SHOULD
+  compute the next epoch's tag before the epoch boundary, so a frame sent just
+  after the boundary does not wait for it.
+- `fcnt` is in the clear, so a block-wide bootstrap tag adds no linkability.
+
+### 6.2 No reserved value
+
+Every 8-byte value is a valid tag, including all zeros. Senders and servers use
+the computed value as it is.
 
 ### 6.3 Server tag window
 
-The server MUST recognize tags for epochs `e - 1`, `e` and `e + 1`, where `e` is
-its current epoch. A sensor whose clock is off by more than about an hour is not
-recognized and has to resynchronize with `SYNC` (section 11.2).
+The server MUST recognize normal tags for epochs `e - 1`, `e` and `e + 1`, where
+`e` is its current epoch. A sensor whose clock is off by more than about an hour
+is not recognized by its normal tags and has to resynchronize with `SYNC`
+(section 11.2).
 
 ### 6.4 Collisions
 
-Tags are 32 bits, so two devices can share a tag in an epoch. A server MUST try
-every device whose tags match, and accept the frame for the first device whose
-MIC verifies.
+Two devices can share a tag. With `T` live tags the chance of any collision is
+about `T^2 / 2^65`. A server MUST try every device whose tags match, and accept
+the frame for the first device whose MIC verifies.
 
 ## 7. Encryption
 
@@ -201,7 +224,7 @@ which is harmless.
 ### 8.3 Retransmission
 
 A confirmed uplink that is not answered is retransmitted as exactly the same
-bytes: same `fcnt`, same tags, same ciphertext. It is not a new frame and does not
+bytes: same `fcnt`, same `tag`, same ciphertext. It is not a new frame and does not
 use a new counter value, but it is a new transmission: the first retry comes at
 least 4 seconds after the original (08 section 5). Proxies and the server
 therefore tell transmissions apart by time, not by bytes: copies received within
@@ -336,63 +359,79 @@ acknowledged with `DL_ACK` (07 section 7).
 
 | `cmd_id` | Name | Args | Effect |
 |---|---|---|---|
-| `0x01` | `SET_NETWORK` | `k_net_route` (16) | Store the network routing key and use normal tags from now on |
+| `0x01` | reserved | | Formerly `SET_NETWORK`; MUST NOT be sent |
 | `0x02` | `SET_HEARTBEAT` | `uint16` minutes, 1-1440 | Change the heartbeat interval |
-| `0x03` | `LEAVE` | none | Erase `k_net_route`, return to unpaired state (counters are kept) |
+| `0x03` | `LEAVE` | none | Erase `k_session`, return to unpaired state (counters are kept) |
 | `0x04` | `KEY_EXCHANGE` | `server_pub` (32) | Complete the X25519 exchange (5.3) and switch to the session key set |
-| `0x05`-`0x3F` | reserved | | Future network commands |
+| `0x05` | `NOP` | none | Nothing. Like any command, it makes the sensor set `DL_ACK` (10.2), so a server can learn whether a downlink was accepted |
+| `0x06`-`0x3F` | reserved | | Future network commands |
 | `0x40`-`0x7F` | application | | Defined in 03 (Payload v1) and by device profiles |
 | `0x80`-`0xFF` | reserved | | |
 
 ## 11. Bootstrap frames
 
-`JOIN` and `SYNC` use bootstrap tags (`net_tag = dev_tag = 00000000`), because the
-sensor either has no network key or does not trust its clock. The server
-identifies the device by trying keys (11.3).
+`JOIN` and `SYNC` use bootstrap tags (section 6.1), derived from the frame
+counter rather than the clock, because the sensor either has no session yet or
+does not trust its clock.
 
 ### 11.1 `JOIN`
 
 Sent by a sensor that has no session, normally when the user presses its button
-during pairing. It is encrypted under the root key set. Its payload is:
+during pairing. It is encrypted under the root key set, with the root key set's
+bootstrap tag. Its payload is:
 
 ```
 uflags (1, TIME_UNSURE set) | sensor_pub (32)
 ```
 
-The server answers with a `DOWNLINK` under the root key set, with bootstrap
-tags, containing `KEY_EXCHANGE`. Nothing else may be sent under the root key
-set. The full pairing procedure is in 04.
+The server answers with a `DOWNLINK` under the root key set, with the `JOIN`'s
+tag, containing `KEY_EXCHANGE`. Nothing else may be sent under the root key set.
+The full pairing procedure is in 04.
 
 ### 11.2 `SYNC`
 
-Sent under the session key set, in three situations:
+Sent under the session key set, with the session key set's bootstrap tag, by a
+paired sensor:
 
-- immediately after `KEY_EXCHANGE`, to fetch `SET_NETWORK` (04);
-- by a paired sensor whose clock is unknown, for example after the batteries were
-  removed;
-- by a paired sensor that has had no answer to confirmed uplinks for a long time
-  (threshold in 08).
+- whose clock is unknown, for example after the batteries were removed;
+- that has had no answer to confirmed uplinks for a long time (threshold in 08
+  section 6).
 
 Its payload is `uflags` optionally followed by readings. The server answers with a
-`DOWNLINK` with bootstrap tags. Its `server_time` sets the sensor's clock, after
-which the sensor uses normal tags again.
+`DOWNLINK` carrying the `SYNC`'s tag. Its `server_time` sets the sensor's clock,
+after which the sensor uses normal tags again.
 
 ### 11.3 Server identification of bootstrap frames
 
+The server keeps the bootstrap tags of its paired devices in its tag table (07
+section 3): for each, the block holding the last `fcnt` it accepted and the 2
+blocks after it. A bootstrap frame whose tag is in the table is identified like a
+normal frame.
+
+A bootstrap frame whose tag misses the table, or whose table candidates all fail
+the MIC, is identified by trial decryption if one of the server's own proxies
+heard it:
+
 - For `JOIN`: the server tries the root key set of each device that is waiting to
-  be paired (`SCANNED` or `EXCHANGED`, 04 section 4.2).
+  be paired (`SCANNED` or `EXCHANGED`, 04 section 4.2). A `JOIN`'s counter is
+  unknown to the server, so `JOIN` is always found this way.
 - For `SYNC`: the server tries the session key set of each device that is paired
-  or in the middle of pairing.
-- The server MUST limit how many bootstrap frames it processes per minute, so
-  that a flood of bootstrap frames cannot use unbounded CPU. 50 per minute is
-  RECOMMENDED.
+  or in the middle of pairing. This finds a sensor whose counter is far past the
+  last one the server saw, for example one that rebooted many times out of range.
+- The server MAY instead derive the bootstrap tag of each candidate from the
+  frame's clear `fcnt` and compare it.
+- The server MUST limit how many bootstrap frames it identifies this way per
+  minute, so that a flood of bootstrap frames cannot use unbounded CPU. 50 per
+  minute is RECOMMENDED.
+
+A frame with a normal tag that misses the table is not tried at all.
 
 ### 11.4 Federation limit (informative)
 
-Bootstrap frames carry no network tag, so a relay cannot route them to an owner.
-A sensor that only a neighbor's proxy can hear can resynchronize only if its
-owner subscribes to bootstrap frames on the relay (09). Owners SHOULD place at
-least one of their own proxies within range of every sensor during pairing.
+`JOIN` is never federated: its tags derive from `k_root`, which anyone who has
+seen the pairing code holds. Pairing therefore always needs one of the owner's
+own proxies within range of the sensor. `SYNC` has a real tag, so federation can
+route it to its owner (09).
 
 ## 12. Proxy rules
 
@@ -419,10 +458,12 @@ types work without proxy updates.
 | Replay of uplinks | Counter rules in 8.5 |
 | Replay of downlinks | `reply_to` binding and downlink counter (10.2) |
 | Nonce reuse | Counters never repeat (8.1, 8.2, 8.4); direction byte separates uplink and downlink. One residual case is accepted: see 13.1 |
-| Tracking a device over time | Hourly tags; `dev_eui` never in the clear |
+| Tracking a device over time | Hourly tags, and per-block bootstrap tags, derived from the device's own key; `dev_eui` never in the clear |
+| Grouping the devices of one network | Nothing in a frame is shared between devices: there is no network tag (section 5.2) |
+| Claiming another device's tags | A tag is a public-key fingerprint, so proving it needs `k_dev_tag` (section 6.1) |
 | Linking via counter values | Not addressed in v1. `fcnt` is in the clear and increases steadily, so an observer can link a device's frames across epochs by counter continuity. Federation widens who can observe it (09 section 9). A future version may mask it. |
 | Key compromise | Per device. A leaked pairing code lets an attacker who is present during a future pairing interfere with it, but does not reveal any past or future session that it did not take part in (5.3). |
-| Second-hand devices | A change of owner requires a factory reset (04 section 6.3), which also erases the previous owner's keys. A previous owner who kept the pairing code cannot read traffic after the device is paired again. They can attempt an active attack during that pairing; owners who need protection from that should re-flash `k_root`. |
+| Second-hand devices | A change of owner requires a factory reset (04 section 6.3), which also erases the previous owner's keys. A previous owner who kept the pairing code cannot read traffic after the device is paired again. They can attempt an active attack during that pairing, from within radio range, since `JOIN` is never federated (11.4). Owners who need protection from that SHOULD re-flash `k_root` on second-hand or untrusted devices. |
 | Proxy dropping frames | Out of scope for the frame format; handled by path diversity and supervision (07) |
 
 The 64-bit MIC gives a forgery probability of 2^-64 per attempt, which is far
@@ -456,11 +497,14 @@ This residual reuse is accepted:
 ## 14. Test vectors
 
 `vectors/frame-v1.json` contains root and session key sets, the X25519 exchange,
-tags for three epochs, and eight frames covering the whole pairing sequence
-(`JOIN`, `KEY_EXCHANGE`, `SYNC`, `SET_NETWORK`), then `DATA_CONFIRMED` with
-`DL_ACK`, a plain acknowledgement, `HEARTBEAT`, and a `SYNC` after a reboot.
-`KEY_EXCHANGE` is root downlink 1; `SET_NETWORK` and the acknowledgement are
-session downlinks 1 and 2 (8.4).
+and in `tags` the `index`, `seed`, `pub` and `tag` of section 6.1: normal tags of
+the session key set for three epochs, and bootstrap tags of both key sets at
+`fcnt` 1, 64, 65 and 129 (blocks 0, 0, 1 and 2). Its eight frames cover the whole
+shortened pairing (`JOIN`, `KEY_EXCHANGE`, the first session uplink and its
+answer, 04 section 4.4), a `NOP` followed by `DATA_CONFIRMED` with `DL_ACK`, a
+plain acknowledgement, a `HEARTBEAT`, and a `SYNC` after a reboot.
+`KEY_EXCHANGE` is root downlink 1; the answer that carries `NOP` and the plain
+acknowledgement are session downlinks 1 and 2 (8.4).
 
 Its `invalid` frames, all under the session keys, must be discarded: a flipped MIC
 bit and an uplink sealed with the downlink direction byte (section 7), lengths 22
@@ -474,7 +518,6 @@ Inputs:
 ```
 k_root  = 000102030405060708090a0b0c0d0e0f
 dev_eui = c5c5000000000001
-k_net   = f0e1d2c3b4a5968778695a4b3c2d1e0f
 sensor ephemeral private = a0a0...a0a1 (31 bytes of a0, then a1)
 server ephemeral private = b0b0...b0b1 (31 bytes of b0, then b1)
 time    = 1795226400 (2026-11-21T02:00:00Z), epoch 498674
@@ -485,16 +528,16 @@ X25519 private keys are used as given; RFC 7748 clamping happens inside X25519.
 Selected outputs:
 
 ```
-root k_enc        = ae0dafd25a2e89208090739d6df12e82
-k_session         = 151466fb0522fa821caffdada6ce9d6c
-session k_enc     = 77a25f6ba7d210973e1a19ed70b85177
-session k_dev_tag = de22bd4af619a3b758dc256dfa3b0a5a
-k_net_route       = 53e27722471cdf29ebcb23aabc120cfe
-net_tag(498674)   = 61d306d3
-dev_tag(498674)   = 452268f4
+root k_enc          = ae0dafd25a2e89208090739d6df12e82
+k_session           = 151466fb0522fa821caffdada6ce9d6c
+session k_enc       = 77a25f6ba7d210973e1a19ed70b85177
+session k_dev_tag   = de22bd4af619a3b758dc256dfa3b0a5a
+tag, epoch 498674   = b08e8a4367a5b5ba
+JOIN tag, fcnt 1    = 222b42cec0e14ae7
 
 DATA_CONFIRMED, fcnt 3, plaintext 01000101:
-c51261d306d3452268f400000003787421e751d0f9c8ee50da1e
+c512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb
 ```
 
-Reading encodings inside the plaintexts are defined in 03.
+Reading encodings inside the plaintexts are defined in 03. The home server's tag
+table is exercised by `tag_table` in `vectors/server-v1.json` (07 section 13).

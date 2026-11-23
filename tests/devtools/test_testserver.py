@@ -235,7 +235,7 @@ def main() -> int:
         # A frame that is not the test device's is logged and not answered, even confirmed.
         mark = srv.mark()
         stranger = cs.keys_from(bytes(range(16)), bytes.fromhex("c5c50000000000ff"))
-        foreign = cs.seal(stranger, cs.T_DATA_CONFIRMED, bytes.fromhex("61d306d3"), bytes.fromhex("01020304"), 9,
+        foreign = cs.seal(stranger, cs.T_DATA_CONFIRMED, bytes.fromhex("61d306d301020304"), 9,
                           bytes([0]) + cs.encode_reading(0, 0x01, 1))
         proxy.send(cs.M_UPLINK, cs.uplink_body(9_000_000, -95.0, 3.0, 0, foreign))
         check(srv.wait_for(r"UPLINK DATA_CONFIRMED fcnt 9 .*\(not the test device\)", since=mark) is not None,
@@ -378,37 +378,33 @@ def pairing_main() -> int:
             time.sleep(cs.MERGE_WINDOW_MS / 1000 + 0.2)
             check(uplink(proxy, join) == dl, "pairing: retransmitted JOIN answered with the cached frame")
 
-            # Steps 5-6: SYNC under the session key set; SET_NETWORK back.
-            session = cs.keys_from(sensor.k_session, SENSOR_EUI)
-            sync = cs.seal(session, cs.T_SYNC, cs.ZERO_TAG, cs.ZERO_TAG, 2,
-                           bytes([cs.UF_DL_ACK | cs.UF_TIME_UNSURE]))
-            dl = uplink(proxy, sync)
-            h, pt = cs.open_frame(session, dl)
-            route = bytes.fromhex(cs.frame_vectors()["derived"]["k_net_route"])
-            check(struct.unpack(">I", pt[:4])[0] == 2 and pt[9:] == cs.command(cs.CMD_SET_NETWORK, route),
-                  "pairing: SYNC answered with SET_NETWORK carrying k_net_route")
-            server_time = struct.unpack(">I", pt[4:8])[0]
+            # Steps 5-7: the first session uplink, with a normal tag from KEY_EXCHANGE's
+            # server_time and DL_ACK, is found by the tag table, marks the device PAIRED
+            # and is answered under the session keys, which completes the sensor's pairing.
+            _, ke_pt = cs.open_frame(sensor.root, dl) if dl else (None, bytes(9))
+            server_time = struct.unpack(">I", ke_pt[4:8])[0]
             check(abs(server_time - time.time()) < 5, "pairing: server_time is the server's clock")
-            last_down = h.fcnt
-
-            # Step 7: a confirmed heartbeat with normal tags and DL_ACK completes it.
-            epoch = cs.epoch_of(server_time)
-            ntag, dtag = cs.net_tag(route, epoch), cs.dev_tag(session.k_dev_tag, epoch)
-            hb = cs.seal(session, cs.T_HEARTBEAT_CONFIRMED, ntag, dtag, 3,
-                         bytes([cs.UF_DL_ACK]) + cs.encode_reading(0, 0x01, 1) + cs.encode_reading(0xFF, 0x42, 3700))
+            session = cs.keys_from(sensor.k_session, SENSOR_EUI)
+            hb = sensor.uplink(cs.T_HEARTBEAT_CONFIRMED, 2, server_time,
+                               bytes([cs.UF_DL_ACK]) + cs.encode_reading(0, 0x01, 1) +
+                               cs.encode_reading(0xFF, 0x42, 3700))
             dl = uplink(proxy, hb)
+            check(dl is not None and sensor.downlink(dl) == "accept" and sensor.state == "PAIRED",
+                  "pairing: first session uplink answered; the sensor is PAIRED")
             h, pt = cs.open_frame(session, dl)
-            check(struct.unpack(">I", pt[:4])[0] == 3 and h.fcnt > last_down,
-                  "pairing: confirmed heartbeat answered under the session keys")
+            check(struct.unpack(">I", pt[:4])[0] == 2 and h.tag == hb[2:10],
+                  "pairing: the answer carries the uplink's tag")
             last_down = h.fcnt
+            srv.wait_for(r"PAIRED")
+            ntag = cs.normal_tag(session.k_dev_tag, cs.epoch_of(server_time))
 
             # Normal traffic: a door opening, confirmed, is answered; an unconfirmed frame is not.
-            data = cs.seal(session, cs.T_DATA_CONFIRMED, ntag, dtag, 4, bytes([0]) + cs.encode_reading(0, 0x01, 0))
+            data = cs.seal(session, cs.T_DATA_CONFIRMED, ntag, 4, bytes([0]) + cs.encode_reading(0, 0x01, 0))
             dl = uplink(proxy, data)
             h, pt = cs.open_frame(session, dl)
             check(struct.unpack(">I", pt[:4])[0] == 4 and h.fcnt > last_down, "pairing: DATA_CONFIRMED answered")
             last_down = h.fcnt
-            plain = cs.seal(session, cs.T_DATA, ntag, dtag, 5, bytes([0]) + cs.encode_reading(0, 0x01, 1))
+            plain = cs.seal(session, cs.T_DATA, ntag, 5, bytes([0]) + cs.encode_reading(0, 0x01, 1))
             check(uplink(proxy, plain) is None, "pairing: unconfirmed DATA not answered")
             srv.wait_for(r"UPLINK DATA fcnt 5 ")
         finally:
@@ -421,15 +417,26 @@ def pairing_main() -> int:
         try:
             proxy = SimProxy(s, dest, PROXY_ID, PAIR_BOOT_2)
             handshake(proxy)
-            data = cs.seal(session, cs.T_DATA_CONFIRMED, ntag, dtag, 6, bytes([0]) + cs.encode_reading(0, 0x01, 1))
+            data = cs.seal(session, cs.T_DATA_CONFIRMED, ntag, 6, bytes([0]) + cs.encode_reading(0, 0x01, 1))
             dl = uplink(proxy, data)
             ok = False
             if dl is not None:
                 h, pt = cs.open_frame(session, dl)
                 ok = struct.unpack(">I", pt[:4])[0] == 6 and h.fcnt > last_down
             check(ok, "pairing: after a restart, the stored session answers with a higher counter")
-            stale = cs.seal(session, cs.T_DATA_CONFIRMED, ntag, dtag, 4, bytes([0]) + cs.encode_reading(0, 0x01, 0))
+            stale = cs.seal(session, cs.T_DATA_CONFIRMED, ntag, 4, bytes([0]) + cs.encode_reading(0, 0x01, 0))
             check(uplink(proxy, stale) is None, "pairing: an old counter is not answered after a restart")
+
+            # A SYNC far past the table's blocks is found by trial decryption (07 section 4).
+            far = cs.seal(session, cs.T_SYNC, cs.bootstrap_tag(session.k_dev_tag, 1000), 1000,
+                          bytes([cs.UF_TIME_UNSURE]))
+            dl = uplink(proxy, far)
+            check(dl is not None and cs.open_frame(session, dl)[0].tag == far[2:10],
+                  "pairing: SYNC past the tag table found by the bootstrap fallback and answered")
+            # A normal tag outside the table is not tried.
+            late = cs.seal(session, cs.T_DATA_CONFIRMED, cs.normal_tag(session.k_dev_tag, cs.epoch_of(server_time) + 5),
+                           1001, bytes([0]))
+            check(uplink(proxy, late) is None, "pairing: a normal tag outside the window is not tried")
         finally:
             out2 = stop_server(srv)
     print("--- pairing server output ---\n" + out.strip())
