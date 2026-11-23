@@ -57,8 +57,8 @@ class ProxyIo {
   // Forget the resolved address so it is looked up again.
   virtual void rediscover() = 0;
 
-  // A frame is arriving: the radio has a valid header or sync word, or a received
-  // packet it has not delivered yet. Asked only while a downlink is due.
+  // A frame is arriving, or a received packet has not been delivered yet (the
+  // radio's is_receiving()). Asked only while a downlink is due.
   virtual bool is_receiving() { return false; }
   // TX_SENT when the radio accepted the frame, TX_BUSY when a received packet is
   // waiting, TX_RADIO_ERROR otherwise. Completion comes back through

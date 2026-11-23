@@ -257,8 +257,10 @@ Rejections are reported immediately with `TX_RESULT`.
   answer of `BUSY` (a received packet is waiting) is retried on the next loop
   pass until `tx_at + 40 ms`, then reported as `BUSY`.
 - Before transmitting it asks the radio whether a frame is arriving
-  (`is_receiving()`: a valid header or sync word, or a received packet not yet
-  read). Starting a transmission aborts a reception in progress, so while one is
+  (`is_receiving()`: on the SX126x a valid header or sync word, on the SX127x a
+  detected or synchronised signal or a valid header; on both a received packet not
+  yet read). Another LoRa network's preamble on the channel can therefore hold a
+  downlink on an SX127x, within the same limit. Starting a transmission aborts a reception in progress, so while one is
   arriving the component holds the downlink and asks again on the next loop pass.
   It holds only while that pass can still transmit in the window: while the
   current time plus the main-loop interval plus 2 ms is at most `tx_at + 40 ms`.
