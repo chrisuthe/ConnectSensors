@@ -18,10 +18,9 @@ adds no radio driver of its own and never changes the radio's configuration. It:
 - transmits downlinks on request, inside the sensor's receive windows;
 - reports its health as ESPHome entities.
 
-Federation is normally done by the home server, which already receives every
-frame (09 section 5.1), so a proxy attached to a server never talks to relays.
-A proxy with no server can instead publish directly to relays as a *standalone
-proxy* (09 section 5.2, and section 3.4 below).
+Proxies take no part in federation. The home server, which already receives
+every frame, publishes the ones that are not its own to mailbox servers (09
+section 6), so a proxy never talks to a mailbox.
 
 ## 2. Requirements
 
@@ -65,7 +64,7 @@ A complete board example is in section 13.
 | `server.transport` | `udp` or `mqtt` | `udp` | 05 section 2. Not accepted yet; UDP only. |
 | `server.host` | hostname or IP | none | Server address for UDP. If omitted, mDNS discovery (05 section 2.1). Required for now: discovery is not implemented. |
 | `server.port` | int | 47800 | Server UDP port |
-| `server.key` | 32 hex digits | required unless standalone | The proxy key (05 section 4.2). A key of this proxy's own; a shared key requires `downlink.enabled: false`. |
+| `server.key` | 32 hex digits | required | The proxy key (05 section 4.2). A key of this proxy's own; a shared key requires `downlink.enabled: false`. |
 | `proxy_id` | 16 hex digits | from MAC | Override only when the MAC is not stable |
 | `downlink.enabled` | bool | `true` | Accept `DOWNLINK` messages. MUST be `false` with a shared key (05 section 4.2). |
 | `downlink.airtime_budget` | percent | 2% | Transmit budget per rolling hour; MUST NOT exceed 2% (01 section 5) |
@@ -74,19 +73,15 @@ A complete board example is in section 13.
 | `rate_limit.global` | rate | 20/s | Token bucket, burst equal to the rate |
 | `rate_limit.per_device` | rate | 2/s | Per 8-byte `tag` (02 section 6.1), burst 5 |
 | `rate_limit.bootstrap` | rate | 5/s | Shared by all bootstrap frames (types `JOIN` and `SYNC`), burst 5 |
-| `federation.enabled` | bool | `false` | Standalone mode (section 3.4); only allowed without `server`. Not accepted yet, nor are the other `federation.*` options. |
-| `federation.relays` | list of `wss://` URLs | none | Required in standalone mode; at least 2 RECOMMENDED |
-| `federation.downlinks` | bool | `false` | Accept downlink requests from relays (09 section 7) |
-| `federation.allow` | list of pubkeys | none | If set, accept downlink requests only from these subscriber keys |
 
 `transport: mqtt` requires ESPHome's `mqtt` component; `host` and `port` are then
 ignored.
 
 The options marked "not accepted yet" describe the protocol; the ESPHome
 component rejects them at config time until they are implemented. The MQTT
-transport, mDNS discovery and standalone mode (`federation`) are not implemented,
-so UDP is the only transport and `server.host` is required, as an IPv4 address or
-a hostname. `EU868` is rejected until its frequency is decided.
+transport and mDNS discovery are not implemented, so UDP is the only transport
+and `server.host` is required, as an IPv4 address or a hostname. `EU868` is
+rejected until its frequency is decided.
 
 ### 3.3 Validation at compile time
 
@@ -101,25 +96,9 @@ The component's final validation MUST fail with a clear message if:
 5. The radio's `pa_power` exceeds the profile's maximum.
 6. `server.key` is not exactly 32 hex digits.
 7. `downlink.airtime_budget` is above 2%.
-8. Both `server` and `federation.enabled: true` are given, or neither is.
-9. `federation.enabled: true` without at least one relay.
 
 ESPHome's final-validation hook (`FINAL_VALIDATE_SCHEMA`) gives access to the
 radio's configuration for these checks.
-
-### 3.4 Standalone mode
-
-A standalone proxy has no server and donates coverage to its neighbors.
-
-- It publishes every valid frame as an uplink event (09 section 4.1) to its
-  relays, signed with a key it generates on first boot and keeps in non-volatile
-  storage. The public key is logged at `INFO` and exposed as a text sensor so
-  neighbors can add it to allow lists.
-- With `federation.downlinks: true` it handles downlink requests itself
-  (09 section 7), scheduling them as in section 8.
-- It needs a TLS WebSocket client and BIP-340 signatures (for example
-  libsecp256k1). An ESP32-S3 with PSRAM is RECOMMENDED.
-- There is no `HELLO`, `SERVER_STATUS` or envelope traffic in this mode.
 
 ## 4. Startup
 
@@ -150,7 +129,6 @@ For each packet the radio delivers, in this order:
    `rate_limited` and stop.
 7. Insert the frame into the dedupe cache.
 8. Build and send `UPLINK` (05 section 5.1). Increment `forwarded`.
-9. In standalone mode, publish to relays as in 09 section 5.2 instead of step 8.
 
 The packet buffer belongs to the radio component and is only valid during the
 callback; the component MUST copy what it keeps. The whole pipeline MUST NOT

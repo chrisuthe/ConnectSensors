@@ -1,181 +1,586 @@
 {
-  "spec": "ConnectSensors federation events (09)",
-  "bip340_check": {
-    "sk": "0000000000000000000000000000000000000000000000000000000000000003",
-    "pub": "F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9",
-    "aux": "0000000000000000000000000000000000000000000000000000000000000000",
-    "msg": "0000000000000000000000000000000000000000000000000000000000000000",
-    "sig": "E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA821525F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0"
-  },
+  "spec": "ConnectSensors federation through mailboxes (09)",
   "inputs": {
-    "publisher_sk": "1111111111111111111111111111111111111111111111111111111111111111",
-    "owner_sk": "2222222222222222222222222222222222222222222222222222222222222222",
-    "aux_rand": "0000000000000000000000000000000000000000000000000000000000000000",
-    "note": "frames from frame-v1.json"
+    "server_seed": "3333333333333333333333333333333333333333333333333333333333333333",
+    "owner_seed": "2222222222222222222222222222222222222222222222222222222222222222",
+    "publisher_seed": "1111111111111111111111111111111111111111111111111111111111111111",
+    "host": "mailbox.example",
+    "generation": 81985529216486895,
+    "nonce_c": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+    "nonce_s_owner": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+    "nonce_s_publisher": "5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b",
+    "server_time": 1795226460,
+    "epoch": 498674,
+    "note": "session key set from frame-v1.json; the publisher's connection has its own nonce_s"
   },
-  "events": [
+  "derived": {
+    "server_pub": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+    "server_id": "6c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f030765",
+    "owner_pub": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+    "publisher_pub": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+    "owner_pseudonym": "018143c01340ba00",
+    "publisher_pseudonym": "b19e24b1d2b9f783",
+    "session_k_dev_tag": "de22bd4af619a3b758dc256dfa3b0a5a"
+  },
+  "tags": [
     {
-      "name": "uplink",
-      "event": {
-        "id": "ee5efbce49f7dbed6e8d8bdca2274c0a9a85c3b2fe175556b6837216ff67ff58",
-        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-        "created_at": 1795226460,
-        "kind": 21110,
-        "tags": [
-          [
-            "h",
-            "b0"
-          ],
-          [
-            "r",
-            "US915"
-          ],
-          [
-            "dl",
-            "1"
-          ]
-        ],
-        "content": "ARrFErCOikNnpbW6AAAAA3h0IecqYPlmVz+c2wC0AQECAwQFBgcI+5v/2AA=",
-        "sig": "f7ac899c8e82b41903e96ba53a046365a83b54c3f368fc70d3fdca7b33b5c247c99dda5674df1fad058229411cf553a20a57b72e7dc6e0a80c7619090e9c8586"
-      }
+      "name": "epoch 498674",
+      "index": "6500079bf2",
+      "seed": "f8995c48082eb322aef3e598e7a7dedb3ba688339855b0f8c8fd4dfe866bcbf8",
+      "pub": "37dd014121c663517cfb5d10768fa4a38efd943085f9eea8573a9d17543ec896",
+      "tag": "b08e8a4367a5b5ba"
     },
     {
-      "name": "downlink_request",
-      "event": {
-        "id": "77d376698078266e37a5fe7efe677aae0333675384fe493425644deee795af55",
-        "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
-        "created_at": 1795226460,
-        "kind": 21111,
-        "tags": [
-          [
-            "p",
-            "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
-          ]
-        ],
-        "content": "AQECAwQFBgcIH8UYsI6KQ2eltboAAAACb/1pV+7Zh69ZfTKcf1Ll5L4=",
-        "sig": "e829112b29da7972d4ba540881298a5c4733a94be6274c660930d38a2231cd992ad32a30f75a88e10aa5b8a897e34a706e0ac81a012025b1fb5d8ec9deda31e8"
-      }
+      "name": "sync block 0 (fcnt 1-64)",
+      "index": "6200000000",
+      "seed": "e10fc45f1c591572fe91c26304048e1d145bc3733b0c82fa80eb83007972b419",
+      "pub": "4a8d87fc902e2f5e500fdab4f0f5aef2974a59c0a5a8835be33f032c6e92102d",
+      "tag": "8d02ccf4bae2f803"
     },
     {
-      "name": "downlink_result",
-      "event": {
-        "id": "6e75c02ce2ddd7bb5df7a95922a79fce4f097e8d18e8dd3718194e4370094b0b",
-        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-        "created_at": 1795226463,
-        "kind": 21112,
-        "tags": [
-          [
-            "p",
-            "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
-          ]
-        ],
-        "content": "AQECAwQFBgcIAAAACDQ=",
-        "sig": "667953409e167a94f77528863924cc6b9696fe5a8eaccae0eea7b848d9612a972d42dfc0fd8734b0f45f540d51b860c48b1a33cc75f1d89ab4b6aea5246cbdbd"
-      }
+      "name": "sync block 1 (fcnt 65-128)",
+      "index": "6200000001",
+      "seed": "98a25bd9da65b934b51ceed904bfc02989af112bb73fb36d1cba0608a12fbcf0",
+      "pub": "7277fa94bfb13e4ae397f0be9c9c52738fa5076808961480c9b1446cfe935c6c",
+      "tag": "0b0abdff95e4ca39"
+    }
+  ],
+  "registrations": [
+    {
+      "name": "normal",
+      "owner_pub": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "pub": "37dd014121c663517cfb5d10768fa4a38efd943085f9eea8573a9d17543ec896",
+      "proof": "ccf5d2311ac52b53c82b53b21e579f81998970b9f97980d4b00ebd3abbdb4d830998c6bc561e8e84d3116465ace49956dc9ab30091efef84e0e58605d1d1590c",
+      "expires": 1795233600,
+      "reg_msg": "637331207265676c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f030765a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f06b011740",
+      "tag": "b08e8a4367a5b5ba",
+      "status": "OK",
+      "note": "normal tag of epoch 498674, expires at the end of epoch 498675"
     },
     {
-      "name": "uplink_multi_reception",
-      "event": {
-        "id": "6be7806cfccdc2ca734752058be63345ae0e2b018f4af18f74f92fdd6b284fe2",
-        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-        "created_at": 1795226490,
-        "kind": 21110,
-        "tags": [
-          [
-            "h",
-            "b0"
-          ],
-          [
-            "r",
-            "US915"
-          ]
-        ],
-        "content": "AR3FE7COikNnpbW6AAAABLunAC2UwcOWCl+lGFXBmgGaAxESExQVFhcY/JAAXwAhIiMkJSYnKPwLABQAMTIzNDU2Nzj7Zf+eAQ==",
-        "sig": "6fee6d006eae6a1f349d2a97b146ce5763a0745132f1503ad5e62120f173697ee3d3d36d8ff54fc94565423781fcff851821e852053073669ab99299b57fb8cb"
-      },
-      "note": "HEARTBEAT heard by three of the publisher's proxies, one TS_UNCERTAIN"
+      "name": "sync",
+      "owner_pub": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "pub": "7277fa94bfb13e4ae397f0be9c9c52738fa5076808961480c9b1446cfe935c6c",
+      "proof": "cf87befaaea6eb44cf2d13e839d62bf751fac71c551438edcf7d7c590da168203d9bfab9c4a321d9638e9b13f51aa7e2f0a7fa3a62020ea576a9ed2a03ee690a",
+      "expires": 1795831260,
+      "reg_msg": "637331207265676c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f030765a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f06b0a35dc",
+      "tag": "0b0abdff95e4ca39",
+      "status": "OK",
+      "note": "SYNC block 1, expires 7 days ahead"
+    }
+  ],
+  "invalid_registrations": [
+    {
+      "name": "non_canonical_s",
+      "owner_pub": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "pub": "37dd014121c663517cfb5d10768fa4a38efd943085f9eea8573a9d17543ec896",
+      "proof": "ccf5d2311ac52b53c82b53b21e579f81998970b9f97980d4b00ebd3abbdb4d83f66bbc197181a0dca9ae5b088bde786bdc9ab30091efef84e0e58605d1d1591c",
+      "expires": 1795233600,
+      "reg_msg": "637331207265676c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f030765a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f06b011740",
+      "tag": "b08e8a4367a5b5ba",
+      "status": "BAD_PROOF",
+      "note": "the valid proof with S + L; a lax verifier that reduces S accepts it"
+    },
+    {
+      "name": "small_order_pub",
+      "owner_pub": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "pub": "0100000000000000000000000000000000000000000000000000000000000000",
+      "proof": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expires": 1795233600,
+      "reg_msg": "637331207265676c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f030765a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f06b011740",
+      "tag": "2c1775b8fe968cc1",
+      "status": "BAD_PROOF",
+      "note": "pub is the neutral element, R = B and S = 1; a cofactorless lax verifier accepts it for any message, and only the small-order pub fails"
+    },
+    {
+      "name": "other_server",
+      "owner_pub": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "pub": "37dd014121c663517cfb5d10768fa4a38efd943085f9eea8573a9d17543ec896",
+      "proof": "bc80c95b16355af2ae237640081cbf64923e198356cf5ff175b2029d98dd4861c2a45a6e95ea57d5d678edd337c65a7f494a4b6cd625115a084e625535bb9209",
+      "expires": 1795233600,
+      "reg_msg": "637331207265676c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f030765a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f06b011740",
+      "tag": "b08e8a4367a5b5ba",
+      "status": "BAD_PROOF",
+      "note": "proof made for server_id 139e3940e64b5491722088d9a0d741628fc826e09475d341a780acde3c4b8070"
+    },
+    {
+      "name": "other_owner",
+      "owner_pub": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "pub": "37dd014121c663517cfb5d10768fa4a38efd943085f9eea8573a9d17543ec896",
+      "proof": "ccf5d2311ac52b53c82b53b21e579f81998970b9f97980d4b00ebd3abbdb4d830998c6bc561e8e84d3116465ace49956dc9ab30091efef84e0e58605d1d1590c",
+      "expires": 1795233600,
+      "reg_msg": "637331207265676c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f030765d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c97787376b011740",
+      "tag": "b08e8a4367a5b5ba",
+      "status": "BAD_PROOF",
+      "note": "proof made for owner_pub, presented by the publisher's key"
+    },
+    {
+      "name": "expires_too_far",
+      "owner_pub": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "pub": "7277fa94bfb13e4ae397f0be9c9c52738fa5076808961480c9b1446cfe935c6c",
+      "proof": "ac7278af3ef06e878ddeda03b23e018844256d52d8a2b31b54611b4c2d7b6c0c83205b2c691fad47c6bba11f875de222871dd81e6db87b24fe482119879d390c",
+      "expires": 1795831261,
+      "reg_msg": "637331207265676c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f030765a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f06b0a35dd",
+      "tag": "0b0abdff95e4ca39",
+      "status": "BAD_EXPIRES",
+      "note": "one second past the 7-day cap"
+    },
+    {
+      "name": "expired",
+      "owner_pub": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "pub": "7277fa94bfb13e4ae397f0be9c9c52738fa5076808961480c9b1446cfe935c6c",
+      "proof": "6822aef5df80dbfb7ad8862af76399217a990fe3b779c6733b3f4b5f71879263707b65e8529f0442b0fb014b40a909ed95bd8a796120ef74e0eef95078cdd40b",
+      "expires": 1795226460,
+      "reg_msg": "637331207265676c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f030765a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f06b00fb5c",
+      "tag": "0b0abdff95e4ca39",
+      "status": "BAD_EXPIRES",
+      "note": "expires equals the server's time"
+    }
+  ],
+  "handshake": [
+    {
+      "from": "owner",
+      "name": "hello",
+      "cbor": "83010150c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0"
+    },
+    {
+      "from": "server",
+      "name": "greeting",
+      "cbor": "87182001582017cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce58206c8f8607dbe87077a62a2990ce07d94aaf749df76f87b98eb786a6d10f0307651b0123456789abcdef505a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a584036a63f46431d2fbc441f059263b2e1517e4e975952035358c399fabcf3a08b76db44cbbe0d72aa03e38d84bf86be860555add0a68210cb706b76129f6d327309"
+    },
+    {
+      "from": "owner",
+      "name": "auth",
+      "cbor": "83025820a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f05840710a59ac415a567fca0d6ca126bb5496eed5bc66cdf7ed5a89513b049a01ec631891cf0a9aed73e7d399a5768b1bbf343939528a7ecdb63215f10c1b2b67d702"
+    },
+    {
+      "from": "server",
+      "name": "welcome",
+      "cbor": "82182148018143c01340ba00"
+    }
+  ],
+  "exchange": [
+    {
+      "from": "owner",
+      "name": "register",
+      "cbor": "8410018283582037dd014121c663517cfb5d10768fa4a38efd943085f9eea8573a9d17543ec8965840ccf5d2311ac52b53c82b53b21e579f81998970b9f97980d4b00ebd3abbdb4d830998c6bc561e8e84d3116465ace49956dc9ab30091efef84e0e58605d1d1590c1a6b0117408358207277fa94bfb13e4ae397f0be9c9c52738fa5076808961480c9b1446cfe935c6c5840cf87befaaea6eb44cf2d13e839d62bf751fac71c551438edcf7d7c590da168203d9bfab9c4a321d9638e9b13f51aa7e2f0a7fa3a62020ea576a9ed2a03ee690a1a6b0a35dc584079905bd0d9e514aff197a20896ba48b36ae5c2ce37f7944dff1564186529ae68ad55e69191d55789082dc3496680aa1a74f8b3191da9662de4ca04fa93541307"
+    },
+    {
+      "from": "server",
+      "name": "registered",
+      "cbor": "83182201820000"
+    },
+    {
+      "from": "publisher",
+      "name": "publish",
+      "cbor": "851401581ac512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb8185480102030405060708390464382718b40258403eb6246b8fac49f90eadc7e824010568c4c3a8c6f67b61ac05d064b655fc19797ab0f6893a9f3c4e8c311576becdfc73a7999e2e612a73878afbe742b1252106"
+    },
+    {
+      "from": "server",
+      "name": "deliver",
+      "cbor": "851825581ac512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb8185480102030405060708390464382718b40248b19e24b1d2b9f7831830"
+    },
+    {
+      "from": "owner",
+      "name": "request",
+      "cbor": "851202480102030405060708581fc518b08e8a4367a5b5ba000000026ffd6957eed987af597d329c7f52e5e4be5840266dc9c11381101c165c3824c859d7b43870214f12b63d0cdc8c990f691010b130b3618392b045637923f4ce0143519d05b1b60ed729523c32d7a5856c545a00"
+    },
+    {
+      "from": "server",
+      "name": "forward",
+      "cbor": "841826480102030405060708581fc518b08e8a4367a5b5ba000000026ffd6957eed987af597d329c7f52e5e4be48018143c01340ba00"
+    },
+    {
+      "from": "publisher",
+      "name": "result",
+      "cbor": "8615024801020304050607080019083458401057be8cdaa7b1be76c366c6276b6de86a367e24fcb990f0d539fa9da7be3036a17cf4dc4f6253f9a5882730b46f2843c66cfaa6aa38fbd0f9670cbdf88ed500"
+    },
+    {
+      "from": "server",
+      "name": "result_s",
+      "cbor": "84182748010203040506070800190834"
+    }
+  ],
+  "messages": [
+    {
+      "from": "owner",
+      "name": "withdraw",
+      "cbor": "84110381480b0abdff95e4ca3958409d87ff1f01e303c7c44b9a16e876146a310fff717c18f327738b042c62624ab4089ed1ba3ac4c0575216c5b130c1f94d0ea17efc805e3a0cf2edddaa6195330b"
+    },
+    {
+      "from": "owner",
+      "name": "ping",
+      "cbor": "83130458403487147a8cedd317ddfb0c34ea23e7521fd7ad8581c37abbe8aaf626eb6bbb2d171152491ea052aad2ef15864615e9833d6677c55df74c6198f56d769edbba06"
+    },
+    {
+      "from": "server",
+      "name": "pong_s",
+      "cbor": "82182304"
+    },
+    {
+      "from": "server",
+      "name": "ping_s",
+      "cbor": "82182407"
+    },
+    {
+      "from": "owner",
+      "name": "pong",
+      "cbor": "841605075840f069846069b2805a2f74b6f6279620816f85e6412547ce5a4eb2ff1b400cd75677c26fb5d158dc14d06861d0d6283eebc19395d979bcbb8940ac9144d1ef5d06"
+    },
+    {
+      "from": "server",
+      "name": "error",
+      "cbor": "831828060b"
     }
   ],
   "invalid": [
     {
-      "name": "bad_signature",
-      "event": {
-        "id": "ee5efbce49f7dbed6e8d8bdca2274c0a9a85c3b2fe175556b6837216ff67ff58",
-        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-        "created_at": 1795226460,
-        "kind": 21110,
-        "tags": [
-          [
-            "h",
-            "b0"
-          ],
-          [
-            "r",
-            "US915"
-          ],
-          [
-            "dl",
-            "1"
-          ]
-        ],
-        "content": "ARrFErCOikNnpbW6AAAAA3h0IecqYPlmVz+c2wC0AQECAwQFBgcI+5v/2AA=",
-        "sig": "f7ac899c8e82b41903e96ba53a046365a83b54c3f368fc70d3fdca7b33b5c247c99dda5674df1fad058229411cf553a20a57b72e7dc6e0a80c7619090e9c8587"
-      },
+      "name": "non_minimal_integer",
+      "from": "server",
+      "cbor": "8219002407",
+      "reason": "non-deterministic encoding",
+      "rule": "09 section 12.2",
+      "note": "ping_s [36, 7] with 36 encoded in two bytes"
+    },
+    {
+      "name": "extra_element",
+      "from": "server",
+      "cbor": "83182148018143c01340ba0000",
+      "reason": "bad element count",
+      "rule": "09 section 12.2",
+      "note": "welcome with a trailing 0"
+    },
+    {
+      "name": "bad_outer_signature",
+      "from": "owner",
+      "seq": 1,
+      "cbor": "8410018283582037dd014121c663517cfb5d10768fa4a38efd943085f9eea8573a9d17543ec8965840ccf5d2311ac52b53c82b53b21e579f81998970b9f97980d4b00ebd3abbdb4d830998c6bc561e8e84d3116465ace49956dc9ab30091efef84e0e58605d1d1590c1a6b0117408358207277fa94bfb13e4ae397f0be9c9c52738fa5076808961480c9b1446cfe935c6c5840cf87befaaea6eb44cf2d13e839d62bf751fac71c551438edcf7d7c590da168203d9bfab9c4a321d9638e9b13f51aa7e2f0a7fa3a62020ea576a9ed2a03ee690a1a6b0a35dc584079905bd0d9e514aff197a20896ba48b36ae5c2ce37f7944dff1564186529ae68ad55e69191d55789082dc3496680aa1a74f8b3191da9662de4ca04fa93541306",
       "reason": "bad signature",
-      "rule": "09 section 6.1",
-      "note": "the uplink event with one bit of sig changed"
+      "rule": "09 section 12.4",
+      "note": "the register message with one bit of its sig changed"
     },
     {
-      "name": "edited_content",
-      "event": {
-        "id": "ee5efbce49f7dbed6e8d8bdca2274c0a9a85c3b2fe175556b6837216ff67ff58",
-        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-        "created_at": 1795226460,
-        "kind": 21110,
-        "tags": [
-          [
-            "h",
-            "b0"
-          ],
-          [
-            "r",
-            "US915"
-          ],
-          [
-            "dl",
-            "1"
-          ]
-        ],
-        "content": "ARrFErCOikNnpbW6AAAAA3h0IecqYPlmVz+c2wC1AQECAwQFBgcI+5v/2AA=",
-        "sig": "f7ac899c8e82b41903e96ba53a046365a83b54c3f368fc70d3fdca7b33b5c247c99dda5674df1fad058229411cf553a20a57b72e7dc6e0a80c7619090e9c8586"
-      },
-      "reason": "id mismatch",
-      "rule": "09 section 6.1",
-      "note": "the uplink event with age_ms changed after signing"
+      "name": "wrong_sequence",
+      "from": "owner",
+      "seq": 2,
+      "cbor": "8410018283582037dd014121c663517cfb5d10768fa4a38efd943085f9eea8573a9d17543ec8965840ccf5d2311ac52b53c82b53b21e579f81998970b9f97980d4b00ebd3abbdb4d830998c6bc561e8e84d3116465ace49956dc9ab30091efef84e0e58605d1d1590c1a6b0117408358207277fa94bfb13e4ae397f0be9c9c52738fa5076808961480c9b1446cfe935c6c5840cf87befaaea6eb44cf2d13e839d62bf751fac71c551438edcf7d7c590da168203d9bfab9c4a321d9638e9b13f51aa7e2f0a7fa3a62020ea576a9ed2a03ee690a1a6b0a35dc584079905bd0d9e514aff197a20896ba48b36ae5c2ce37f7944dff1564186529ae68ad55e69191d55789082dc3496680aa1a74f8b3191da9662de4ca04fa93541307",
+      "reason": "bad sequence",
+      "rule": "09 section 12.4",
+      "note": "the register message (seq 1) where seq 2 is expected"
     },
     {
-      "name": "no_receptions",
-      "event": {
-        "id": "d362676895ae8db5ed579207395367bedf7728e85f123003e7dae64a77e601db",
-        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
-        "created_at": 1795226460,
-        "kind": 21110,
-        "tags": [
-          [
-            "h",
-            "b0"
-          ],
-          [
-            "r",
-            "US915"
-          ]
-        ],
-        "content": "ARrFErCOikNnpbW6AAAAA3h0IecqYPlmVz+c2wC0AA==",
-        "sig": "80a04c3bd19260d0b724a694e26947edfe366e7bbd2bd8bd7925c9af8a972bd80376bc3816282cad206a51b59a346b73bc9894f84586e058dca1dae3f4d147a0"
+      "name": "unsupported_version",
+      "from": "owner",
+      "check": "hello",
+      "cbor": "83010250c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+      "reason": "unsupported version",
+      "rule": "09 section 12.3",
+      "note": "hello for protocol version 2"
+    },
+    {
+      "name": "publish_downlink",
+      "from": "publisher",
+      "seq": 1,
+      "cbor": "851401581fc518b08e8a4367a5b5ba000000026ffd6957eed987af597d329c7f52e5e4be8185480102030405060708390464382718b4025840b4caefe338fdd9e7888803768cccfc968c1b4a5b122ba6bfbd7c180a6ed318ec13bb4128e46b906e283eeafe0cdfd0967a99cf4dbd31b7bf9541594ee7ed0e08",
+      "reason": "bad frame",
+      "rule": "09 section 12.5",
+      "note": "validly signed publish of a DOWNLINK frame"
+    },
+    {
+      "name": "publish_join",
+      "from": "publisher",
+      "seq": 1,
+      "cbor": "8514015837c515222b42cec0e14ae700000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc7b749c1e823803188185480102030405060708390464382718b4025840501ca5c2b66c470ef55d3cbb88728496db3da57a8e4a27a73a1023ceda48e5ffa272acf64cd8246496d3be61f7a7f8e7547dc52f615a37754adc881d6c7d420c",
+      "reason": "bad frame",
+      "rule": "09 section 8",
+      "note": "validly signed publish of the JOIN frame from frame-v1.json"
+    }
+  ],
+  "transmissions": {
+    "frame": "c512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb",
+    "note": "data_confirmed from frame-v1.json; rx_refs named for brevity",
+    "sequence": [
+      {
+        "op": "publish",
+        "t_ms": 1000,
+        "publisher": "A",
+        "rx_ref": "a1",
+        "age_ms": 170,
+        "expect": "new 1",
+        "note": "first copy, through publisher A"
       },
-      "reason": "bad n_rx",
-      "rule": "09 section 4.1",
-      "note": "validly signed, but n_rx is 0"
+      {
+        "op": "publish",
+        "t_ms": 1150,
+        "publisher": "B",
+        "rx_ref": "b1",
+        "age_ms": 120,
+        "expect": "copy 1",
+        "note": "publisher B heard the same transmission"
+      },
+      {
+        "op": "publish",
+        "t_ms": 1300,
+        "publisher": "A",
+        "rx_ref": "a2",
+        "age_ms": 150,
+        "expect": "dropped 1",
+        "note": "A publishing the same transmission twice"
+      },
+      {
+        "op": "request",
+        "t_ms": 1500,
+        "publisher": "",
+        "rx_ref": "b1",
+        "code": 0,
+        "expect": "forward",
+        "note": "the owner's one request"
+      },
+      {
+        "op": "request",
+        "t_ms": 1600,
+        "publisher": "",
+        "rx_ref": "a1",
+        "code": 0,
+        "expect": "ALREADY_ANSWERED",
+        "note": "a second request for transmission 1"
+      },
+      {
+        "op": "result",
+        "t_ms": 2000,
+        "publisher": "A",
+        "rx_ref": "a1",
+        "code": 2,
+        "expect": "ignored",
+        "note": "A was not asked: its BUSY releases nothing"
+      },
+      {
+        "op": "request",
+        "t_ms": 2100,
+        "publisher": "",
+        "rx_ref": "a1",
+        "code": 0,
+        "expect": "ALREADY_ANSWERED",
+        "note": "still requested through B"
+      },
+      {
+        "op": "result",
+        "t_ms": 2900,
+        "publisher": "B",
+        "rx_ref": "b1",
+        "code": 1,
+        "expect": "accepted",
+        "note": "B reports TOO_LATE, which releases transmission 1"
+      },
+      {
+        "op": "result",
+        "t_ms": 2950,
+        "publisher": "B",
+        "rx_ref": "b1",
+        "code": 1,
+        "expect": "ignored",
+        "note": "a second result for the same forward"
+      },
+      {
+        "op": "request",
+        "t_ms": 3000,
+        "publisher": "",
+        "rx_ref": "a1",
+        "code": 0,
+        "expect": "forward",
+        "note": "the owner may retry through A"
+      },
+      {
+        "op": "result",
+        "t_ms": 3500,
+        "publisher": "A",
+        "rx_ref": "a1",
+        "code": 0,
+        "expect": "accepted",
+        "note": "SENT"
+      },
+      {
+        "op": "request",
+        "t_ms": 3600,
+        "publisher": "",
+        "rx_ref": "b1",
+        "code": 0,
+        "expect": "ALREADY_ANSWERED",
+        "note": "SENT keeps transmission 1 answered"
+      },
+      {
+        "op": "publish",
+        "t_ms": 4600,
+        "publisher": "B",
+        "rx_ref": "b2",
+        "age_ms": 3000,
+        "expect": "new 2",
+        "note": "B claims age 3000 for a copy of the next transmission, 4.5 s after the first; capped at 1500, it is still a new transmission"
+      },
+      {
+        "op": "publish",
+        "t_ms": 4650,
+        "publisher": "A",
+        "rx_ref": "a3",
+        "age_ms": 160,
+        "expect": "copy 2",
+        "note": "A's copy of transmission 2"
+      },
+      {
+        "op": "publish",
+        "t_ms": 4700,
+        "publisher": "B",
+        "rx_ref": "b2",
+        "age_ms": 100,
+        "expect": "BAD_FRAME 0",
+        "note": "b2 reused while the server remembers it"
+      },
+      {
+        "op": "request",
+        "t_ms": 4800,
+        "publisher": "",
+        "rx_ref": "a3",
+        "code": 0,
+        "expect": "forward",
+        "note": "one request for transmission 2"
+      },
+      {
+        "op": "request",
+        "t_ms": 6050,
+        "publisher": "",
+        "rx_ref": "b1",
+        "code": 0,
+        "expect": "forward",
+        "note": "3.05 s after the forward through A, even after SENT, it no longer blocks"
+      },
+      {
+        "op": "publish",
+        "t_ms": 7000,
+        "publisher": "C",
+        "rx_ref": "c1",
+        "age_ms": 0,
+        "expect": "new 3",
+        "note": "C publishes transmission 3 late, claiming age_ms 0"
+      },
+      {
+        "op": "request",
+        "t_ms": 7200,
+        "publisher": "",
+        "rx_ref": "c1",
+        "code": 0,
+        "expect": "forward",
+        "note": "C never answers"
+      },
+      {
+        "op": "publish",
+        "t_ms": 8900,
+        "publisher": "A",
+        "rx_ref": "a4",
+        "age_ms": 150,
+        "expect": "copy 3",
+        "note": "A's copy of a transmission 1.9 s after C's claimed time: merged"
+      },
+      {
+        "op": "request",
+        "t_ms": 9000,
+        "publisher": "",
+        "rx_ref": "a4",
+        "code": 0,
+        "expect": "ALREADY_ANSWERED",
+        "note": "C's forward is 1.8 s old"
+      },
+      {
+        "op": "request",
+        "t_ms": 10300,
+        "publisher": "",
+        "rx_ref": "a4",
+        "code": 0,
+        "expect": "forward",
+        "note": "3.1 s after C's forward it no longer blocks"
+      },
+      {
+        "op": "result",
+        "t_ms": 10400,
+        "publisher": "C",
+        "rx_ref": "c1",
+        "code": 0,
+        "expect": "ignored",
+        "note": "C's late result after the timeout"
+      },
+      {
+        "op": "request",
+        "t_ms": 11000,
+        "publisher": "",
+        "rx_ref": "b1",
+        "code": 0,
+        "expect": "UNKNOWN_RX_REF",
+        "note": "an rx_ref older than 5 s"
+      }
+    ]
+  },
+  "sync_window": [
+    {
+      "last_fcnt": 3,
+      "silence_s": 600,
+      "h_minutes": 60,
+      "blocks": [
+        0,
+        2
+      ]
+    },
+    {
+      "last_fcnt": 3,
+      "silence_s": 14400,
+      "h_minutes": 60,
+      "blocks": [
+        0,
+        2
+      ]
+    },
+    {
+      "last_fcnt": 130,
+      "silence_s": 259200,
+      "h_minutes": 60,
+      "blocks": [
+        2,
+        9
+      ]
+    },
+    {
+      "last_fcnt": 130,
+      "silence_s": 259200,
+      "h_minutes": 240,
+      "blocks": [
+        2,
+        7
+      ]
+    },
+    {
+      "last_fcnt": 1,
+      "silence_s": 86400,
+      "h_minutes": 1,
+      "blocks": [
+        0,
+        16
+      ]
+    },
+    {
+      "last_fcnt": 64,
+      "silence_s": 0,
+      "h_minutes": 1440,
+      "blocks": [
+        0,
+        2
+      ]
+    },
+    {
+      "last_fcnt": 65,
+      "silence_s": 0,
+      "h_minutes": 1440,
+      "blocks": [
+        1,
+        3
+      ]
     }
   ]
 }

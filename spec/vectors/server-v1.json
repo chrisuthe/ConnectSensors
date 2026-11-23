@@ -120,14 +120,14 @@
       {
         "arrived_ms": 1500,
         "age_ms": 1350,
-        "via": "relay",
+        "via": "mailbox",
         "note": "neighbor's copy of the original",
         "result": "copy"
       },
       {
         "arrived_ms": 2600,
         "age_ms": 2450,
-        "via": "relay",
+        "via": "mailbox",
         "note": "late neighbor's copy: received at 150 ms by age_ms",
         "result": "copy"
       },
@@ -168,7 +168,7 @@
       {
         "arrived_ms": 33800,
         "age_ms": 700,
-        "via": "relay",
+        "via": "mailbox",
         "note": "neighbor's copy of retry 3",
         "result": "copy"
       },
@@ -238,7 +238,7 @@
         "event": "uplink",
         "fcnt": 18,
         "dl_ack": true,
-        "via": "relay",
+        "via": "mailbox",
         "note": "neighbor's late copy of an older frame, with DL_ACK for an older downlink: settles nothing",
         "counter": "accept_late",
         "delivered": []

@@ -125,7 +125,7 @@ For each `UPLINK` message:
    duplicate only if the frame's first transmission was received less than 60
    seconds ago, and sends at most 3 such answers per frame, one per sensor retry
    (08 section 5). A duplicate it cannot answer in time (for example a federated
-   copy past the 09 section 6.3 deadline) does not count toward the 3.
+   copy past the 09 section 7.6 deadline) does not count toward the 3.
 6. **Payload.** Decrypt, read `uflags`, decode the readings (03). If the readings
    are invalid (03 section 2), keep the frame for counter and supervision
    purposes, apply no readings, and log a device error.
@@ -171,12 +171,12 @@ Step 3 compares the times at which copies were received over the air, not when
 they reached the server:
 
 - A copy from a proxy counts as received when its `UPLINK` arrived.
-- A federated copy (09 section 6.1) counts as received `age_ms` before its event
-  arrived. That takes out the publisher's collection window, the bulk of a
-  neighbor's delay, so a neighbor's copy of the original is not mistaken for a
-  retransmission.
+- A federated copy (section 4.4) counts as received its reception's `age_ms`
+  before its `deliver` arrived (09 section 7.2). That takes out the publisher's
+  collection window, the bulk of a neighbor's delay, so a neighbor's copy of the
+  original is not mistaken for a retransmission.
 
-Neither estimate removes network or relay transit time. A copy delayed by more
+Neither estimate removes network or mailbox transit time. A copy delayed by more
 than about 1.8 seconds in transit is taken for a retransmission; the cost is a
 redundant downlink sent while the sensor is not listening, and one of the 3
 answers of section 4, step 5.
@@ -190,6 +190,35 @@ each other, while a retransmission comes at least 4 seconds after the original,
 so the 2-second limit separates them with a margin on both sides.
 
 `spec/vectors/server-v1.json` (`retransmission`) has a worked sequence.
+
+### 4.4 Federated frames
+
+A server that uses mailboxes (09) receives its devices' frames from neighbors'
+proxies as `deliver` messages. Each is processed like a copy from a proxy, from
+step 2, with these differences:
+
+- **Receptions.** Each reception is recorded as coming from the federated path
+  `(server, publisher pseudonym)` with its `rx_ref`, RSSI, SNR and flags (09
+  section 6.2).
+- **Identification.** Only by tag table lookup. A federated frame that misses the
+  table is dropped: the trial decryption fallback for bootstrap frames is only
+  for frames heard by the server's own proxies. A federated `JOIN` is dropped
+  unprocessed (09 section 8).
+- **Federated bootstrap limiter.** Federated `SYNC` frames are limited to 50 per
+  minute in total across all mailbox servers, counted separately from the
+  fallback limit of step 4, so that federated traffic cannot use up the budget
+  that local pairing and local `SYNC` need.
+- **Answering.** If the frame needs an answer (section 5) and none of the
+  server's own proxies is a candidate (section 6.1), the server MAY request a
+  federated RX2 downlink as in 09 section 7. It never requests RX1 through
+  federation.
+- **Federation-only frames.** A frame all of whose receptions, in every
+  transmission received, came through federation is *federation-only*. A
+  publisher or mailbox that is a device's only path controls when its frames
+  arrive, and frames carry no time. So the server marks readings and events from
+  a federation-only frame as such, and the Home Assistant integration offers an
+  option, off by default, to ignore events (and, separately, readings) from
+  federation-only frames.
 
 ## 5. When and what to answer
 
@@ -294,6 +323,11 @@ after a confirmed uplink that RX1 did not answer (01 section 4, 08 section 7).
 - If both windows fail for a confirmed uplink, the server does nothing more. The
   sensor retries confirmed uplinks itself (08 section 5), and commands stay queued.
 - The server MUST NOT ask more than one proxy to transmit in the same window.
+  This includes federated downlinks: for each transmission it either answers
+  through its own proxies or sends one federated request (09 section 7.3), never
+  both, and it prefers its own proxies. As a publisher, it transmits at most one
+  downlink per transmission its proxies heard, its own or a neighbor's (09
+  section 7.4).
 
 ### 6.4 Rebuilding a downlink
 
@@ -327,7 +361,7 @@ answer to a retransmitted `JOIN`, which is the cached `KEY_EXCHANGE` frame
   `reply_to` and no other.
 - An uplink whose `fcnt` is not greater than the record's `reply_to` MUST NOT
   mark commands delivered, whether or not it has `DL_ACK`. This covers late
-  arrivals (02 section 8.5) and federated copies (09 section 6.1) of frames sent
+  arrivals (02 section 8.5) and federated copies (section 4.4) of frames sent
   before the downlink. A retransmission is never acted on again (section 4,
   step 5).
 - **Pairing.** The `KEY_EXCHANGE` of 04 section 4.4 is a root-key downlink, not
@@ -348,6 +382,13 @@ answer to a retransmitted `JOIN`, which is the cached `KEY_EXCHANGE` frame
   earlier one.
 - A command not delivered within 7 days is dropped and the user is told.
   `LEAVE` follows 04 section 6.1 instead (48 hours).
+- **First-command latency.** A device heard only through federation can be
+  answered only in RX2, after a confirmed uplink (09 section 7.7). Its first
+  queued command, or a clock correction, waits for its next confirmed uplink: a
+  confirmed state change, or the confirmed heartbeat, sent at least every 4 hours
+  (RECOMMENDED; at most 24 hours, 08 section 4.2). Each later command waits for
+  the next one. The user interface SHOULD say so when a command is queued for
+  such a device.
 
 ## 8. Supervision
 
@@ -369,13 +410,18 @@ sensor that has gone quiet is not closed.
 ### 8.2 Proxies
 
 - A proxy is *offline* when no `HELLO` has arrived for 180 s.
-- A device is *single-path* when, over the last 24 hours, only one proxy has heard
-  it. The server SHOULD show this so the user can add coverage.
+- A device is *single-path* when, over the last 24 hours, it was heard by only
+  one of the server's own proxies, or only through federated paths. The server
+  SHOULD show this so the user can add coverage.
+- Federated paths (09 section 9: one publisher pseudonym on one server) are shown
+  separately from the server's own proxies and never clear single-path. A device
+  heard by one proxy of its own and any number of federated paths is
+  single-path.
 
 ## 9. Reception history and coverage
 
-For each device the server keeps the last 50 receptions (proxy, time, RSSI, SNR)
-and derives:
+For each device the server keeps the last 50 receptions (proxy or federated path,
+time, RSSI, SNR) and derives:
 
 - the best RSSI and SNR of the last frame;
 - the number of proxies that heard it in the last 24 hours;
@@ -484,7 +530,7 @@ written to logs. Diagnostics downloads MUST redact keys.
 result for each (`accept`, `accept_late`, `duplicate`, `too_old`), a
 `counter16` sequence with the expected totals and whether each step was an
 increase, a wrap or a reset, and a `retransmission` sequence: copies of a
-confirmed uplink and its retries from proxies and a relay, with whether each is
+confirmed uplink and its retries from proxies and a mailbox, with whether each is
 a new transmission (section 4, step 3) and whether it is answered (step 5), a
 `dl_ack` sequence (section 7): downlinks with commands and uplinks with and
 without `DL_ACK`, including late arrivals and two answers to one uplink, with

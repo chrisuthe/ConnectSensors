@@ -17,18 +17,18 @@ to its own repository without changes.
 | 06 | [`cs_proxy` ESPHome component](06-cs-proxy-component.md) | Draft |
 | 07 | [Network server](07-network-server.md) | Draft |
 | 08 | [Sensor behavior](08-sensor-behavior.md) | Draft |
-| 09 | [Federation relay](09-federation-relay.md) | Draft |
+| 09 | [Federation through mailboxes](09-federation-relay.md) | Draft |
 | 10 | [Control plane](10-control-plane.md) | Draft |
 
 ## Supporting material
 
-- [`lexicons/`](lexicons/) - AT Protocol lexicons for the control plane (10).
+- [`lexicons/`](lexicons/) - the AT Protocol lexicon for device profiles (10).
 - [`vectors/`](vectors/) - test vectors. An implementation that does not
   reproduce them byte for byte is not conformant.
 - [`tools/csframe.py`](tools/csframe.py) - informative reference implementation
   of frames, payloads, pairing codes, the key exchange, the proxy envelope, and
-  the server's counter rules, and federation events (with a minimal BIP-340
-  implementation checked against the official test vector). It generates and
+  the server's counter rules, and mailbox federation (key-fingerprint tags,
+  strict Ed25519 verification and the CBOR messages). It generates and
   checks the vectors, and is published unchanged as the
   [`connectsensors`](../python/README.md) Python package.
 

@@ -24,7 +24,7 @@ Sections marked *informative* contain no requirements.
 | Server | The network server that owns a network: verifies, decrypts and acts on frames. Normally a Home Assistant integration. |
 | Owner | The person or system that controls a server and its keys. |
 | Network | The set of sensors paired to one server. There is no network-wide key: each sensor has its own keys (02 section 5). |
-| Relay | A federation service that passes frames between proxies and servers in different homes. |
+| Mailbox server | A federation service that routes frames between servers in different homes by tag (09). |
 | Uplink | A frame sent by a sensor. |
 | Downlink | A frame sent by a server, transmitted by a proxy, to a sensor. |
 | Epoch | A one-hour period, numbered as `floor(unix_time / 3600)`. |

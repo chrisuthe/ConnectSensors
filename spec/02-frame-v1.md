@@ -95,7 +95,7 @@ k_dev_tag = HKDF-SHA256(ikm = base, salt = dev_eui, info = "cs1 tag", L = 16)
 
 There is no network-wide key. A frame's tag is derived from the device's own key
 set (section 6), so devices of one network share nothing an observer can see.
-Proxies and relays never receive any key.
+Proxies and mailbox servers never receive any key.
 
 ### 5.3 Session key
 
@@ -461,7 +461,7 @@ types work without proxy updates.
 | Tracking a device over time | Hourly tags, and per-block bootstrap tags, derived from the device's own key; `dev_eui` never in the clear |
 | Grouping the devices of one network | Nothing in a frame is shared between devices: there is no network tag (section 5.2) |
 | Claiming another device's tags | A tag is a public-key fingerprint, so proving it needs `k_dev_tag` (section 6.1) |
-| Linking via counter values | Not addressed in v1. `fcnt` is in the clear and increases steadily, so an observer can link a device's frames across epochs by counter continuity. Federation widens who can observe it (09 section 9). A future version may mask it. |
+| Linking via counter values | Not addressed in v1. `fcnt` is in the clear and increases steadily, so an observer can link a device's frames across epochs by counter continuity. Federation widens who can observe it (09 section 13.2). A future version may mask it. |
 | Key compromise | Per device. A leaked pairing code lets an attacker who is present during a future pairing interfere with it, but does not reveal any past or future session that it did not take part in (5.3). |
 | Second-hand devices | A change of owner requires a factory reset (04 section 6.3), which also erases the previous owner's keys. A previous owner who kept the pairing code cannot read traffic after the device is paired again. They can attempt an active attack during that pairing, from within radio range, since `JOIN` is never federated (11.4). Owners who need protection from that SHOULD re-flash `k_root` on second-hand or untrusted devices. |
 | Proxy dropping frames | Out of scope for the frame format; handled by path diversity and supervision (07) |

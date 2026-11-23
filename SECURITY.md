@@ -15,7 +15,7 @@ been fixed.
 A useful report says what is affected (a spec section, `cs_proxy`, `cs_sensor`,
 `ssd1306_paced`, the reference implementation in `spec/tools/csframe.py`, or the
 dev tools), what an attacker can do and from where (on the LoRa channel, on the
-LAN, through a relay), and how to reproduce it. A test vector or a short script
+LAN, through a mailbox server), and how to reproduce it. A test vector or a short script
 is ideal.
 
 ## Scope
