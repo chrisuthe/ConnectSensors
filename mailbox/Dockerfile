@@ -1,5 +1,5 @@
-# cs-mailbox in a container. Build from the repository root, which holds the spec's
-# csframe.py next to the server:
+# cs-mailbox in a container. Build from the repository root, which holds the
+# connectsensors package and the spec's csframe.py it loads:
 #
 #   docker build -f mailbox/Dockerfile -t cs-mailbox .
 #   docker run -p 8443:8443 -v cs-mailbox:/data -v /etc/letsencrypt:/tls:ro cs-mailbox \
@@ -11,8 +11,10 @@ RUN pip install --no-cache-dir "cryptography>=43" "websockets>=14" \
     && mkdir /data && chown mailbox /data
 
 WORKDIR /app
-# The checkout's layout, so cs_mailbox.py finds ../spec/tools/csframe.py.
+# The checkout's layout: cs_mailbox.py imports ../python/connectsensors, which loads
+# ../spec/tools/csframe.py.
 COPY spec/tools/csframe.py spec/tools/csframe.py
+COPY python/connectsensors python/connectsensors
 COPY mailbox/cs_mailbox.py mailbox/cs_mailbox.py
 
 USER mailbox

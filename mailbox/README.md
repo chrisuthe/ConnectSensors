@@ -7,9 +7,11 @@ and their results between them. It holds no device keys, reads no payloads, and
 keeps everything except its own key in memory.
 
 The protocol rules (message schemas, deterministic CBOR, strict Ed25519,
-registration proofs, the one-request-per-transmission rule) come from the spec's
-reference module, [`spec/tools/csframe.py`](../spec/tools/csframe.py).
-`cs_mailbox.py` is the server around them.
+registration proofs, the one-request-per-transmission rule) come from the
+`connectsensors` package's public API, whose code is the spec's reference module,
+[`spec/tools/csframe.py`](../spec/tools/csframe.py). `cs_mailbox.py` is the server
+around them. Run from the checkout or the container, it takes the package from
+`python/` in place.
 
 ## Run
 
