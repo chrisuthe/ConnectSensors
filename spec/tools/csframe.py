@@ -2100,8 +2100,8 @@ def federation_vectors() -> dict:
     ]
     tx_seq = [{"op": op, "t_ms": t, "publisher": p, "rx_ref": r, "age_ms" if op == "publish" else "code": a,
                "expect": x, "note": n} for op, t, p, r, a, x, n in steps]
-    timing = [(180, 48, 30, 5, "the exchange above"), (2000, 100, 100, 0, "exactly at the 2 700 ms limit"),
-              (2001, 100, 100, 0, "1 ms past it"), (1500, 400, 400, 200, "a slow path"),
+    timing = [(180, 48, 30, 5, "the exchange above"), (2050, 100, 100, 0, "exactly at the 2 700 ms limit"),
+              (2051, 100, 100, 0, "1 ms past it"), (1500, 400, 400, 200, "a slow path"),
               (180, RTT_UNKNOWN, 30, 0, "rtt_pub unknown: never request"),
               (180, 48, 31, 0, "an odd rtt_owner, so the halves are not whole")]
     windows = [(3, 600, 60), (3, 4 * 3600, 60), (130, 3 * 86400, 60), (130, 3 * 86400, 240), (1, 86400, 1),

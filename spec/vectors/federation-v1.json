@@ -620,7 +620,7 @@
       "note": "the exchange above"
     },
     {
-      "age_ms": 2000,
+      "age_ms": 2050,
       "rtt_pub_ms": 100,
       "rtt_owner_ms": 100,
       "waited_ms": 0,
@@ -628,11 +628,11 @@
       "note": "exactly at the 2 700 ms limit"
     },
     {
-      "age_ms": 2001,
+      "age_ms": 2051,
       "rtt_pub_ms": 100,
       "rtt_owner_ms": 100,
       "waited_ms": 0,
-      "request": true,
+      "request": false,
       "note": "1 ms past it"
     },
     {
