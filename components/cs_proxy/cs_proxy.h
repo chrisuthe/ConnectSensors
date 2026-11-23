@@ -126,6 +126,7 @@ class CSProxy : public Component,
   bool network_up() override;
   void send_datagram(const uint8_t *data, size_t len) override;
   void rediscover() override;
+  bool is_receiving() override;
   uint8_t start_transmit(const uint8_t *frame, size_t len, uint32_t timeout_ms) override;
   void arm_timer(uint64_t wake_us) override;
   // The loop is always enabled; this wakes the main loop for a pass now.

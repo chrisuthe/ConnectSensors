@@ -30,6 +30,9 @@ static constexpr uint64_t DEGRADED_WINDOW_US = 10000000ULL;    // 06 section 7
 static constexpr uint64_t RSSI_PUBLISH_INTERVAL_US = 10000000ULL;
 static constexpr uint64_t COUNTERS_PUBLISH_INTERVAL_US = 10000000ULL;  // 06 section 10.1
 static constexpr uint64_t TIMER_LEAD_US = 2000;  // 06 section 8.2
+// Allowed on top of the loop interval for the pass that sends a held downlink: its
+// radio read and transmit command (06 section 8.2).
+static constexpr uint64_t RX_HOLD_SLACK_US = 2000;
 
 // Same numbers as ESPHOME_LOG_LEVEL_*, so the glue passes them straight through.
 // Mixed case: ERROR, DEBUG and friends are macros on some platforms.
@@ -54,6 +57,9 @@ class ProxyIo {
   // Forget the resolved address so it is looked up again.
   virtual void rediscover() = 0;
 
+  // A frame is arriving: the radio has a valid header or sync word, or a received
+  // packet it has not delivered yet. Asked only while a downlink is due.
+  virtual bool is_receiving() { return false; }
   // TX_SENT when the radio accepted the frame, TX_BUSY when a received packet is
   // waiting, TX_RADIO_ERROR otherwise. Completion comes back through
   // ProxyEngine::on_transmit_complete().

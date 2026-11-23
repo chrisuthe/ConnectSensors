@@ -538,6 +538,8 @@ struct FakeIo : ProxyIo {
   std::vector<Tx> transmits;
   std::vector<uint8_t> radio_answers;  // consumed per start_transmit; TX_SENT once empty
   uint64_t start_cost_us = 0;          // clock advance inside start_transmit
+  int receiving_checks = 0;            // is_receiving() calls
+  int receiving_answers = 0;           // that many calls report a frame arriving
   uint64_t timer = 0;
   int loop_requests = 0;
   int rediscovers = 0;
@@ -557,6 +559,13 @@ struct FakeIo : ProxyIo {
   void rediscover() override {
     rediscovers++;
     server = false;
+  }
+  bool is_receiving() override {
+    receiving_checks++;
+    if (receiving_answers == 0)
+      return false;
+    receiving_answers--;
+    return true;
   }
   uint8_t start_transmit(const uint8_t *frame, size_t len, uint32_t timeout_ms) override {
     uint8_t answer = TX_SENT;
@@ -1284,6 +1293,91 @@ static void test_engine_busy_retry() {
   CHECK(s.io.transmits.empty());
 }
 
+// A frame arriving when a downlink is due holds it while the next pass can still send
+// inside the window, then the downlink goes out anyway (06 section 8.2).
+static void test_engine_rx_hold() {
+  auto f = frame("downlink_ack");
+  auto setup = [&](Rig &r) {
+    r.loop({r.status()});
+    r.take();
+    const uint64_t tx_at = r.io.t + 1000000;
+    r.loop({r.downlink(r.io.t, 1000000, f)});
+    return tx_at;
+  };
+
+  // Held for two passes, sent on the third once the frame has finished.
+  Rig r;
+  const uint64_t tx_at = setup(r);
+  CHECK(r.io.receiving_checks == 0);  // the radio is only asked while a downlink is due
+  r.io.receiving_answers = 2;
+  r.io.t = tx_at;
+  r.loop();
+  CHECK(r.io.transmits.empty());
+  CHECK(r.io.timer <= r.io.t);  // the timer keeps the loop coming back
+  r.io.t = tx_at + 8000;
+  r.loop();
+  CHECK(r.io.transmits.empty());
+  r.io.t = tx_at + 15000;
+  r.loop();
+  CHECK(r.io.transmits.size() == 1 && r.io.transmits[0].at == tx_at + 15000);
+  CHECK(r.io.receiving_checks == 3);
+  CHECK(r.io.logged("held 15.00 ms for an arriving frame") == 1);
+  r.engine->on_transmit_complete(true);
+  auto out = r.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_SENT && tx_res(out[0]).offset_us == 15000);
+
+  // Still receiving: held while one more 16 ms pass plus the slack fits in the
+  // window, then forced, inside the window.
+  Rig q;
+  const uint64_t at = setup(q);
+  q.io.receiving_answers = 100;
+  const uint64_t last_hold = at + TX_WINDOW_US - q.io.loop_interval - RX_HOLD_SLACK_US;
+  CHECK(last_hold == at + 22000);
+  for (uint64_t t : {at, at + 16000, last_hold}) {
+    q.io.t = t;
+    q.loop();
+  }
+  CHECK(q.io.transmits.empty());
+  q.io.t = last_hold + 1;
+  q.loop();
+  CHECK(q.io.transmits.size() == 1);
+  CHECK(q.io.logged("sent over a frame still arriving") == 1);
+  q.engine->on_transmit_complete(true);
+  out = q.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_SENT && tx_res(out[0]).offset_us == 22001);
+  CHECK(tx_res(out[0]).offset_us <= int32_t(TX_WINDOW_US));
+
+  // Healthy passes every 16 ms with the frame arriving throughout: the forced send
+  // still lands in the window.
+  Rig h;
+  const uint64_t h_at = setup(h);
+  h.io.receiving_answers = 100;
+  h.run_until(h_at + TX_WINDOW_US);
+  CHECK(h.io.transmits.size() == 1);
+  CHECK(h.io.transmits[0].at >= h_at && h.io.transmits[0].at <= h_at + TX_WINDOW_US);
+
+  // A loop interval that leaves no room for another pass in the window: no hold.
+  Rig l;
+  const uint64_t l_at = setup(l);
+  l.io.loop_interval = TX_WINDOW_US - RX_HOLD_SLACK_US + 1;
+  l.io.receiving_answers = 100;
+  l.io.t = l_at;
+  l.loop();
+  CHECK(l.io.transmits.size() == 1 && l.io.transmits[0].at == l_at);
+
+  // Held, then the loop stalls past the window: BUSY, as for a refusing radio.
+  Rig s;
+  const uint64_t s_at = setup(s);
+  s.io.receiving_answers = 1;
+  s.io.t = s_at;
+  s.loop();
+  s.io.t = s_at + TX_WINDOW_US + 1;
+  s.loop();
+  out = s.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_BUSY);
+  CHECK(s.io.transmits.empty());
+}
+
 static void test_engine_in_flight_and_errors() {
   auto f = frame("downlink_ack");
   const uint32_t air = lora_airtime_us(f.size(), 9, 500000);
@@ -1496,6 +1590,7 @@ int main() {
   test_engine_rx1_offset();
   test_engine_duty_cycle();
   test_engine_busy_retry();
+  test_engine_rx_hold();
   test_engine_in_flight_and_errors();
   std::printf("%d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;
