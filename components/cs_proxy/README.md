@@ -28,8 +28,7 @@ Version 0.2.0, early development. Implemented:
 Not yet implemented:
 
 - `EU868` (the profile's frequency is not decided; rejected at compile time)
-- MQTT transport and standalone federation (spec 09 section 5.2); there are no
-  `server.transport` or `federation` options until they work
+- MQTT transport; there is no `server.transport` option until it works
 - mDNS discovery of the server (`server.host` is required)
 
 ## Requirements

@@ -3,8 +3,8 @@
 An open LoRa sensor network for Home Assistant. Battery sensors transmit encrypted
 frames; any ESPHome node with a LoRa radio forwards every frame it hears without
 being able to read it; the owner's Home Assistant deduplicates, verifies and
-decrypts. Neighbors can optionally carry each other's traffic through community
-relays.
+decrypts. Neighbors can optionally carry each other's traffic through mailbox
+servers.
 
 ## Status
 
@@ -24,7 +24,7 @@ Early development: the spec is a draft and nothing is ready for real deployments
   development.
 - **Python package:** [`connectsensors`](https://pypi.org/project/connectsensors/)
   on PyPI, the reference implementation packaged for network servers.
-- **Not implemented:** federation and relays, EU868, MQTT transport.
+- **Not implemented:** federation (mailbox servers), EU868, MQTT transport.
 - **Requires ESPHome 2026.12**, which means the `dev` branch until it's released.
 
 ## Repository

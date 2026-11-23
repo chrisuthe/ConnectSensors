@@ -121,7 +121,7 @@ on the same channel and spreading factor:
 | Window | Delay after end of uplink | Use |
 |---|---|---|
 | RX1 | 1.000 s | Downlinks from a proxy that heard the uplink directly on the LAN path |
-| RX2 | 3.000 s | Downlinks that took longer, for example through a relay |
+| RX2 | 3.000 s | Downlinks that took longer, for example through a mailbox server (09) |
 
 Each profile sets how long after `delay` the sensor's receiver stays open (`W`).
 Section 4.1 derives it.

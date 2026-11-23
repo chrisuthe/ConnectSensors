@@ -6,7 +6,7 @@ ConnectSensors is an open, freely distributed sensor network for Home Assistant.
 Battery sensors talk LoRa. Any ESPHome node with a LoRa radio forwards every
 ConnectSensors frame it hears, without being able to read it. The owner's Home
 Assistant deduplicates, verifies and decrypts. Neighbors' proxies can optionally
-carry each other's traffic through community relays, so every proxy extends
+carry each other's traffic through mailbox servers, so every proxy extends
 coverage for everyone.
 
 ---
@@ -41,7 +41,7 @@ coverage for everyone.
 4. Works fully offline within one home. Federation between homes is opt-in.
 5. Battery sensors last years on AA or coin cells.
 6. Pairing is a QR scan in Home Assistant.
-7. Everything (spec, firmware, component, integration, relay) is open source.
+7. Everything (spec, firmware, component, integration, mailbox server) is open source.
 
 ### Non-goals
 
@@ -58,12 +58,15 @@ coverage for everyone.
                  LoRa                       LAN (UDP)
 [sensor] ----------------> [proxy A] -------------------+
          \---------------> [proxy B] -------------------+--> [HA integration]
-          \--------------> [neighbor proxy C]           |     dedupe, verify,
-                              |                         |     decrypt, entities,
-                              | WebSocket (outbound)    |     downlink scheduler
-                              v                         |
-                        [community relay(s)] <----------+  (outbound subscribe
-                         ephemeral, signed                 by current net tags)
+          \--------------> [neighbor proxy C]                 dedupe, verify,
+                              | LAN                           decrypt, entities,
+                              v                               downlink scheduler
+                        [neighbor's HA]                              ^
+                              | publish (outbound WebSocket)         | deliver
+                              v                                      |
+                        [mailbox server] ----------------------------+
+                         routes by tag,       (the owner registers its devices' tags)
+                         stores nothing
 ```
 
 Components:
@@ -73,8 +76,8 @@ Components:
 | Sensor firmware (`cs_sensor`) | ESPHome node + SX126x/SX127x, mains or battery | Measures, encrypts, transmits, retries |
 | `cs_proxy` | ESPHome node + SX126x/SX127x | Filters, dedupes, forwards; transmits downlinks |
 | `connect_sensors` integration | Home Assistant | Network server: dedupe, crypto, entities, pairing |
-| `cs-relay` | Any small server | Store-nothing pub/sub for federation between homes |
-| Control plane (optional) | AT Protocol / ActivityPub | Identity, device profiles, coverage maps |
+| `cs-mailbox` | Any small server | Routes frames between homes by tag to their registered owners; stores nothing |
+| Control plane (optional) | AT Protocol | Device profiles |
 
 ---
 
@@ -199,61 +202,53 @@ Pairing is in [spec/04-pairing.md](../spec/04-pairing.md) and readings in
 
 ## 8. Federation between homes (data plane)
 
-### 8.1 Why not ActivityPub or AT Protocol for frames
+The normative definition is
+[spec/09-federation-relay.md](../spec/09-federation-relay.md); the reasoning and
+review history are in [design/federation-mailbox.md](design/federation-mailbox.md).
+Summary:
 
-| Need | ActivityPub | AT Protocol | Nostr-style relay |
-|---|---|---|---|
-| Works behind NAT/CGNAT | No, inbox must be reachable | Partly | Yes, outbound WebSocket |
-| Ephemeral (not stored) | No | No, records are permanent | Yes, ephemeral kinds |
-| Low latency | Retry queues, no guarantee | Firehose is seconds | Sub-second typical |
-| Small frames | JSON-LD overhead large | Repo/record overhead | Small JSON event |
-| No central operator | Yes | Relays are heavy to run | Many small relays |
-| Signed messages | HTTP Signatures | Repo signing | Event signatures |
+- **Modes.** 1 standalone (no federation), 2 private (a group's own mailbox
+  server), 3 public (a large operator's), 4 open (anyone's). Modes 2-4 share one
+  protocol and one reference server, `cs-mailbox`, and differ only in admission
+  and defaults.
+- **The home server federates, not the proxy.** Proxies send every frame to their
+  own server. The server publishes the frames none of its devices verify, except
+  `JOIN`, to its mailbox servers.
+- **Tags are key fingerprints.** Each frame's 8-byte tag is the hash of an
+  Ed25519 public key derived from the device's session keys. An owner registers
+  a tag by signing with that key, bound to the server and the owner's key, so
+  only the sensor and its home server can claim a device's frames.
+- **Routing.** A mailbox delivers each frame only to the registrants of its tag.
+  It holds no device keys, reads no payloads and stores no frames.
+- **Federated downlinks.** RX2 only, through the publisher's proxy, named by a
+  random `rx_ref` that only the frame's owner receives. One request per
+  transmission, released if the publisher reports it was not sent. Owners rank
+  publishers by their record of acknowledged downlinks.
+- **Pairing is always local.** `JOIN` frames are never published, so a holder of
+  a device's printed root key gains nothing from mailboxes.
+- **Wire protocol.** WebSocket over TLS, deterministic CBOR messages signed by
+  the client's key; the server's greeting proves its key for the session.
 
-Publishing every sensor frame permanently (AT Protocol) leaks activity timing even
-when payloads are encrypted. ActivityPub requires public inboxes, which most homes
-do not have. Both are kept for the control plane (Section 9).
-
-### 8.2 How it works
-
-The normative definitions are
-[spec/09-federation-relay.md](../spec/09-federation-relay.md) and
-[spec/10-control-plane.md](../spec/10-control-plane.md). Summary:
-
-- **The home server federates, not the proxy.** Proxies already send every frame
-  to their server, so the server publishes the frames none of its devices
-  verify, signed with its own federation key. A standalone proxy with no server
-  can publish directly, to donate coverage.
-- **Events:** three ephemeral Nostr kinds (provisionally 21110-21112): uplink,
-  downlink request and downlink result. Relays forward and never store them.
-- **Finding your frames:** subscribers filter by one-byte buckets of their
-  `net_tag`s plus random decoys, so a relay learns that a subscriber wants
-  1/256 of the traffic, not which network is theirs.
-- **Federated downlinks:** RX2 only, through the publisher's proxy, referenced by
-  a random `rx_ref` so publishers never reveal proxy timing. Publishing and
-  accepting downlinks are separate opt-ins, both off by default, with airtime
-  caps and optional allow lists.
-- **Relays:** any NIP-01 relay that treats these kinds as ephemeral and rate
-  limits per key; `cs-relay` is a minimal reference relay for neighborhoods.
+An earlier draft used Nostr relays with bucketed subscriptions. Relays could not
+route a frame to its owner, so owners hid in buckets and every publisher had to
+defend itself against anonymous requesters. The Phase 0 review (#77-#88) traced
+most of its problems to that, and the mailbox design replaced it.
 
 ---
 
 ## 9. Control plane (optional)
 
-Defined in [spec/10-control-plane.md](../spec/10-control-plane.md), with
-lexicons in `spec/lexicons/`:
+Defined in [spec/10-control-plane.md](../spec/10-control-plane.md), with the
+lexicon in `spec/lexicons/`:
 
 - **Device profiles** published as AT Protocol records and fetched from profile
   sources the user trusts, so a new sensor design works without an integration
   release. Changes that alter entities need the user's approval.
-- **Trust:** local allow and block lists for federation keys, optionally
-  published and importable.
-- **Coverage statements:** opt-in, limited to about 5 km, listing the relays a
-  home uses.
-- **Identity links** between a DID and a federation key, valid only when stated
-  in both directions.
 - The NSID authority `org.connectsensors` is provisional until the project has
   a domain.
+
+Trust lists, coverage statements and identity links were dropped with the Nostr
+design: mailbox federation needs none of them.
 
 ---
 
@@ -264,11 +259,13 @@ lexicons in `spec/lexicons/`:
 | Spoofed sensor frames | AES-CCM MIC with per-device key |
 | Replay | Monotonic `fcnt` with small reorder window |
 | Malicious proxy drops or delays frames | Path diversity; supervision alarms on missing heartbeats |
-| Malicious proxy floods server/relay | Proxy HMAC (LAN) or signatures (relay); rate limits; blocklists |
+| Malicious proxy floods the server | Proxy HMAC on the LAN; rate limits; blocklists |
 | Stolen proxy key used to forge downlinks | A proxy that accepts downlinks has a key of its own; an optional shared key is only for receive-only proxies (spec 05 section 4.2) |
 | Jamming | Cannot be prevented; detected via supervision timeouts |
 | Tracking devices over time | Hourly rotating per-device key-fingerprint tags; nothing shared between a network's devices |
-| Relay operator traffic analysis | Ephemeral events; multiple independent relays; optional cover traffic |
+| A stranger claiming a device's frames through a mailbox | Registration needs a signature from the tag's key, which only session key holders can derive (spec 09 section 5) |
+| Mailbox operator traffic analysis | Payloads are encrypted; the operator sees per-owner timing, frame type and length, and `fcnt`. Use a mailbox you trust; documented (spec 09 section 13) |
+| A neighbor's publisher dropping or delaying frames | Owners' publisher records; federated paths never count as redundancy; federation-only frames are marked (spec 07 section 4.4) |
 | Lost/compromised device key | Per-device keys; remove device and re-pair |
 | Nonce reuse after reset | Flash-persisted `fcnt` with jump-ahead; root downlink counter never reset (spec 02 section 13.1) |
 
@@ -316,8 +313,8 @@ flash wear from counter reservation are still to be checked on hardware.
 | 1 | `cs_proxy` sniffer mode + reference sensor firmware (contact + temp) | Frames from one sensor logged in HA via two proxies |
 | 2 | `connect_sensors` integration: pairing, crypto, dedupe, entities, supervision | A paired sensor shows up as entities; replay/spoof tests pass |
 | 3 | Downlinks: ACK, COMMAND, proxy selection, confirmed uplinks | 99% of confirmed frames acked within RX1/RX2 at -115 dBm |
-| 4 | `cs-relay` + federation client + federated downlinks | Sensor in home A delivered via a proxy in home B only |
-| 5 | Control plane: device profiles, coverage map, DIDs | New sensor type works from a published profile alone |
+| 4 | `cs-mailbox` + federation client + federated downlinks | Sensor in home A delivered via a proxy in home B only |
+| 5 | Control plane: device profiles | New sensor type works from a published profile alone |
 | 6 | Upstream `lora_proxy` proposal to ESPHome | PR opened |
 | Later | LoRaWAN compatibility mode (multi-channel gateways), cover traffic | - |
 
@@ -329,16 +326,17 @@ flash wear from counter reservation are still to be checked on hardware.
    125 kHz hopping plan is worth the complexity.
 2. Is one shared channel enough for a dense neighborhood once federation is on?
    May need two channels and SF diversity.
-3. Default relay operators and governance: who runs the bootstrap relays?
-4. Registering the provisional event kinds 21110-21112 through the NIP process.
+3. Who runs mode 3 and mode 4 mailbox servers, and how mode 4 admits new keys
+   (proof of work, slow admission, or both).
+4. Ed25519 key generation time on nRF52, which sensors need once per epoch
+   (spec 09 section 3).
 5. Whether to hide `fcnt` per epoch to reduce traffic analysis.
 6. Battery life of ESPHome sensors on nRF52 against the budget in spec 08,
    measured on hardware.
 7. License for code outside `spec/` (the spec is CC BY 4.0, its tools and vectors MIT).
 8. The project's domain, which fixes the lexicon NSID authority (currently the
    provisional `org.connectsensors`).
-9. Whether bucket-level subscriptions give enough privacy while few networks
-   exist in a region, or whether relays should be neighborhood-run by default.
+9. Federated pairing in modes 2 and 3, where members are known; out of v1.
 
 ---
 
@@ -352,6 +350,6 @@ ConnectSensors/
   components/cs_proxy/              ESPHome external component
   custom_components/connect_sensors/ Home Assistant integration
   components/cs_sensor/             sensor firmware: sensor_core, then ESPHome glue
-  relay/                            cs-relay (Nostr-compatible ephemeral relay)
+  mailbox/                          cs-mailbox (federation mailbox server)
   examples/                         proxy YAML for reference boards
 ```
