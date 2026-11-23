@@ -32,6 +32,9 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus  # noqa: E402
 MAILBOX = os.path.join(ROOT, "mailbox", "cs_mailbox.py")
 E = {name: i for i, name in enumerate(cs.MB_ERRORS)}
 K_DEV = cs.keys_from(bytes(range(16)), bytes.fromhex("c5c50000000000b1"))
+# One epoch for the whole run: tags taken from the clock would change if the run
+# crossed an hour, and a request's downlink must carry its uplink's tag.
+EPOCH = cs.epoch_of(int(time.time()))
 failures = 0
 
 
@@ -88,12 +91,12 @@ async def closing(ws) -> tuple[list | None, int | None]:
 
 
 def frame(fcnt: int, ftype: int = cs.T_DATA_CONFIRMED, epoch: int | None = None) -> bytes:
-    e = cs.epoch_of(int(time.time())) if epoch is None else epoch
+    e = EPOCH if epoch is None else epoch
     return cs.seal(K_DEV, ftype, cs.normal_tag(K_DEV.k_dev_tag, e), fcnt, b"\x00")
 
 
 def entry(lk: ts.MailboxLink, expires: int | None = None, epoch: int | None = None) -> list:
-    e = cs.epoch_of(int(time.time())) if epoch is None else epoch
+    e = EPOCH if epoch is None else epoch
     seed = cs.tag_seed(K_DEV.k_dev_tag, cs.epoch_index(e))
     return cs.reg_entry(seed, lk.server_id, lk.pub, expires or cs.EPOCH_SECONDS * (e + 2))
 
@@ -189,7 +192,7 @@ async def message_errors(url: str) -> None:
 async def routing(url: str) -> None:
     owner, other, pub = await link(url), await link(url), await link(url)
     now = int(time.time())
-    e = cs.epoch_of(now)
+    e = EPOCH
     good = entry(owner)
     s_plus_l = (int.from_bytes(good[1][32:], "little") + cs._EL).to_bytes(32, "little")
     # pub the neutral element, R = B and S = 1: a cofactorless lax verifier accepts it for any message
@@ -288,7 +291,7 @@ async def routing(url: str) -> None:
 
 async def rate_limits(url: str) -> None:
     owner, pub = await link(url), await link(url)
-    e = cs.epoch_of(int(time.time()))
+    e = EPOCH
     await owner.send([cs.MB_REGISTER, [entry(owner, epoch=e + x) for x in range(5)]])
     reg = await expect(owner, cs.MB_REGISTERED)
     check(reg is not None and reg[2] == [0] * 4 + [E["RATE_LIMITED"]], "live registrations over --reg-max-live 4: "
