@@ -1,0 +1,28 @@
+# cs-mailbox, the reference mailbox server for federation (spec 09). One module; its
+# protocol code is the spec's csframe.py, taken from the connectsensors package (or
+# from the checkout when run in place), so there is no second copy.
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cs-mailbox"
+version = "0.1.0"
+description = "Reference mailbox server for ConnectSensors federation (spec 09)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = ["connectsensors", "cryptography", "websockets>=14"]
+
+[project.scripts]
+cs-mailbox = "cs_mailbox:main"
+
+[project.urls]
+Specification = "https://github.com/chrisuthe/ConnectSensors/blob/main/spec/09-federation-relay.md"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["cs_mailbox.py"]
+
+# connectsensors is not on PyPI yet: take it from this checkout.
+[tool.uv.sources]
+connectsensors = { path = "..", editable = true }

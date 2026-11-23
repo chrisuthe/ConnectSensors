@@ -386,8 +386,8 @@ section 6.3).
 On a `request`, the server checks, in order, and refuses with the error in
 brackets (section 12.6):
 
-1. The `rx_ref` is one it delivered to this owner key in the last 5 seconds
-   (`UNKNOWN_RX_REF`).
+1. The `rx_ref` is one it delivered to this owner key in the last 5 seconds,
+   and its publisher is still connected (`UNKNOWN_RX_REF`).
 2. The owner key has a live registration for the frame's tag
    (`NOT_REGISTRANT`).
 3. The downlink passes the keyless checks of 02 section 12 with a downlink type,
@@ -483,8 +483,9 @@ request only if  t_first + (t_now - t_delivery) + t_back  <=  2 700 ms
 - The last 300 ms before 3 000 ms are reserved for the proxy's 40 ms start window
   (01 section 4.1) and jitter.
 - `rtt_owner` is the owner's own round-trip time to the server, measured with
-  `ping` every 30 seconds (section 12.5). `rtt_pub` comes with each delivery; if
-  it is unknown (65 535), the owner MUST NOT request through that delivery.
+  `ping` (section 12.5); until it has one, the owner MUST NOT request through
+  that server. `rtt_pub` comes with each delivery; if it is unknown (65 535), the
+  owner MUST NOT request through that delivery.
 - If the check fails for every reception, the owner sends no request. The sensor
   retries the uplink (08 section 5), and the retry is a new transmission.
 
@@ -694,9 +695,10 @@ order. `registered` carries the `seq` of the `register` it answers.
    `sig = Ed25519-Sign(server key, "cs1 mbx greeting" | uint8(len(host)) | host | nonce_c | nonce_s | uint64(generation))`.
    `host` is the host name of the URL, in lowercase ASCII without a port, with
    an internationalized name in its A-label form. The server signs only host
-   names it is configured to serve, never one taken from the client's SNI or
-   `Host` header, so a malicious server cannot relay another server's greeting
-   under its own name.
+   names it is configured to serve. One configured for several names MAY use the
+   client's SNI or `Host` header to choose among them, but never signs a name
+   taken from them that it is not configured for, so a malicious server cannot
+   relay another server's greeting under its own name.
 3. The client checks the version, that `server_id = SHA-256(server_pub)`, and
    `sig`, strictly (section 5.2), with the host of the URL it connected to and
    its own `nonce_c`. It closes the connection if any check fails. The
@@ -742,13 +744,13 @@ session (section 12.3), and TLS protects everything after it.
 | `register` | owner to server | Register tags (section 5). Answered by `registered`. |
 | `withdraw` | owner to server | Remove the caller's registrations of these tags. Tags it has not registered are ignored. No answer. |
 | `request` | owner to server | Request a downlink (section 7.3). Answered only by `error`, or later by `result_s`. |
-| `ping` | client to server | Answered at once by `pong_s` with the same `seq`. The owner sends one every 30 seconds and takes `rtt_owner` from the last answer. |
+| `ping` | client to server | Answered at once by `pong_s` with the same `seq`. The owner sends one right after `welcome` and then every 30 seconds, and takes `rtt_owner` from the last answer. |
 | `publish` | publisher to server | A frame and its receptions (section 6). No answer unless refused. |
 | `result` | publisher to server | The result for an `rx_ref` (section 7.5). |
 | `pong` | client to server | Answer to `ping_s`, sent at once, echoing its `nonce`. |
 | `greeting`, `welcome` | server to client | Handshake (section 12.3). |
 | `registered` | server to owner | One status per entry: 0 if stored, otherwise an error code (section 12.6). |
-| `ping_s` | server to client | Sent to every client every 30 seconds, with a fresh random `nonce`, so a client cannot answer early. The server takes `rtt_pub` for a publisher from its last `pong`, in milliseconds, or 65 535 while it has none. |
+| `ping_s` | server to client | Sent to every client right after `welcome` and then every 30 seconds, with a fresh random `nonce`, so a client cannot answer early. The server takes `rtt_pub` for a publisher from its last `pong`, in milliseconds, or 65 535 while it has none. |
 | `deliver` | server to owner | A published frame for one of the owner's tags (section 4), with the receptions exactly as published. |
 | `forward` | server to publisher | A checked request (section 7.3). |
 | `result_s` | server to owner | The result for an `rx_ref` the owner requested. |
@@ -760,7 +762,8 @@ from each other and from every `rx_ref` the server still remembers (`BAD_FRAME`
 otherwise).
 
 A client MUST ignore server messages of unknown type. A server MUST treat a
-client message of unknown type as `MALFORMED`.
+client message of unknown type, or a `hello` or `auth` after `welcome`, as
+`MALFORMED`.
 
 ### 12.6 Errors
 
@@ -865,6 +868,9 @@ system.
   results, with whether each publish starts a new transmission (section 7.2) and
   whether each request is forwarded (section 7.3), including release after a
   non-`SENT` result, an ignored result from a publisher that was not asked, the
-  `age_ms` cap, a reused `rx_ref`, and the forward timeout against a publisher
-  that published late and never answers;
-- `sync_window`: inputs and the resulting block range of section 5.5.
+  `age_ms` cap, a reused `rx_ref`, the forward timeout against a publisher
+  that published late and never answers, and a result that arrives after its
+  forward timed out;
+- `sync_window`: inputs and the resulting block range of section 5.5;
+- `request_timing`: an owner's inputs to the check of section 7.6, and whether it
+  may request.

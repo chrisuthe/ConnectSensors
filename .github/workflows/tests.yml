@@ -80,6 +80,20 @@ jobs:
       # TX_RESULT, then the same across a server restart.
       - run: make -C tests/host_proxy
 
+  federation:
+    name: Federation harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install cryptography websockets
+      # cs-mailbox against spec 09 (every error code and limit, TLS), then two homes
+      # through it: home A owns a sensor only home B's host proxy hears.
+      - run: make -C tests/federation
+
   package:
     name: Python package
     runs-on: ubuntu-latest

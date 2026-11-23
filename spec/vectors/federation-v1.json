@@ -515,6 +515,33 @@
         "code": 0,
         "expect": "UNKNOWN_RX_REF",
         "note": "an rx_ref older than 5 s"
+      },
+      {
+        "op": "publish",
+        "t_ms": 20000,
+        "publisher": "D",
+        "rx_ref": "d1",
+        "age_ms": 150,
+        "expect": "new 4",
+        "note": "D publishes transmission 4"
+      },
+      {
+        "op": "request",
+        "t_ms": 20100,
+        "publisher": "",
+        "rx_ref": "d1",
+        "code": 0,
+        "expect": "forward",
+        "note": "the owner's request through D"
+      },
+      {
+        "op": "result",
+        "t_ms": 23100,
+        "publisher": "D",
+        "rx_ref": "d1",
+        "code": 2,
+        "expect": "ignored",
+        "note": "D's BUSY 3 s after the forward, which has timed out"
       }
     ]
   },
@@ -581,6 +608,56 @@
         1,
         3
       ]
+    }
+  ],
+  "request_timing": [
+    {
+      "age_ms": 180,
+      "rtt_pub_ms": 48,
+      "rtt_owner_ms": 30,
+      "waited_ms": 5,
+      "request": true,
+      "note": "the exchange above"
+    },
+    {
+      "age_ms": 2050,
+      "rtt_pub_ms": 100,
+      "rtt_owner_ms": 100,
+      "waited_ms": 0,
+      "request": true,
+      "note": "exactly at the 2 700 ms limit"
+    },
+    {
+      "age_ms": 2051,
+      "rtt_pub_ms": 100,
+      "rtt_owner_ms": 100,
+      "waited_ms": 0,
+      "request": false,
+      "note": "1 ms past it"
+    },
+    {
+      "age_ms": 1500,
+      "rtt_pub_ms": 400,
+      "rtt_owner_ms": 400,
+      "waited_ms": 200,
+      "request": false,
+      "note": "a slow path"
+    },
+    {
+      "age_ms": 180,
+      "rtt_pub_ms": 65535,
+      "rtt_owner_ms": 30,
+      "waited_ms": 0,
+      "request": false,
+      "note": "rtt_pub unknown: never request"
+    },
+    {
+      "age_ms": 180,
+      "rtt_pub_ms": 48,
+      "rtt_owner_ms": 31,
+      "waited_ms": 0,
+      "request": true,
+      "note": "an odd rtt_owner, so the halves are not whole"
     }
   ]
 }
