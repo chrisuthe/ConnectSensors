@@ -256,6 +256,25 @@ Rejections are reported immediately with `TX_RESULT`.
   is not held for the frame's airtime (about 60 to 125 ms on US915). A radio
   answer of `BUSY` (a received packet is waiting) is retried on the next loop
   pass until `tx_at + 40 ms`, then reported as `BUSY`.
+- Before transmitting it asks the radio whether a frame is arriving
+  (`is_receiving()`: on the SX126x a valid header or sync word, on the SX127x a
+  detected or synchronised signal or a valid header; on both a received packet not
+  yet read). Another LoRa network's preamble on the channel can therefore hold a
+  downlink on an SX127x, within the same limit. Starting a transmission aborts a reception in progress, so while one is
+  arriving the component holds the downlink and asks again on the next loop pass.
+  It holds only while that pass can still transmit in the window: while the
+  current time plus the main-loop interval plus 2 ms is at most `tx_at + 40 ms`.
+  After that it transmits anyway, cutting the arriving frame off, so a hold makes
+  a downlink later in the window but never misses it. A downlink held until the
+  window passed, because the loop stalled, is reported as `BUSY`.
+- With the normal 16 ms loop interval a hold lasts at most 22 ms after `tx_at`.
+  That saves only a short frame near its end. On `US915` a 23 to 26 byte uplink is
+  on air for 51.5 ms and has a valid header about 20.7 ms in, so up to 30.7 ms of
+  it can be left when the downlink is due; it is saved when at most about 22 ms
+  is left. A longer frame, or one whose header is not yet valid at `tx_at`, is
+  cut off. Holding favours the arriving uplink over downlink timing only within
+  the window; a confirmed uplink that is cut off is retried by its sensor
+  (08 section 5), an unconfirmed one is lost.
 - If the window has passed, it reports `TOO_LATE` and does not transmit.
 - It samples `offset_us` as soon as `start_transmit_async` accepts the frame: the
   frame is in the radio's FIFO and the transmit command has been issued.
@@ -267,8 +286,8 @@ Rejections are reported immediately with `TX_RESULT`.
   may have sent part or all of it. A frame the radio refused outright never went
   on air and spends nothing.
 - The radio cannot receive while it transmits. Frames sent by sensors during that
-  time are lost to this proxy; other proxies and sensor retransmissions cover
-  that.
+  time are lost to this proxy, including one that starts while a downlink is on
+  air; other proxies and sensor retransmissions cover that.
 
 The component MUST NOT transmit anything except frames received in `DOWNLINK`
 messages. It never originates or modifies frames.
@@ -491,6 +510,10 @@ be run against a test server built from the reference tool:
 15. A proxy that has been disconnected for 5 minutes with a server address
     resolves the address again, also when it never connected, and sends a `HELLO`
     as soon as the address is known again.
+16. A `DOWNLINK` due while the radio reports a frame arriving is transmitted
+    after the frame has been received, and the frame is forwarded. While the
+    radio keeps reporting one, the downlink is transmitted anyway with
+    `offset_us` at most 40 000 when the main loop is healthy.
 
 ## 15. Upstream improvements (informative)
 

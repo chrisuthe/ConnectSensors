@@ -171,6 +171,18 @@ void CSProxy::arm_timer(uint64_t wake_us) {
   this->set_timeout("tx", ms, [this]() { this->enable_loop_soon_any_context(); });
 }
 
+bool CSProxy::is_receiving() {
+#ifdef USE_CS_PROXY_SX126X
+  if (this->sx126x_ != nullptr)
+    return this->sx126x_->is_receiving();
+#endif
+#ifdef USE_CS_PROXY_SX127X
+  if (this->sx127x_ != nullptr)
+    return this->sx127x_->is_receiving();
+#endif
+  return false;
+}
+
 uint8_t CSProxy::start_transmit(const uint8_t *frame, size_t len, uint32_t timeout_ms) {
 #ifdef USE_CS_PROXY_SX126X
   if (this->sx126x_ != nullptr) {

@@ -295,7 +295,8 @@ constexpr size_t TX_SLOTS = 4;
 struct ScheduledTx {
   bool active{false};
   bool in_flight{false};  // handed to the radio, awaiting completion
-  bool saw_busy{false};   // the radio refused it at least once with a received packet waiting
+  bool saw_busy{false};   // held at least once for a frame arriving or a received packet waiting
+  uint64_t held_since_us{0};  // first pass that held it for an arriving frame, 0 if none
   int32_t offset_us{0};   // TX commanded minus tx_at, set by start() (05 section 5.5)
   uint32_t seq{0};
   uint64_t tx_at_us{0};
@@ -305,7 +306,8 @@ struct ScheduledTx {
 };
 
 // Result for a slot whose transmit window passed without a transmission: BUSY if the
-// radio kept refusing it, TOO_LATE otherwise (06 section 8.2).
+// radio refused it or it was held for an arriving frame, TOO_LATE otherwise (06
+// section 8.2).
 inline uint8_t expired_result(const ScheduledTx &slot) { return slot.saw_busy ? TX_BUSY : TX_TOO_LATE; }
 
 class TxScheduler {
@@ -328,6 +330,7 @@ class TxScheduler {
     slot->active = false;
     slot->in_flight = false;
     slot->saw_busy = false;
+    slot->held_since_us = 0;
     slot->offset_us = 0;
   }
 

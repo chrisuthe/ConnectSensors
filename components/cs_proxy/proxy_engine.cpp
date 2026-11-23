@@ -349,10 +349,26 @@ void ProxyEngine::run_due_transmissions_() {
       this->scheduler_.release(slot);
       continue;
     }
+    // Transmitting would cut off a frame still arriving, so wait for it while the
+    // pass after this one can still send inside the window. Past that the downlink
+    // goes out anyway: late in the window, never missed (06 section 8.2).
+    const bool receiving = this->io_.is_receiving();
+    if (receiving && now + this->io_.loop_interval_us() + RX_HOLD_SLACK_US <= slot->tx_at_us + TX_WINDOW_US) {
+      if (slot->held_since_us == 0)
+        slot->held_since_us = now;
+      slot->saw_busy = true;
+      break;
+    }
     // The radio fails the operation if it has not completed well after the airtime.
     const uint32_t timeout_ms = slot->airtime_us / 1000 + 100;
     const uint8_t started = this->io_.start_transmit(slot->frame, slot->len, timeout_ms);
     if (started == TX_SENT) {
+      if (receiving) {
+        this->log_(LogLevel::Debug, "Downlink seq %" PRIu32 " sent over a frame still arriving", slot->seq);
+      } else if (slot->held_since_us != 0) {
+        this->log_(LogLevel::Debug, "Downlink seq %" PRIu32 " held %.2f ms for an arriving frame", slot->seq,
+                   (now - slot->held_since_us) / 1000.0f);
+      }
       this->scheduler_.start(slot, this->io_.now_us());
       this->tx_in_flight_ = slot;
       this->timer_at_ = 0;
