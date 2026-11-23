@@ -1,7 +1,7 @@
 # 07 - Network Server
 
 Status: Draft
-Version: 1.0-draft.3
+Version: 1.0-draft.4
 
 This document specifies what a network server does: the state it keeps, how it
 processes uplinks, how it answers them, how it picks which proxy transmits, how
@@ -26,11 +26,11 @@ Sections 1-10 apply to any server. Section 11 is specific to Home Assistant.
 
 | Item | Notes |
 |---|---|
-| `k_net`, `k_net_route` | 02 section 5.2. During a key rotation, also the previous pair (04 section 7). |
 | Region profile | 01 |
 | Tag table | Section 3 |
 
-A server MAY run several networks; each has its own keys. Most homes have one.
+There is no network key (02 section 5.2). A server MAY run several networks;
+most homes have one.
 
 ### 2.2 Per device
 
@@ -64,12 +64,24 @@ A server MAY run several networks; each has its own keys. Most homes have one.
 
 ## 3. Tag table
 
-- The server keeps a table from `(net_tag, dev_tag)` to devices, for epochs
-  `e - 1`, `e` and `e + 1` of every paired device on every network (02 section
-  6.3), including the previous network key during a rotation.
-- At each epoch boundary the server drops epoch `e - 2`, adds `e + 2` (the new
-  `e + 1`), and sends `SERVER_STATUS` with `hello_seq` 0 to every connected
-  proxy within 10 seconds (05 section 5.3).
+The server keeps a table from 8-byte `tag` (02 section 6.1) to devices. It is
+derived from keys the server already holds, so it is not persisted; it is
+rebuilt at startup.
+
+| Device | Entries |
+|---|---|
+| `PAIRED` | The normal tags of epochs `e - 1`, `e` and `e + 1` under its session key set (02 section 6.3), and its session bootstrap (`SYNC`) tags for the block holding `last_fcnt` and the 2 blocks after it |
+| `EXCHANGED` | The same, under the pending exchange's `k_session`, with the `JOIN`'s `fcnt` as `last_fcnt`, so the first session uplink is found by lookup (04 section 4.4). Removed when the device leaves `EXCHANGED` |
+| `SCANNED` | None. Its `JOIN` is found by the fallback of section 4, step 4 |
+
+That is 6 entries per device, each costing one Ed25519 key generation to build.
+
+- At each epoch boundary the server drops epoch `e - 2` and adds `e + 2` (the new
+  `e + 1`), and sends `SERVER_STATUS` with `hello_seq` 0 to every connected proxy
+  within 10 seconds (05 section 5.3). It SHOULD compute the new entries before
+  the boundary.
+- When a device's `last_fcnt` moves into a new block, the server moves its
+  bootstrap entries along: the block holding `last_fcnt` and the 2 after it.
 - If the system clock jumps by more than 60 seconds, the server rebuilds the whole
   table.
 - The server's clock MUST be synchronized to UTC (for example by NTP). A server
@@ -94,13 +106,17 @@ For each `UPLINK` message:
    Otherwise this is a new transmission, either a first copy or a sensor's
    retransmission (02 section 8.3): start a new entry and wait for the
    collection window (section 4.1) before step 8.
-4. **Identify.** Find the device:
-   - normal tags: look up `(net_tag, dev_tag)` in the tag table and try each
-     candidate's session key set until a MIC verifies (02 section 6.4);
-   - `JOIN`: try the root key set of each `SCANNED` or `EXCHANGED` device;
-   - `SYNC`: try the session key set of each `EXCHANGED` or `PAIRED` device.
+4. **Identify.** Look up the frame's `tag` in the tag table (section 3) and try
+   each candidate's key set until a MIC verifies (02 section 6.4). If none
+   matches:
+   - a bootstrap frame heard by one of the server's own proxies falls back to
+     trial decryption (02 section 11.3): `JOIN` under the root key set of each
+     `SCANNED` or `EXCHANGED` device, `SYNC` under the session key set of each
+     `EXCHANGED` or `PAIRED` device. This is how every `JOIN` is found, and a
+     `SYNC` whose counter is past the table's blocks;
+   - any other frame is not tried.
 
-   Bootstrap frames are limited to 50 per minute per server (02 section 11.3);
+   The fallback is limited to 50 frames per minute per server (02 section 11.3);
    beyond that they are dropped unprocessed. A frame no device verifies is
    counted as foreign and dropped.
 5. **Counter.** Apply 02 section 8.5. A `too_old` frame is dropped. A
@@ -122,7 +138,7 @@ For each `UPLINK` message:
    - `JOIN`, `SYNC`: advance the pairing state machine (04) as applicable. A
      `JOIN` is answered as in section 5.1.
    - Record the uplink time for supervision.
-   - Note clock skew: if the frame's tags matched epoch `e - 1` or `e + 1` rather
+   - Note clock skew: if the frame's tag matched epoch `e - 1` or `e + 1` rather
      than `e`, and the frame arrived more than 5 minutes from an epoch boundary,
      the sensor's clock is off.
 8. **Answer.** After the collection window, decide whether to send a downlink
@@ -196,7 +212,7 @@ The downlink:
 | Field | Value |
 |---|---|
 | Type | `DOWNLINK` |
-| `net_tag`, `dev_tag` | The same as the uplink it answers |
+| `tag` | The same as the uplink it answers (02 section 6.1) |
 | `fcnt` | The next value of the key set's downlink counter: root or session (02 section 8.4) |
 | Key set | Root for an answer to `JOIN`, session otherwise |
 | `reply_to` | The uplink's `fcnt` |
@@ -290,8 +306,7 @@ answer to a retransmitted `JOIN`, which is the cached `KEY_EXCHANGE` frame
 ## 7. Command queue
 
 - Each device has an ordered queue of commands. Actions in the user interface
-  (section 11.4) and the protocol itself (`SET_NETWORK` in a key rotation, `LEAVE`
-  on removal) add to it.
+  (section 11.4) and the protocol itself (`LEAVE` on removal) add to it.
 - Commands are sent in downlinks as in section 5. A command stays queued, and
   goes out again in each later downlink, until it is delivered.
 - **Awaiting acknowledgement.** When the server sends a downlink with commands,
@@ -315,6 +330,13 @@ answer to a retransmitted `JOIN`, which is the cached `KEY_EXCHANGE` frame
   arrivals (02 section 8.5) and federated copies (09 section 6.1) of frames sent
   before the downlink. A retransmission is never acted on again (section 4,
   step 5).
+- **Pairing.** The `KEY_EXCHANGE` of 04 section 4.4 is a root-key downlink, not
+  a queued command, but the same rule covers it: the first session uplink has an
+  `fcnt` greater than the `JOIN`'s and carries `DL_ACK`, which acknowledges the
+  `KEY_EXCHANGE`. Verifying under the pending `k_session` already proves that, so
+  the server marks the device `PAIRED` on it (04 section 4.2) and records no
+  command as delivered. A first session uplink without `DL_ACK` still pairs the
+  device.
 - An uplink with a greater `fcnt` but no `DL_ACK` settles nothing: the sensor did
   not accept the downlink, or its `DL_ACK` is in an earlier uplink not yet
   received. The commands stay queued and go out again in the next downlink.
@@ -384,9 +406,9 @@ This history is diagnostic and is not persisted.
 
 | Step | What the user does |
 |---|---|
-| Add the integration | Chooses the region profile. The integration creates the network and its `k_net`. |
+| Add the integration | Chooses the region profile. The integration creates the network. |
 | Add a proxy | Gets a generated proxy key and a ready-to-paste `cs_proxy` YAML snippet (06). The proxy appears when its first `HELLO` arrives. |
-| Add a device | Scans or types a pairing code, gives the device a name and area, then presses the device's button (04). The flow says that a second-hand device must be factory reset first (04 section 6.3). If the exchange stalls (section 5.1), the flow asks the user to hold the device's button for 10 seconds to factory-reset it and then press it again, or to move it closer to a proxy. |
+| Add a device | Scans or types a pairing code, gives the device a name and area, then presses the device's button near one of their own proxies (04). The flow says that a second-hand device must be factory reset first (04 section 6.3). If the exchange stalls (section 5.1), the flow asks the user to hold the device's button for 10 seconds to factory-reset it and then press it again, or to move it closer to a proxy. |
 
 The integration listens for proxies on UDP port 47800 and advertises
 `_connectsensors._udp` by mDNS.
@@ -417,7 +439,9 @@ The integration listens for proxies on UDP port 47800 and advertises
 |---|---|
 | `connect_sensors.set_value` | Queue command `0x40` (03 section 8) for a writable channel |
 | `connect_sensors.set_heartbeat` | Queue `SET_HEARTBEAT` |
-| `connect_sensors.rotate_network_key` | Start a network key rotation (04 section 7) |
+
+There is no network key to rotate (04 section 7). To renew a device's
+`k_session`, the user pairs it again.
 
 ### 11.5 Repairs
 
@@ -429,7 +453,6 @@ The integration raises a repair issue when:
 - a proxy on the shared key advertises downlink capability: it gets no downlinks
   and anyone holding the shared key could make it transmit, so the repair offers
   to generate a key of its own (05 section 4.2);
-- a key rotation has devices that did not acknowledge within 7 days;
 - the server clock is not synchronized;
 - a device is one-way (section 8.1).
 
@@ -468,6 +491,8 @@ without `DL_ACK`, including late arrivals and two answers to one uplink, with
 the commands each uplink marks delivered, and a
 `join` sequence (section 5.1): the root downlink counter value, the
 `KEY_EXCHANGE` frame and `k_session` for each `JOIN`, including byte-identical
-answers to retransmissions and the stall on the last one.
+answers to retransmissions and the stall on the last one, and a `tag_table`
+(section 3): the entries of a paired device and how six frames are routed (section
+4, step 4): by the table, by the bootstrap fallback, or dropped.
 The proxy sessions of 05 section 3.2, including a server restart, are in the
 `session` sequence of `vectors/proxy-envelope-v1.json`.

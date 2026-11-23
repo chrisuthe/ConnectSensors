@@ -1,7 +1,7 @@
 # 05 - Proxy Envelope
 
 Status: Draft
-Version: 1.0-draft.4
+Version: 1.0-draft.5
 
 This document defines the messages between a proxy and its owner's server on the
 local network: how a proxy delivers the frames it hears, how a server asks a
@@ -246,15 +246,12 @@ proxy within 10 seconds after each epoch boundary.
 ```
 server_time  uint32  Unix time
 hello_seq    uint32  seq of the HELLO this answers; 0 at an epoch boundary
-n_tags       uint8   0-32
-tags         n_tags x 4 bytes: the net_tag values the server owns for epochs
-             e-1, e and e+1, for all its networks
 ```
 
-The proxy MAY use `tags` for diagnostics, for example to count how many of the
-frames it hears belong to its own server's networks. It MUST still send every
-frame to its server (02 section 12); federation is the server's job (09 section
-5.1).
+The body is exactly 8 bytes. It carries no tags: tags are per device (02 section
+6.1), and a list of them would not fit. The proxy sends every frame it hears to
+its server (02 section 12); deciding which frames are its own is the server's
+job (07 section 4), and federation too (09).
 
 A proxy that receives no `SERVER_STATUS` for 3 consecutive `HELLO` intervals
 considers itself disconnected (shown as a diagnostic, 06). It keeps forwarding

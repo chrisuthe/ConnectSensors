@@ -10,12 +10,15 @@ values printed in 02 section 14.
 Run from anywhere:  python3 -I tests/spec/test_independent_crypto.py
 """
 
+import hashlib
+import hmac
 import json
 import os
 import struct
 import sys
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.hazmat.primitives.hashes import SHA256
@@ -68,8 +71,20 @@ def main() -> int:
     check(k_session.hex() == d["k_session"] == "151466fb0522fa821caffdada6ce9d6c", "k_session (02 section 5.3)")
     sess_enc = hkdf(k_session, eui, b"cs1 enc")
     check(sess_enc.hex() == d["session"]["k_enc"] == "77a25f6ba7d210973e1a19ed70b85177", "session k_enc")
-    route = hkdf(bytes.fromhex(i["k_net"]), None, b"cs1 route")
-    check(route.hex() == d["k_net_route"] == "53e27722471cdf29ebcb23aabc120cfe", "k_net_route (02 section 5.2)")
+
+    # 02 section 6.1: seed = HMAC(k_dev_tag, "cs1 tag seed" | index), pub = Ed25519(seed),
+    # tag = SHA-256("cs1 tag fp" | pub)[:8].
+    tag_keys = {"root": hkdf(k_root, eui, b"cs1 tag"), "session": hkdf(k_session, eui, b"cs1 tag")}
+    for t in v["tags"]["normal"] + v["tags"]["bootstrap"]:
+        if "epoch" in t:
+            index = b"e" + struct.pack(">I", t["epoch"])
+        else:
+            index = b"b" + struct.pack(">I", (t["fcnt"] - 1) // 64)
+        seed = hmac.new(tag_keys[t["keys"]], b"cs1 tag seed" + index, hashlib.sha256).digest()
+        pub = Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        ftag = hashlib.sha256(b"cs1 tag fp" + pub).digest()[:8]
+        check((index.hex(), seed.hex(), pub.hex(), ftag.hex()) == (t["index"], t["seed"], t["pub"], t["tag"]),
+              f"tag {t['keys']} {'epoch ' + str(t['epoch']) if 'epoch' in t else 'fcnt ' + str(t['fcnt'])}")
 
     keys = {"root": root_enc, "session": sess_enc}
     for c in v["frames"]:

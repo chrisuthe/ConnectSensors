@@ -3,7 +3,6 @@
   "inputs": {
     "k_root": "000102030405060708090a0b0c0d0e0f",
     "dev_eui": "c5c5000000000001",
-    "k_net": "f0e1d2c3b4a5968778695a4b3c2d1e0f",
     "sensor_ephemeral_private": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a1",
     "server_ephemeral_private": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b1",
     "time": 1795226400,
@@ -20,74 +19,153 @@
     "session": {
       "k_enc": "77a25f6ba7d210973e1a19ed70b85177",
       "k_dev_tag": "de22bd4af619a3b758dc256dfa3b0a5a"
-    },
-    "k_net_route": "53e27722471cdf29ebcb23aabc120cfe",
-    "net_tag": {
-      "498673": "f3b45e76",
-      "498674": "61d306d3",
-      "498675": "a3793a8a"
-    },
-    "dev_tag": {
-      "498673": "9732d16f",
-      "498674": "452268f4",
-      "498675": "a4c1e4e3"
     }
+  },
+  "tags": {
+    "note": "02 section 6.1; index is the HMAC input after \"cs1 tag seed\"",
+    "normal": [
+      {
+        "keys": "session",
+        "epoch": 498673,
+        "index": "6500079bf1",
+        "seed": "23c6de160ca1acb99e608809e429299b96afa448880d465e49a4487a7673872f",
+        "pub": "aff286c8bad7e89fc3837bcdb7e67ec046b9e76a706cf97d105f9fe162911417",
+        "tag": "7ff9f2e026a5ca17"
+      },
+      {
+        "keys": "session",
+        "epoch": 498674,
+        "index": "6500079bf2",
+        "seed": "f8995c48082eb322aef3e598e7a7dedb3ba688339855b0f8c8fd4dfe866bcbf8",
+        "pub": "37dd014121c663517cfb5d10768fa4a38efd943085f9eea8573a9d17543ec896",
+        "tag": "b08e8a4367a5b5ba"
+      },
+      {
+        "keys": "session",
+        "epoch": 498675,
+        "index": "6500079bf3",
+        "seed": "633105f95f3b74727790b47362761b9ca700ea1ea6763f4b6e4eeafeaed971d9",
+        "pub": "de77d931c5c90ce81938d1c38442135cd6d60420be5bbcfb086fee6ff7a931c9",
+        "tag": "407744e3f29f6fde"
+      }
+    ],
+    "bootstrap": [
+      {
+        "keys": "root",
+        "fcnt": 1,
+        "index": "6200000000",
+        "seed": "8efd969aec340623dd3064b4ddb7a7268c5bb9f2b3044188bf628c9b85da34eb",
+        "pub": "a908c89f854ece617040843b93be554758fcb3f6877ed0b095aefef16fe9945a",
+        "tag": "222b42cec0e14ae7"
+      },
+      {
+        "keys": "root",
+        "fcnt": 64,
+        "index": "6200000000",
+        "seed": "8efd969aec340623dd3064b4ddb7a7268c5bb9f2b3044188bf628c9b85da34eb",
+        "pub": "a908c89f854ece617040843b93be554758fcb3f6877ed0b095aefef16fe9945a",
+        "tag": "222b42cec0e14ae7"
+      },
+      {
+        "keys": "root",
+        "fcnt": 65,
+        "index": "6200000001",
+        "seed": "b86fd303bb3e372decea28d0cd62761120bd38c8321abc9067b99c1968fe7181",
+        "pub": "aea0a389a36b4fc7070d1ebdc9fefc4029a542b4906dbd0b2c3edb4f4464ecc0",
+        "tag": "56064cdf361e5da1"
+      },
+      {
+        "keys": "root",
+        "fcnt": 129,
+        "index": "6200000002",
+        "seed": "f65cfeab0288295db954855de023477f78f39db61bcfc8d4dd877c61d48e12e2",
+        "pub": "e5b4e19472ee3420bf0e19785996261d5843d5bd0b704699206f23da27f30119",
+        "tag": "05c724987150906f"
+      },
+      {
+        "keys": "session",
+        "fcnt": 1,
+        "index": "6200000000",
+        "seed": "e10fc45f1c591572fe91c26304048e1d145bc3733b0c82fa80eb83007972b419",
+        "pub": "4a8d87fc902e2f5e500fdab4f0f5aef2974a59c0a5a8835be33f032c6e92102d",
+        "tag": "8d02ccf4bae2f803"
+      },
+      {
+        "keys": "session",
+        "fcnt": 64,
+        "index": "6200000000",
+        "seed": "e10fc45f1c591572fe91c26304048e1d145bc3733b0c82fa80eb83007972b419",
+        "pub": "4a8d87fc902e2f5e500fdab4f0f5aef2974a59c0a5a8835be33f032c6e92102d",
+        "tag": "8d02ccf4bae2f803"
+      },
+      {
+        "keys": "session",
+        "fcnt": 65,
+        "index": "6200000001",
+        "seed": "98a25bd9da65b934b51ceed904bfc02989af112bb73fb36d1cba0608a12fbcf0",
+        "pub": "7277fa94bfb13e4ae397f0be9c9c52738fa5076808961480c9b1446cfe935c6c",
+        "tag": "0b0abdff95e4ca39"
+      },
+      {
+        "keys": "session",
+        "fcnt": 129,
+        "index": "6200000002",
+        "seed": "f738af4b659930006e789d38fef7ba412a1384931feb8f94acc5c6238eae461f",
+        "pub": "f574a3d9ceabebcd0e8bdbd3124be60aa0e1b8207cdae3608935d085cd80b1c2",
+        "tag": "72e7a6eba559000e"
+      }
+    ]
   },
   "frames": [
     {
       "name": "join",
-      "note": "JOIN with the sensor's ephemeral public key",
+      "note": "JOIN with the sensor's ephemeral public key; root bootstrap tag of block 0",
       "keys": "root",
       "type": 5,
       "fcnt": 1,
-      "net_tag": "00000000",
-      "dev_tag": "00000000",
+      "tag": "222b42cec0e14ae7",
       "plaintext": "02ff0d50ce3f52e043aea631c9abb0a3e771520b951111d5dfb6b0b97fb9336c7f",
-      "frame": "c515000000000000000000000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc35d435b8268bda9a"
+      "frame": "c515222b42cec0e14ae700000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc7b749c1e82380318"
     },
     {
       "name": "downlink_key_exchange",
-      "note": "answer to JOIN: server ephemeral public key",
+      "note": "answer to JOIN, with its tag: server ephemeral public key; the sensor is now provisional",
       "keys": "root",
       "type": 8,
       "fcnt": 1,
-      "net_tag": "00000000",
-      "dev_tag": "00000000",
+      "tag": "222b42cec0e14ae7",
       "plaintext": "000000016b00fb20000420d60220c0fc285b6e3817072c462db2b7581f41e295fa8eb5d036ea5002862e4f",
-      "frame": "c518000000000000000000000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e5a9ff021ca714c8b3"
+      "frame": "c518222b42cec0e14ae700000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e52b1e5d9140ab6741"
     },
     {
-      "name": "sync_after_exchange",
-      "note": "first frame under session keys; acknowledges KEY_EXCHANGE",
+      "name": "heartbeat_first",
+      "note": "first frame under session keys, normal tag from KEY_EXCHANGE's server_time; acknowledges KEY_EXCHANGE; the server marks the device PAIRED",
       "keys": "session",
-      "type": 6,
+      "type": 4,
       "fcnt": 2,
-      "net_tag": "00000000",
-      "dev_tag": "00000000",
-      "plaintext": "01",
-      "frame": "c516000000000000000000000002670148be10b985ea9a"
+      "tag": "b08e8a4367a5b5ba",
+      "plaintext": "01000100ff075f",
+      "frame": "c514b08e8a4367a5b5ba0000000267a56d11a75af500c1b7476020bab8"
     },
     {
-      "name": "downlink_set_network",
-      "note": "answer to SYNC: network routing key; first downlink under this k_session",
+      "name": "downlink_paired",
+      "note": "answer to heartbeat_first, first downlink under this k_session: the sensor is now PAIRED. It carries NOP, so the next uplink sets DL_ACK",
       "keys": "session",
       "type": 8,
       "fcnt": 1,
-      "net_tag": "00000000",
-      "dev_tag": "00000000",
-      "plaintext": "000000026b00fb2300011053e27722471cdf29ebcb23aabc120cfe",
-      "frame": "c518000000000000000000000001f54c2bb9e69fd91753948de290111026495c701f21e43c88982389bac6273917831f0e"
+      "tag": "b08e8a4367a5b5ba",
+      "plaintext": "000000026b00fb23000500",
+      "frame": "c518b08e8a4367a5b5ba00000001f54c2bb9e69fd91753909de5ae5318fd1c414b"
     },
     {
       "name": "data_confirmed",
-      "note": "door opened; acknowledges SET_NETWORK",
+      "note": "door opened; acknowledges the NOP",
       "keys": "session",
       "type": 2,
       "fcnt": 3,
-      "net_tag": "61d306d3",
-      "dev_tag": "452268f4",
+      "tag": "b08e8a4367a5b5ba",
       "plaintext": "01000101",
-      "frame": "c51261d306d3452268f400000003787421e751d0f9c8ee50da1e"
+      "frame": "c512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb"
     },
     {
       "name": "downlink_ack",
@@ -95,10 +173,9 @@
       "keys": "session",
       "type": 8,
       "fcnt": 2,
-      "net_tag": "61d306d3",
-      "dev_tag": "452268f4",
+      "tag": "b08e8a4367a5b5ba",
       "plaintext": "000000036b00fb5c00",
-      "frame": "c51861d306d3452268f4000000026ffd6957eed987af59b22ffb7183d2da29"
+      "frame": "c518b08e8a4367a5b5ba000000026ffd6957eed987af597d329c7f52e5e4be"
     },
     {
       "name": "heartbeat",
@@ -106,21 +183,19 @@
       "keys": "session",
       "type": 3,
       "fcnt": 4,
-      "net_tag": "61d306d3",
-      "dev_tag": "452268f4",
+      "tag": "b08e8a4367a5b5ba",
       "plaintext": "00000101ff075f",
-      "frame": "c51361d306d3452268f400000004bba7002d94c1c391408357c83bf8e7"
+      "frame": "c513b08e8a4367a5b5ba00000004bba7002d94c1c3960a5fa51855c19a"
     },
     {
       "name": "sync_after_reboot",
-      "note": "clock lost on battery change; fcnt jumped to the next reserved block",
+      "note": "clock lost on battery change; fcnt jumped to the next reserved block; session bootstrap tag of block 1",
       "keys": "session",
       "type": 6,
       "fcnt": 65,
-      "net_tag": "00000000",
-      "dev_tag": "00000000",
+      "tag": "0b0abdff95e4ca39",
       "plaintext": "02000101",
-      "frame": "c5160000000000000000000000415c68aba1d3bb3299d4db9184"
+      "frame": "c5160b0abdff95e4ca39000000415c68aba13290140272532b0d"
     }
   ],
   "invalid": [
@@ -129,7 +204,7 @@
       "note": "data_confirmed from the valid frames with the last MIC bit flipped",
       "rule": "02 section 7",
       "keys": "session",
-      "frame": "c51261d306d3452268f400000003787421e751d0f9c8ee50da1f",
+      "frame": "c512b08e8a4367a5b5ba00000003787421e72a60f966573f9cda",
       "reason": "MIC check failed",
       "proxy_discards": false
     },
@@ -138,7 +213,7 @@
       "note": "uplink type sealed with the downlink direction byte in the nonce",
       "rule": "02 section 7",
       "keys": "session",
-      "frame": "c51261d306d3452268f400000005c8f47b171d77527872b6fcae",
+      "frame": "c512b08e8a4367a5b5ba00000005c8f47b1788757acac59ff7fa",
       "reason": "MIC check failed",
       "proxy_discards": false
     },
@@ -147,7 +222,7 @@
       "note": "empty payload: 22 bytes, one short of the minimum, with a valid MIC",
       "rule": "02 section 3",
       "keys": "session",
-      "frame": "c51261d306d3452268f400000006e3886dd95b229b09",
+      "frame": "c512b08e8a4367a5b5ba000000069800d084bf1433d0",
       "reason": "frame length out of range",
       "proxy_discards": true
     },
@@ -156,7 +231,7 @@
       "note": "65-byte payload: 87 bytes, one over the maximum, with a valid MIC",
       "rule": "02 section 3",
       "keys": "session",
-      "frame": "c51261d306d3452268f4000000073f424f3f13e508cb15bec31e0cb393a10279997cac5dbb2f71ea6e547ea0a0e31f25f4ed0cb83644ee9b4d49460a662b9039f347100666ac077af121ef221dca9238abbbbb70cf7333",
+      "frame": "c512b08e8a4367a5b5ba000000073f424f3f13e508cb15bec31e0cb393a10279997cac5dbb2f71ea6e547ea0a0e31f25f4ed0cb83644ee9b4d49460a662b9039f347100666ac077af121ef221dca9203b946793f912057",
       "reason": "frame length out of range",
       "proxy_discards": true
     },
@@ -165,7 +240,7 @@
       "note": "magic 0xC4, with a valid MIC",
       "rule": "02 section 3",
       "keys": "session",
-      "frame": "c41261d306d3452268f40000000879c259094f22847b5d498988",
+      "frame": "c412b08e8a4367a5b5ba0000000879c259092fee56ed880269cf",
       "reason": "bad magic",
       "proxy_discards": true
     },
@@ -174,7 +249,7 @@
       "note": "version 2, with a valid MIC",
       "rule": "02 section 3",
       "keys": "session",
-      "frame": "c52261d306d3452268f40000000944149d7fdd4417048ea00857",
+      "frame": "c522b08e8a4367a5b5ba0000000944149d7fd0c61230749b578c",
       "reason": "unsupported version",
       "proxy_discards": true
     },
@@ -183,7 +258,7 @@
       "note": "reserved type 0x0, with a valid MIC",
       "rule": "02 sections 4 and 12",
       "keys": "session",
-      "frame": "c51061d306d3452268f40000000a4024b5b00e7d2fbc0eb193b0",
+      "frame": "c510b08e8a4367a5b5ba0000000a4024b5b03975ab6a45a13548",
       "reason": "reserved frame type",
       "proxy_discards": true
     }

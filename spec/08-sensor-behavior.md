@@ -1,7 +1,7 @@
 # 08 - Sensor Behavior
 
 Status: Draft
-Version: 1.0-draft.1
+Version: 1.0-draft.2
 
 This document specifies how a sensor's firmware behaves: what it stores, how it
 keeps time, when it transmits, how it retries, how it handles downlinks, and what
@@ -21,8 +21,8 @@ platform. Frames are defined in 02, readings in 03 and pairing in 04.
 |---|---|---|
 | `dev_eui`, `k_root` | Read-only, provisioned | Never by firmware |
 | Uplink counter reservation | Non-volatile | 02 section 8.2 |
-| Pairing state, `k_session`, `k_net_route` | Non-volatile | 04 section 4.6 |
-| Root floor: last accepted root downlink counter | Non-volatile | On accepting `KEY_EXCHANGE`, before sending `SYNC` (04 section 4.6). Kept through `LEAVE` and re-pairing; cleared only by a factory reset (02 section 8.4) |
+| Pairing state, `k_session` | Non-volatile | On becoming `PAIRED` (04 section 4.6). A provisional session is never stored |
+| Root floor: last accepted root downlink counter | Non-volatile | On accepting `KEY_EXCHANGE`, before sending the first session uplink (04 section 4.6). Kept through `LEAVE` and re-pairing; cleared only by a factory reset (02 section 8.4) |
 | Session floor: last accepted session `fcnt_down` | Non-volatile | On each accepted downlink, or at least before sleeping after one. Set to 0 with each new `k_session` |
 | Heartbeat interval | Non-volatile | On `SET_HEARTBEAT` |
 | Settings from application commands | Non-volatile | As the profile defines |
@@ -47,10 +47,12 @@ from a stolen device.
 ### 3.2 Using the clock
 
 - With a valid clock, or an RTC that survived the reboot, the sensor computes
-  normal tags (02 section 6).
+  normal tags (02 section 6.1). It SHOULD compute the next epoch's tag before the
+  epoch boundary, so a frame sent just after it is not delayed by the key
+  generation.
 - Without either (for example after the batteries were removed and the RTC has no
-  backup), the sensor cannot compute tags and MUST use `SYNC` (02 section 11.2)
-  until a downlink sets its clock. This applies to every uplink except the
+  backup), the sensor cannot compute normal tags and MUST use `SYNC`, with its
+  bootstrap tag (02 section 11.2), until a downlink sets its clock. This applies to every uplink except the
   `LEAVE` heartbeat (section 8), including one that would otherwise be
   unconfirmed: it goes out as `SYNC`, a confirmed type,
   and is retried like any confirmed uplink (section 5).
@@ -133,8 +135,8 @@ the uplink is unanswered and the sensor retransmits it.
 - A frame that carries an event reading (for example `button`) is never
   abandoned: a resend under a new counter would make the server act on the event
   twice. Its retries run to the end, and the state change goes in the next frame.
-  Pairing frames (`JOIN`, and the `SYNC` of 04 section 4.4) are not abandoned
-  either.
+  Pairing frames (`JOIN`, and the first session uplink of 04 section 4.4) are
+  not abandoned either.
 - After the last retry the uplink is *undelivered*. A state change will still
   reach the server in the next heartbeat, which carries the full state. A
   `button` event is lost.
@@ -173,10 +175,10 @@ forget its pairing because of it. Only `LEAVE` or a factory reset (the
 
 | Command | Sensor behavior |
 |---|---|
-| `SET_NETWORK` | Store `k_net_route`, switch to normal tags, enter `PAIRED` if pairing (04) |
 | `SET_HEARTBEAT` | Store the new interval; reschedule the next heartbeat from now |
-| `LEAVE` | Erase `k_session` and `k_net_route`, enter `UNPAIRED` (04 section 6.1). Keep the root floor and the uplink counter reservation. When `PAIRED`, the `DL_ACK` for it goes in one final unconfirmed `HEARTBEAT`, sent under the old keys; the keys are erased when that transmission ends. RX1 still opens after it (01 section 4), but nothing received in it can verify, so it is ignored. Without a clock the sensor cannot compute the tags for that `HEARTBEAT`, so it erases the keys without sending. In `SESSION`, nothing is sent (04 section 6.1). |
+| `LEAVE` | Erase `k_session`, enter `UNPAIRED` (04 section 6.1). Keep the root floor and the uplink counter reservation. When `PAIRED`, the `DL_ACK` for it goes in one final unconfirmed `HEARTBEAT`, sent under the old keys; the keys are erased when that transmission ends. RX1 still opens after it (01 section 4), but nothing received in it can verify, so it is ignored. Without a clock the sensor cannot compute the tag for that `HEARTBEAT`, so it erases the keys without sending. A downlink accepted in `SESSION` makes the sensor `PAIRED` first (04 section 4.3), so this applies there too. |
 | `KEY_EXCHANGE` | Only valid in `JOINING` (04 section 4.4), in a downlink under the root key set whose counter is above the root floor; ignored otherwise |
+| `NOP` | Nothing; like any command, it sets `DL_ACK` in the next uplink (02 section 10.3) |
 | `0x40` (set value) | Apply to a writable channel (03 section 8), then report the new state in the next uplink |
 | `0x41`-`0x7F` | As the device profile defines |
 | Unknown | Skip, using the length byte (02 section 10.3) |
@@ -279,13 +281,21 @@ A sensor implementation MUST pass at least:
    pairing, `LEAVE` and a power cycle, a `KEY_EXCHANGE` whose root counter is at
    or below the last accepted one is ignored, and a higher one is accepted.
 9. Holding the button for 10 seconds factory-resets it in every pairing state:
-   it erases `k_session`, `k_net_route`, both downlink floors and settings, keeps
+   it erases `k_session`, both downlink floors and settings, keeps
    `k_root` and the uplink counter reservation, and then accepts a
    `KEY_EXCHANGE` with root counter 1.
 10. A state reading that has no value when the boot uplink goes out is sent in a
     state-change frame when its first value arrives, confirmed if the reading's
     changes are confirmed.
-11. In `SESSION` (04 section 4.3), it returns to `UNPAIRED` with the root floor
-    kept when a `SYNC` goes unanswered after its retries, after 4 `SYNC`s
-    answered without `SET_NETWORK`, on `LEAVE` (sending nothing), and after a
-    restart. A short press in `JOINING` or `SESSION` sends nothing.
+11. After accepting `KEY_EXCHANGE` it sends one `HEARTBEAT_CONFIRMED` with the
+    full state and `DL_ACK`, under the session key set with a normal tag computed
+    from the `KEY_EXCHANGE`'s `server_time`, and enters `PAIRED` only when it
+    accepts a session downlink. It reproduces the `provisional` sequence of
+    `vectors/pairing-v1.json`. In `SESSION` (04 section 4.3) it returns to
+    `UNPAIRED`, with the root floor kept, when that uplink goes unanswered after
+    its retries and after a restart. A short press in `JOINING` or `SESSION`
+    sends nothing.
+12. Its tags match `vectors/frame-v1.json`: the normal tags for the three epochs,
+    and the bootstrap tags of both key sets at `fcnt` 1, 64, 65 and 129. A
+    `JOIN` and a `SYNC` carry the bootstrap tag of their `fcnt`'s block, and every
+    other uplink the normal tag of its epoch.

@@ -127,12 +127,12 @@
         "event": "join",
         "fcnt": 1,
         "sensor_ephemeral_private": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a1",
-        "frame": "c515000000000000000000000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc35d435b8268bda9a",
+        "frame": "c515222b42cec0e14ae700000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc7b749c1e82380318",
         "note": "first pairing; frame-v1.json join"
       },
       {
         "event": "downlink",
-        "frame": "c518000000000000000000000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e5a9ff021ca714c8b3",
+        "frame": "c518222b42cec0e14ae700000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e52b1e5d9140ab6741",
         "note": "KEY_EXCHANGE, root fcnt_down 1; frame-v1.json downlink_key_exchange",
         "result": "accept",
         "root_floor": 1,
@@ -147,12 +147,12 @@
         "event": "join",
         "fcnt": 70,
         "sensor_ephemeral_private": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
-        "frame": "c5150000000000000000000000468a233423f5ffeaa03aebe0aee7e4a88ab8f584ff228da88606dfd2e70cf35dbf7c6df22e9a64738325",
+        "frame": "c51556064cdf361e5da1000000468a233423f5ffeaa03aebe0aee7e4a88ab8f584ff228da88606dfd2e70cf35dbf7cda4d25c9dbcc299c",
         "note": "paired again with the same server"
       },
       {
         "event": "downlink",
-        "frame": "c51800000000000000000000000211975912d4dc229c2e7348be0e15204d1751562c023a70fbd14d7c3c8a88bb254929641317c9c50cce02e575c707da7b50f01e",
+        "frame": "c51856064cdf361e5da10000000211975912d4dc229c2e7348be0e15204d1751562c023a70fbd14d7c3c8a88bb254929641317c9c50cce02e59ff3d5cdfd8a73e8",
         "note": "KEY_EXCHANGE, root fcnt_down 2: the server never resets its root counter",
         "result": "accept",
         "root_floor": 2,
@@ -167,12 +167,12 @@
         "event": "join",
         "fcnt": 75,
         "sensor_ephemeral_private": "a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3a3",
-        "frame": "c51500000000000000000000004be6578ba3636bbd5a9c3439f700ef24bda33066b6978f327141a758b88f1c7d8ba730f2b989233a1441",
+        "frame": "c51556064cdf361e5da10000004be6578ba3636bbd5a9c3439f700ef24bda33066b6978f327141a758b88f1c7d8ba7e129de8720f4de6d",
         "note": "pairing with a server whose root counter rolled back"
       },
       {
         "event": "downlink",
-        "frame": "c518000000000000000000000001ba29baff7b91d2095ddc8fb1ce7204a404ae110389f28f0365f97a3e832f994f89f1d050c8ce971a412890c98805943d50ffea",
+        "frame": "c51856064cdf361e5da100000001ba29baff7b91d2095ddc8fb1ce7204a404ae110389f28f0365f97a3e832f994f89f1d050c8ce971a4128906c02ef021c30689a",
         "note": "KEY_EXCHANGE, root fcnt_down 1: at or below the floor, discarded",
         "result": "at_or_below_root_floor",
         "root_floor": 2,
@@ -180,7 +180,7 @@
       },
       {
         "event": "downlink",
-        "frame": "c51800000000000000000000000211975912d4dc229c2e7348be0e15204d1751562c023a70fbd14d7c3c8a88bb254929641317c9c50cce02e575c707da7b50f01e",
+        "frame": "c51856064cdf361e5da10000000211975912d4dc229c2e7348be0e15204d1751562c023a70fbd14d7c3c8a88bb254929641317c9c50cce02e59ff3d5cdfd8a73e8",
         "note": "replayed KEY_EXCHANGE answering an older JOIN",
         "result": "wrong_reply_to",
         "root_floor": 2,
@@ -195,16 +195,111 @@
         "event": "join",
         "fcnt": 140,
         "sensor_ephemeral_private": "a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4",
-        "frame": "c51500000000000000000000008c6dd832ddaaa0bdd5c0ba3e06385a425288c72d4d9d2fa37c1e3d91f63cf622f5a39167fa6910bdfa95",
+        "frame": "c51505c724987150906f0000008c6dd832ddaaa0bdd5c0ba3e06385a425288c72d4d9d2fa37c1e3d91f63cf622f5a36c9a6714f8b2e2b4",
         "note": "new owner pairs after the reset"
       },
       {
         "event": "downlink",
-        "frame": "c518000000000000000000000001ba29ba387b9289e95ddc8fef6010fb45b49a34d421259868875c31d5b0df90cfb7c8b90b850a1e7dee99fa487a1066ba203038",
+        "frame": "c51805c724987150906f00000001ba29ba387b9289e95ddc8fef6010fb45b49a34d421259868875c31d5b0df90cfb7c8b90b850a1e7dee99fa53f3bf01d900689e",
         "note": "KEY_EXCHANGE, root fcnt_down 1 from the new owner's server: accepted",
         "result": "accept",
         "root_floor": 1,
         "k_session": "b22c89e62323ad6463472891d6412f60"
+      }
+    ]
+  },
+  "provisional": {
+    "note": "inputs from frame-v1.json; server_time of each KEY_EXCHANGE sets the sensor's clock",
+    "sequence": [
+      {
+        "event": "join",
+        "note": "frame-v1.json join",
+        "fcnt": 1,
+        "sensor_ephemeral_private": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a1",
+        "frame": "c515222b42cec0e14ae700000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc7b749c1e82380318",
+        "state": "JOINING",
+        "root_floor": 0,
+        "has_session": false
+      },
+      {
+        "event": "downlink",
+        "note": "KEY_EXCHANGE: provisional",
+        "frame": "c518222b42cec0e14ae700000001ba29bab57b903e695ddc8f7e48b7300d2cd13576d5f2009e7653d33c60d6531acece22a368422671c185e52b1e5d9140ab6741",
+        "result": "accept",
+        "state": "SESSION",
+        "root_floor": 1,
+        "has_session": true
+      },
+      {
+        "event": "uplink",
+        "note": "first session uplink, normal tag; frame-v1.json heartbeat_first",
+        "fcnt": 2,
+        "unix_time": 1795226401,
+        "frame": "c514b08e8a4367a5b5ba0000000267a56d11a75af500c1b7476020bab8",
+        "state": "SESSION",
+        "root_floor": 1,
+        "has_session": true
+      },
+      {
+        "event": "downlink",
+        "note": "a session downlink answering another fcnt: discarded, still provisional",
+        "frame": "c518b08e8a4367a5b5ba000000026ffd6957eed987af597d329c7f52e5e4be",
+        "result": "wrong_reply_to",
+        "state": "SESSION",
+        "root_floor": 1,
+        "has_session": true
+      },
+      {
+        "event": "downlink",
+        "note": "frame-v1.json downlink_paired: PAIRED",
+        "frame": "c518b08e8a4367a5b5ba00000001f54c2bb9e69fd91753909de5ae5318fd1c414b",
+        "result": "accept",
+        "state": "PAIRED",
+        "root_floor": 1,
+        "has_session": true
+      },
+      {
+        "event": "leave",
+        "note": "LEAVE",
+        "state": "UNPAIRED",
+        "root_floor": 1,
+        "has_session": false
+      },
+      {
+        "event": "join",
+        "note": "paired again",
+        "fcnt": 70,
+        "sensor_ephemeral_private": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
+        "frame": "c51556064cdf361e5da1000000468a233423f5ffeaa03aebe0aee7e4a88ab8f584ff228da88606dfd2e70cf35dbf7cda4d25c9dbcc299c",
+        "state": "JOINING",
+        "root_floor": 1,
+        "has_session": false
+      },
+      {
+        "event": "downlink",
+        "note": "KEY_EXCHANGE, root fcnt_down 2: provisional",
+        "frame": "c51856064cdf361e5da10000000211975912d4dc229c2e7348be0e15204d1751562c023a70fbd14d7c3c8a88bb254929641317c9c50cce02e59ff3d5cdfd8a73e8",
+        "result": "accept",
+        "state": "SESSION",
+        "root_floor": 2,
+        "has_session": true
+      },
+      {
+        "event": "uplink",
+        "note": "first session uplink",
+        "fcnt": 71,
+        "unix_time": 1795230001,
+        "frame": "c5142f22922d30381f4b000000477c136fbf280baa4168",
+        "state": "SESSION",
+        "root_floor": 2,
+        "has_session": true
+      },
+      {
+        "event": "undelivered",
+        "note": "no answer after its retries: k_session erased, root floor kept",
+        "state": "UNPAIRED",
+        "root_floor": 2,
+        "has_session": false
       }
     ]
   }

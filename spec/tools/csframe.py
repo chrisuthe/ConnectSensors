@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 from cryptography.hazmat.primitives.hashes import SHA256
@@ -45,7 +46,8 @@ MAX_PAYLOAD = 64
 MIN_FRAME = HEADER_LEN + 1 + MIC_LEN
 MAX_FRAME = HEADER_LEN + MAX_PAYLOAD + MIC_LEN
 EPOCH_SECONDS = 3600
-ZERO_TAG = b"\x00\x00\x00\x00"
+TAG_LEN = 8
+TAG_BLOCK = 64  # one bootstrap tag block per counter reservation block (02 sections 6.1 and 8.2)
 
 T_DATA = 0x1
 T_DATA_CONFIRMED = 0x2
@@ -62,15 +64,20 @@ UF_DL_ACK = 0x01
 UF_TIME_UNSURE = 0x02
 DF_PENDING = 0x01
 
-CMD_SET_NETWORK = 0x01
 CMD_SET_HEARTBEAT = 0x02
 CMD_LEAVE = 0x03
 CMD_KEY_EXCHANGE = 0x04
+CMD_NOP = 0x05
 CMD_SET_CHANNEL = 0x40
 
 
 def is_downlink(ftype: int) -> bool:
     return ftype >= 0x8
+
+
+def is_bootstrap(ftype: int) -> bool:
+    """JOIN and SYNC carry bootstrap tags (02 section 4)."""
+    return ftype in (T_JOIN, T_SYNC)
 
 
 def hkdf(ikm: bytes, salt: bytes | None, info: bytes, length: int = 16) -> bytes:
@@ -90,10 +97,6 @@ def keys_from(base: bytes, dev_eui: bytes) -> DeviceKeys:
     return DeviceKeys(dev_eui, hkdf(base, dev_eui, b"cs1 enc"), hkdf(base, dev_eui, b"cs1 tag"))
 
 
-def derive_net_route(k_net: bytes) -> bytes:
-    return hkdf(k_net, None, b"cs1 route")
-
-
 def x25519_pub(priv: bytes) -> bytes:
     return X25519PrivateKey.from_private_bytes(priv).public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
 
@@ -110,31 +113,60 @@ def epoch_of(unix_seconds: int) -> int:
     return unix_seconds // EPOCH_SECONDS
 
 
-def tag(key: bytes, label: bytes, epoch: int) -> bytes:
-    t = hmac.new(key, label + struct.pack(">I", epoch), hashlib.sha256).digest()[:4]
-    return b"\x00\x00\x00\x01" if t == ZERO_TAG else t  # 02 section 6.2
+def epoch_index(epoch: int) -> bytes:
+    return b"e" + struct.pack(">I", epoch)
 
 
-def net_tag(k_net_route: bytes, epoch: int) -> bytes:
-    return tag(k_net_route, b"net", epoch)
+def block_index(fcnt: int) -> bytes:
+    if fcnt < 1:
+        raise ValueError("fcnt starts at 1")
+    return b"b" + struct.pack(">I", (fcnt - 1) // TAG_BLOCK)
 
 
-def dev_tag(k_dev_tag: bytes, epoch: int) -> bytes:
-    return tag(k_dev_tag, b"dev", epoch)
+def tag_seed(k_dev_tag: bytes, index: bytes) -> bytes:
+    return hmac.new(k_dev_tag, b"cs1 tag seed" + index, hashlib.sha256).digest()
+
+
+def ed25519_pub(seed: bytes) -> bytes:
+    return Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+
+def tag_of_pub(pub: bytes) -> bytes:
+    return hashlib.sha256(b"cs1 tag fp" + pub).digest()[:TAG_LEN]
+
+
+def tag(k_dev_tag: bytes, index: bytes) -> bytes:
+    """The 8-byte key-fingerprint tag (02 section 6.1)."""
+    return tag_of_pub(ed25519_pub(tag_seed(k_dev_tag, index)))
+
+
+def normal_tag(k_dev_tag: bytes, epoch: int) -> bytes:
+    return tag(k_dev_tag, epoch_index(epoch))
+
+
+def bootstrap_tag(k_dev_tag: bytes, fcnt: int) -> bytes:
+    return tag(k_dev_tag, block_index(fcnt))
+
+
+def uplink_tag(keys: DeviceKeys, ftype: int, fcnt: int, unix_time: int) -> bytes:
+    """The tag a sensor puts on a new uplink: bootstrap for JOIN and SYNC, normal otherwise."""
+    return bootstrap_tag(keys.k_dev_tag, fcnt) if is_bootstrap(ftype) else normal_tag(keys.k_dev_tag,
+                                                                                     epoch_of(unix_time))
 
 
 def nonce(dev_eui: bytes, fcnt: int, direction: int) -> bytes:
     return dev_eui + struct.pack(">IB", fcnt, direction)
 
 
-def header(ftype: int, ntag: bytes, dtag: bytes, fcnt: int) -> bytes:
-    return bytes([MAGIC, (VERSION << 4) | ftype]) + ntag + dtag + struct.pack(">I", fcnt)
+def header(ftype: int, ftag: bytes, fcnt: int) -> bytes:
+    assert len(ftag) == TAG_LEN
+    return bytes([MAGIC, (VERSION << 4) | ftype]) + ftag + struct.pack(">I", fcnt)
 
 
-def seal(keys: DeviceKeys, ftype: int, ntag: bytes, dtag: bytes, fcnt: int, plaintext: bytes) -> bytes:
+def seal(keys: DeviceKeys, ftype: int, ftag: bytes, fcnt: int, plaintext: bytes) -> bytes:
     if not 1 <= len(plaintext) <= MAX_PAYLOAD:
         raise ValueError("payload length out of range")
-    hdr = header(ftype, ntag, dtag, fcnt)
+    hdr = header(ftype, ftag, fcnt)
     d = DIR_DOWN if is_downlink(ftype) else DIR_UP
     return hdr + AESCCM(keys.k_enc, tag_length=MIC_LEN).encrypt(nonce(keys.dev_eui, fcnt, d), plaintext, hdr)
 
@@ -142,8 +174,7 @@ def seal(keys: DeviceKeys, ftype: int, ntag: bytes, dtag: bytes, fcnt: int, plai
 @dataclass
 class ParsedHeader:
     ftype: int
-    net_tag: bytes
-    dev_tag: bytes
+    tag: bytes
     fcnt: int
 
 
@@ -165,7 +196,7 @@ def parse_header(frame: bytes) -> ParsedHeader | None:
     if header_error(frame) is not None:
         return None
     (fcnt,) = struct.unpack(">I", frame[10:14])
-    return ParsedHeader(frame[1] & 0x0F, frame[2:6], frame[6:10], fcnt)
+    return ParsedHeader(frame[1] & 0x0F, frame[2:10], fcnt)
 
 
 def open_frame(keys: DeviceKeys, frame: bytes) -> tuple[ParsedHeader, bytes]:
@@ -314,8 +345,8 @@ JOIN_STALL_RETRANSMISSIONS = 3  # the sensor's last retry of a JOIN (08 section 
 
 @dataclass
 class PendingExchange:
-    """A JOIN answered with a new KEY_EXCHANGE, until SET_NETWORK is acknowledged
-    (04 section 4.2). The server persists it before sending frame (04 section 4.6,
+    """A JOIN answered with a new KEY_EXCHANGE, until the first uplink under its
+    k_session verifies (04 section 4.2). The server persists it before sending frame (04 section 4.6,
     07 section 10) and restores it with JoinResponder(..., pending=...), so a JOIN
     retransmitted across a restart gets the same frame. to_dict() and from_dict()
     convert it to and from JSON-safe values; k_session is secret, store it as such."""
@@ -373,7 +404,7 @@ class JoinResponder:
         self.root_fcnt_down += 1
         server_pub = x25519_pub(server_priv)
         k_session = derive_session(self.k_root, self.dev_eui, server_priv, sensor_pub, sensor_pub, server_pub)
-        dl = seal(self.root, T_DOWNLINK, ZERO_TAG, ZERO_TAG, self.root_fcnt_down,
+        dl = seal(self.root, T_DOWNLINK, h.tag, self.root_fcnt_down,
                   downlink_payload(h.fcnt, server_time, 0, command(CMD_KEY_EXCHANGE, server_pub)))
         self.pending = PendingExchange(sensor_pub, dl, k_session, sent=not self.count_after_sent)
         return {"action": "new_exchange", "frame": dl, "k_session": k_session, "stalled": False}
@@ -387,31 +418,52 @@ class JoinResponder:
         return True
 
     def paired(self) -> None:
-        """SET_NETWORK acknowledged: the pending exchange is done."""
+        """The first uplink under the pending k_session verified: the device is PAIRED
+        and the pending exchange is done (04 section 4.2)."""
         self.pending = None
 
 
 class SensorPairing:
-    """Sensor side of JOIN and KEY_EXCHANGE (02 section 10.2, 04 sections 4.4 and 6.2)."""
+    """Sensor side of pairing (02 section 10.2, 04 sections 4.3, 4.4 and 6.2): JOIN,
+    KEY_EXCHANGE, the provisional SESSION state and PAIRED on the first accepted
+    session downlink."""
 
     def __init__(self, k_root: bytes, dev_eui: bytes):
         self.k_root, self.dev_eui = k_root, dev_eui
         self.root = keys_from(k_root, dev_eui)
+        self.state = "UNPAIRED"
         self.root_floor = 0     # survives pairing, LEAVE and re-pairing
         self.session_floor = 0  # per k_session
         self.k_session: bytes | None = None
         self.joining: tuple[int, bytes] | None = None  # (JOIN fcnt, ephemeral private key)
+        self.last_fcnt: int | None = None  # the most recent uplink, which a downlink must answer
 
     def join(self, fcnt: int, priv: bytes) -> bytes:
         self.joining = (fcnt, priv)
-        return seal(self.root, T_JOIN, ZERO_TAG, ZERO_TAG, fcnt, bytes([UF_TIME_UNSURE]) + x25519_pub(priv))
+        self.state, self.last_fcnt = "JOINING", fcnt
+        return seal(self.root, T_JOIN, bootstrap_tag(self.root.k_dev_tag, fcnt), fcnt,
+                    bytes([UF_TIME_UNSURE]) + x25519_pub(priv))
+
+    def uplink(self, ftype: int, fcnt: int, unix_time: int, plaintext: bytes) -> bytes:
+        """A session uplink, in SESSION or PAIRED."""
+        if self.k_session is None:
+            raise ValueError("no session")
+        keys = keys_from(self.k_session, self.dev_eui)
+        self.last_fcnt = fcnt
+        return seal(keys, ftype, uplink_tag(keys, ftype, fcnt, unix_time), fcnt, plaintext)
 
     def downlink(self, frame: bytes) -> str:
-        if self.joining is None:
-            return "not_joining"
+        if self.state == "JOINING":
+            return self._root_downlink(frame)
+        if self.state in ("SESSION", "PAIRED"):
+            return self._session_downlink(frame)
+        return "no_keys"
+
+    def _root_downlink(self, frame: bytes) -> str:
+        assert self.joining is not None
         try:
             h, pt = open_frame(self.root, frame)
-        except Exception:
+        except ValueError:
             return "bad_mic"
         if struct.unpack(">I", pt[:4])[0] != self.joining[0]:
             return "wrong_reply_to"
@@ -425,14 +477,40 @@ class SensorPairing:
         self.k_session = derive_session(self.k_root, self.dev_eui, priv, server_pub, x25519_pub(priv), server_pub)
         self.session_floor = 0
         self.joining = None
+        self.state = "SESSION"  # provisional until a session downlink is accepted (04 section 4.3)
         return "accept"
+
+    def _session_downlink(self, frame: bytes) -> str:
+        assert self.k_session is not None
+        try:
+            h, pt = open_frame(keys_from(self.k_session, self.dev_eui), frame)
+        except ValueError:
+            return "bad_mic"
+        if struct.unpack(">I", pt[:4])[0] != self.last_fcnt:
+            return "wrong_reply_to"
+        if h.fcnt <= self.session_floor:
+            return "at_or_below_session_floor"
+        self.session_floor = h.fcnt
+        self.state = "PAIRED"
+        return "accept"
+
+    def undelivered(self) -> None:
+        """A confirmed uplink ran out of retries. In SESSION, pairing fails (04 section 4.3)."""
+        if self.state == "SESSION":
+            self.k_session = None
+            self.state = "UNPAIRED"
+        elif self.state == "JOINING":
+            self.joining = None
+            self.state = "UNPAIRED"
 
     def leave(self) -> None:
         self.k_session = self.joining = None
+        self.state = "UNPAIRED"
 
     def factory_reset(self) -> None:
         self.root_floor = self.session_floor = 0
         self.k_session = self.joining = None
+        self.state = "UNPAIRED"
 
 
 # ======================================================================== 05
@@ -507,16 +585,15 @@ def parse_hello(body: bytes) -> dict[str, Any]:
             "fw": body[p + 46:].decode()}
 
 
-def server_status_body(server_time: int, tags: list[bytes], hello_seq: int = 0) -> bytes:
-    return struct.pack(">IIB", server_time, hello_seq, len(tags)) + b"".join(tags)
+def server_status_body(server_time: int, hello_seq: int = 0) -> bytes:
+    return struct.pack(">II", server_time, hello_seq)
 
 
 def parse_server_status(body: bytes) -> dict[str, Any]:
-    server_time, hello_seq, n = struct.unpack(">IIB", body[:9])
-    if n > 32 or len(body) != 9 + 4 * n:
+    if len(body) != 8:
         raise ValueError("bad SERVER_STATUS length")
-    tags = [body[9 + 4 * i:13 + 4 * i] for i in range(n)]
-    return {"server_time": server_time, "hello_seq": hello_seq, "tags": tags}
+    server_time, hello_seq = struct.unpack(">II", body)
+    return {"server_time": server_time, "hello_seq": hello_seq}
 
 
 def hello_request_body(nonce: int) -> bytes:
@@ -640,6 +717,57 @@ class ServerLink:
 
 
 # ======================================================================== 07
+
+SYNC_BLOCKS_AHEAD = 2  # bootstrap blocks kept beyond the one holding last_fcnt (07 section 3)
+
+
+class TagTable:
+    """The home server's table from 8-byte tag to device (07 section 3).
+
+    Each device has the normal tags of epochs e-1, e and e+1 under its session key
+    set, plus, once an uplink counter is known, the session bootstrap (SYNC) tags of
+    the block holding last_fcnt and the 2 after it. Call update() for each device
+    whenever its keys or last_fcnt change and at every epoch boundary."""
+
+    def __init__(self) -> None:
+        self.tags: dict[bytes, list[str]] = {}
+        self.by_device: dict[str, list[tuple[str, bytes, bytes]]] = {}  # (kind, index, tag)
+
+    def update(self, device: str, k_dev_tag: bytes, epoch: int, last_fcnt: int | None = None) -> None:
+        self.remove(device)
+        entries = [("normal", epoch_index(x)) for x in (epoch - 1, epoch, epoch + 1)]
+        if last_fcnt is not None:
+            first = (max(last_fcnt, 1) - 1) // TAG_BLOCK
+            entries += [("bootstrap", b"b" + struct.pack(">I", b)) for b in range(first, first + SYNC_BLOCKS_AHEAD + 1)]
+        rows = [(kind, index, tag(k_dev_tag, index)) for kind, index in entries]
+        self.by_device[device] = rows
+        for _, _, t in rows:
+            self.tags.setdefault(t, []).append(device)
+
+    def remove(self, device: str) -> None:
+        for _, _, t in self.by_device.pop(device, []):
+            self.tags[t].remove(device)
+            if not self.tags[t]:
+                del self.tags[t]
+
+    def lookup(self, ftag: bytes) -> list[str]:
+        return list(self.tags.get(ftag, []))
+
+
+def identify_route(table: TagTable, frame: bytes, local: bool) -> tuple[str, list[str]]:
+    """How the server looks for a frame's device (07 section 4, step 4): "table" with
+    the candidates whose MIC to try, "fallback" for trial decryption of a locally heard
+    bootstrap frame that missed the table, or "drop"."""
+    h = parse_header(frame)
+    if h is None:
+        return "drop", []
+    candidates = table.lookup(h.tag)
+    if candidates:
+        return "table", candidates
+    if local and is_bootstrap(h.ftype):
+        return "fallback", []
+    return "drop", []
+
 
 REORDER_WINDOW = 16
 
@@ -945,10 +1073,15 @@ def region_airtime_ms(region: str, frame_len: int) -> float:
 
 K_ROOT = bytes.fromhex("000102030405060708090a0b0c0d0e0f")
 DEV_EUI = bytes.fromhex("c5c5000000000001")
-K_NET = bytes.fromhex("f0e1d2c3b4a5968778695a4b3c2d1e0f")
 SENSOR_PRIV = bytes.fromhex("a0" * 31 + "a1")
 SERVER_PRIV = bytes.fromhex("b0" * 31 + "b1")
 T0 = 1795226400  # 2026-11-21T02:00:00Z
+
+
+def tag_vector(k_dev_tag: bytes, index: bytes) -> dict[str, str]:
+    seed = tag_seed(k_dev_tag, index)
+    pub = ed25519_pub(seed)
+    return {"index": index.hex(), "seed": seed.hex(), "pub": pub.hex(), "tag": tag_of_pub(pub).hex()}
 
 
 def frame_vectors() -> dict:
@@ -957,21 +1090,20 @@ def frame_vectors() -> dict:
     k_session = derive_session(K_ROOT, DEV_EUI, SENSOR_PRIV, v_pub, s_pub, v_pub)
     assert k_session == derive_session(K_ROOT, DEV_EUI, SERVER_PRIV, s_pub, s_pub, v_pub)
     sess = keys_from(k_session, DEV_EUI)
-    route = derive_net_route(K_NET)
     e = epoch_of(T0)
-    nt, dt = net_tag(route, e), dev_tag(sess.k_dev_tag, e)
-    z = ZERO_TAG
+    nt = normal_tag(sess.k_dev_tag, e)
+    join_tag = bootstrap_tag(root.k_dev_tag, 1)
 
-    def case(name, keyset, keys, ftype, ntag, dtag, fcnt, pt, note):
+    def case(name, keyset, keys, ftype, ftag, fcnt, pt, note):
         return {"name": name, "note": note, "keys": keyset, "type": ftype, "fcnt": fcnt,
-                "net_tag": ntag.hex(), "dev_tag": dtag.hex(), "plaintext": pt.hex(),
-                "frame": seal(keys, ftype, ntag, dtag, fcnt, pt).hex()}
+                "tag": ftag.hex(), "plaintext": pt.hex(), "frame": seal(keys, ftype, ftag, fcnt, pt).hex()}
 
     contact_open = encode_reading(0x00, 0x01, 1)
+    contact_closed = encode_reading(0x00, 0x01, 0)
     battery = encode_reading(0xFF, 0x07, 95)
     return {
         "spec": "ConnectSensors frame v1 (02) and key exchange (04)",
-        "inputs": {"k_root": K_ROOT.hex(), "dev_eui": DEV_EUI.hex(), "k_net": K_NET.hex(),
+        "inputs": {"k_root": K_ROOT.hex(), "dev_eui": DEV_EUI.hex(),
                    "sensor_ephemeral_private": SENSOR_PRIV.hex(),
                    "server_ephemeral_private": SERVER_PRIV.hex(), "time": T0, "epoch": e},
         "derived": {
@@ -979,63 +1111,72 @@ def frame_vectors() -> dict:
             "sensor_ephemeral_public": s_pub.hex(), "server_ephemeral_public": v_pub.hex(),
             "k_session": k_session.hex(),
             "session": {"k_enc": sess.k_enc.hex(), "k_dev_tag": sess.k_dev_tag.hex()},
-            "k_net_route": route.hex(),
-            "net_tag": {str(x): net_tag(route, x).hex() for x in (e - 1, e, e + 1)},
-            "dev_tag": {str(x): dev_tag(sess.k_dev_tag, x).hex() for x in (e - 1, e, e + 1)},
+        },
+        "tags": {
+            "note": "02 section 6.1; index is the HMAC input after \"cs1 tag seed\"",
+            "normal": [{"keys": "session", "epoch": x, **tag_vector(sess.k_dev_tag, epoch_index(x))}
+                       for x in (e - 1, e, e + 1)],
+            "bootstrap": [{"keys": keys, "fcnt": f, **tag_vector(ks.k_dev_tag, block_index(f))}
+                          for keys, ks in (("root", root), ("session", sess)) for f in (1, 64, 65, 129)],
         },
         "frames": [
-            case("join", "root", root, T_JOIN, z, z, 1, bytes([UF_TIME_UNSURE]) + s_pub,
-                 "JOIN with the sensor's ephemeral public key"),
-            case("downlink_key_exchange", "root", root, T_DOWNLINK, z, z, 1,
+            case("join", "root", root, T_JOIN, join_tag, 1, bytes([UF_TIME_UNSURE]) + s_pub,
+                 "JOIN with the sensor's ephemeral public key; root bootstrap tag of block 0"),
+            case("downlink_key_exchange", "root", root, T_DOWNLINK, join_tag, 1,
                  downlink_payload(1, T0, 0, command(CMD_KEY_EXCHANGE, v_pub)),
-                 "answer to JOIN: server ephemeral public key"),
-            case("sync_after_exchange", "session", sess, T_SYNC, z, z, 2, bytes([UF_DL_ACK]),
-                 "first frame under session keys; acknowledges KEY_EXCHANGE"),
-            case("downlink_set_network", "session", sess, T_DOWNLINK, z, z, 1,
-                 downlink_payload(2, T0 + 3, 0, command(CMD_SET_NETWORK, route)),
-                 "answer to SYNC: network routing key; first downlink under this k_session"),
-            case("data_confirmed", "session", sess, T_DATA_CONFIRMED, nt, dt, 3,
-                 bytes([UF_DL_ACK]) + contact_open, "door opened; acknowledges SET_NETWORK"),
-            case("downlink_ack", "session", sess, T_DOWNLINK, nt, dt, 2, downlink_payload(3, T0 + 60, 0),
+                 "answer to JOIN, with its tag: server ephemeral public key; the sensor is now provisional"),
+            case("heartbeat_first", "session", sess, T_HEARTBEAT_CONFIRMED, nt, 2,
+                 bytes([UF_DL_ACK]) + contact_closed + battery,
+                 "first frame under session keys, normal tag from KEY_EXCHANGE's server_time; acknowledges "
+                 "KEY_EXCHANGE; the server marks the device PAIRED"),
+            case("downlink_paired", "session", sess, T_DOWNLINK, nt, 1,
+                 downlink_payload(2, T0 + 3, 0, command(CMD_NOP)),
+                 "answer to heartbeat_first, first downlink under this k_session: the sensor is now PAIRED. "
+                 "It carries NOP, so the next uplink sets DL_ACK"),
+            case("data_confirmed", "session", sess, T_DATA_CONFIRMED, nt, 3,
+                 bytes([UF_DL_ACK]) + contact_open, "door opened; acknowledges the NOP"),
+            case("downlink_ack", "session", sess, T_DOWNLINK, nt, 2, downlink_payload(3, T0 + 60, 0),
                  "plain acknowledgement of fcnt 3"),
-            case("heartbeat", "session", sess, T_HEARTBEAT, nt, dt, 4, bytes([0]) + contact_open + battery,
+            case("heartbeat", "session", sess, T_HEARTBEAT, nt, 4, bytes([0]) + contact_open + battery,
                  "heartbeat with current state and battery"),
-            case("sync_after_reboot", "session", sess, T_SYNC, z, z, 65, bytes([UF_TIME_UNSURE]) + contact_open,
-                 "clock lost on battery change; fcnt jumped to the next reserved block"),
+            case("sync_after_reboot", "session", sess, T_SYNC, bootstrap_tag(sess.k_dev_tag, 65), 65,
+                 bytes([UF_TIME_UNSURE]) + contact_open,
+                 "clock lost on battery change; fcnt jumped to the next reserved block; session bootstrap "
+                 "tag of block 1"),
         ],
-        "invalid": invalid_frames(sess, nt, dt, bytes([UF_DL_ACK]) + contact_open),
+        "invalid": invalid_frames(sess, nt, bytes([UF_DL_ACK]) + contact_open),
     }
 
 
-def seal_raw(keys: DeviceKeys, magic: int, ver_type: int, ntag: bytes, dtag: bytes, fcnt: int,
+def seal_raw(keys: DeviceKeys, magic: int, ver_type: int, ftag: bytes, fcnt: int,
              plaintext: bytes, direction: int) -> bytes:
     """seal() without its checks, for frames a receiver must reject."""
-    hdr = bytes([magic, ver_type]) + ntag + dtag + struct.pack(">I", fcnt)
+    hdr = bytes([magic, ver_type]) + ftag + struct.pack(">I", fcnt)
     return hdr + AESCCM(keys.k_enc, tag_length=MIC_LEN).encrypt(nonce(keys.dev_eui, fcnt, direction), plaintext, hdr)
 
 
-def invalid_frames(sess: DeviceKeys, nt: bytes, dt: bytes, pt: bytes) -> list[dict[str, Any]]:
+def invalid_frames(sess: DeviceKeys, nt: bytes, pt: bytes) -> list[dict[str, Any]]:
     """Frames under the session keys that a receiver must discard. Each carries a valid
     MIC for its own header unless the MIC is the point, so only the named rule rejects it.
     Counters 5 and up are unused by the valid frames."""
     vt = (VERSION << 4) | T_DATA_CONFIRMED
-    good = seal(sess, T_DATA_CONFIRMED, nt, dt, 3, pt)
+    good = seal(sess, T_DATA_CONFIRMED, nt, 3, pt)
     bad_mic = good[:-1] + bytes([good[-1] ^ 0x01])
     cases = [
         ("bad_mic", bad_mic, "MIC check failed", "02 section 7", False,
          "data_confirmed from the valid frames with the last MIC bit flipped"),
-        ("wrong_direction", seal_raw(sess, MAGIC, vt, nt, dt, 5, pt, DIR_DOWN), "MIC check failed", "02 section 7",
+        ("wrong_direction", seal_raw(sess, MAGIC, vt, nt, 5, pt, DIR_DOWN), "MIC check failed", "02 section 7",
          False, "uplink type sealed with the downlink direction byte in the nonce"),
-        ("length_22", seal_raw(sess, MAGIC, vt, nt, dt, 6, b"", DIR_UP), "frame length out of range",
+        ("length_22", seal_raw(sess, MAGIC, vt, nt, 6, b"", DIR_UP), "frame length out of range",
          "02 section 3", True, "empty payload: 22 bytes, one short of the minimum, with a valid MIC"),
-        ("length_87", seal_raw(sess, MAGIC, vt, nt, dt, 7, pt + bytes(MAX_PAYLOAD + 1 - len(pt)), DIR_UP),
+        ("length_87", seal_raw(sess, MAGIC, vt, nt, 7, pt + bytes(MAX_PAYLOAD + 1 - len(pt)), DIR_UP),
          "frame length out of range", "02 section 3", True,
          "65-byte payload: 87 bytes, one over the maximum, with a valid MIC"),
-        ("bad_magic", seal_raw(sess, 0xC4, vt, nt, dt, 8, pt, DIR_UP), "bad magic", "02 section 3", True,
+        ("bad_magic", seal_raw(sess, 0xC4, vt, nt, 8, pt, DIR_UP), "bad magic", "02 section 3", True,
          "magic 0xC4, with a valid MIC"),
-        ("version_2", seal_raw(sess, MAGIC, (2 << 4) | T_DATA_CONFIRMED, nt, dt, 9, pt, DIR_UP),
+        ("version_2", seal_raw(sess, MAGIC, (2 << 4) | T_DATA_CONFIRMED, nt, 9, pt, DIR_UP),
          "unsupported version", "02 section 3", True, "version 2, with a valid MIC"),
-        ("type_0", seal_raw(sess, MAGIC, VERSION << 4, nt, dt, 10, pt, DIR_UP), "reserved frame type",
+        ("type_0", seal_raw(sess, MAGIC, VERSION << 4, nt, 10, pt, DIR_UP), "reserved frame type",
          "02 sections 4 and 12", True, "reserved type 0x0, with a valid MIC"),
     ]
     return [{"name": n, "note": note, "rule": rule, "keys": "session", "frame": f.hex(), "reason": reason,
@@ -1129,6 +1270,7 @@ def pairing_vectors() -> dict:
                       {"network_region": "EU868", "warn": True,
                        "note": "parses, but the server warns and asks for confirmation"}]},
         "root_floor": root_floor_vectors(),
+        "provisional": provisional_vectors(),
     }
 
 
@@ -1177,6 +1319,48 @@ def root_floor_vectors() -> dict:
             "sequence": seq}
 
 
+def provisional_vectors() -> dict:
+    """The sensor's provisional SESSION state (04 section 4.3): PAIRED on the first
+    accepted session downlink, back to UNPAIRED when the first session uplink goes
+    unanswered."""
+    fv = frame_vectors()
+    frames = {f["name"]: bytes.fromhex(f["frame"]) for f in fv["frames"]}
+    sensor = SensorPairing(K_ROOT, DEV_EUI)
+    server = JoinResponder(K_ROOT, DEV_EUI)
+    seq = []
+
+    def step(event: str, note: str, **kw: Any) -> None:
+        seq.append({"event": event, "note": note, **kw, "state": sensor.state, "root_floor": sensor.root_floor,
+                    "has_session": sensor.k_session is not None})
+
+    step("join", "frame-v1.json join", fcnt=1, sensor_ephemeral_private=SENSOR_PRIV.hex(),
+         frame=sensor.join(1, SENSOR_PRIV).hex())
+    server.join(frames["join"], SERVER_PRIV, T0)
+    step("downlink", "KEY_EXCHANGE: provisional", frame=frames["downlink_key_exchange"].hex(),
+         result=sensor.downlink(frames["downlink_key_exchange"]))
+    hb = sensor.uplink(T_HEARTBEAT_CONFIRMED, 2, T0 + 1, bytes.fromhex(
+        next(f["plaintext"] for f in fv["frames"] if f["name"] == "heartbeat_first")))
+    assert hb == frames["heartbeat_first"]
+    step("uplink", "first session uplink, normal tag; frame-v1.json heartbeat_first", fcnt=2, unix_time=T0 + 1,
+         frame=hb.hex())
+    step("downlink", "a session downlink answering another fcnt: discarded, still provisional",
+         frame=frames["downlink_ack"].hex(), result=sensor.downlink(frames["downlink_ack"]))
+    step("downlink", "frame-v1.json downlink_paired: PAIRED", frame=frames["downlink_paired"].hex(),
+         result=sensor.downlink(frames["downlink_paired"]))
+    sensor.leave()
+    step("leave", "LEAVE")
+    j = sensor.join(70, SENSOR_PRIVS[0])
+    step("join", "paired again", fcnt=70, sensor_ephemeral_private=SENSOR_PRIVS[0].hex(), frame=j.hex())
+    ke = server.join(j, SERVER_PRIVS[0], T0 + 3600)["frame"]
+    step("downlink", "KEY_EXCHANGE, root fcnt_down 2: provisional", frame=ke.hex(), result=sensor.downlink(ke))
+    up = sensor.uplink(T_HEARTBEAT_CONFIRMED, 71, T0 + 3601, bytes([UF_DL_ACK]))
+    step("uplink", "first session uplink", fcnt=71, unix_time=T0 + 3601, frame=up.hex())
+    sensor.undelivered()
+    step("undelivered", "no answer after its retries: k_session erased, root floor kept")
+    return {"note": "inputs from frame-v1.json; server_time of each KEY_EXCHANGE sets the sensor's clock",
+            "sequence": seq}
+
+
 def join_vectors() -> dict:
     """Server answers to JOIN for one device (07 section 5.1)."""
     sensor = SensorPairing(K_ROOT, DEV_EUI)
@@ -1189,7 +1373,7 @@ def join_vectors() -> dict:
         (join_a, None, None, "retry 3, the sensor's last: answered, and the exchange is reported stalled"),
         (join_b, SERVER_PRIVS[0], T0 + 120, "button pressed again: new sensor_pub, next root value"),
         (join_b, None, None, "retry 1 of the new JOIN: same frame, same k_session"),
-        (None, None, None, "SET_NETWORK acknowledged: device PAIRED"),
+        (None, None, None, "first session uplink verified: device PAIRED"),
         (join_c, SERVER_PRIVS[1], T0 + 86400, "re-paired a day later: the root counter continues"),
     ]
     srv = JoinResponder(K_ROOT, DEV_EUI)
@@ -1215,8 +1399,6 @@ PROXY_ID = bytes.fromhex("348518fffe000001")  # EUI-64 from MAC 34:85:18:00:00:0
 def envelope_vectors() -> dict:
     fv = frame_vectors()
     frames = {f["name"]: bytes.fromhex(f["frame"]) for f in fv["frames"]}
-    route = bytes.fromhex(fv["derived"]["k_net_route"])
-    e = fv["inputs"]["epoch"]
     boot = 0x1A2B3C4D
     rx_t = 123_456_789
     nonce = 0x5EED1234
@@ -1231,8 +1413,7 @@ def envelope_vectors() -> dict:
          hello_body(CAP_DOWNLINK, "US915", 918_500_000, 9, 500, 42, counters, 7, "cs_proxy 0.1.0", nonce),
          "proxy answers the HELLO_REQUEST at once"),
         ("server_status", M_SERVER_STATUS, boot, 1,
-         server_status_body(T0, [net_tag(route, x) for x in (e - 1, e, e + 1)], 2),
-         "server switches to the boot and answers HELLO seq 2 with its time and the tags for epochs e-1..e+1"),
+         server_status_body(T0, 2), "server switches to the boot and answers HELLO seq 2 with its time"),
         ("uplink", M_UPLINK, boot, 3, uplink_body(rx_t, -97.5, 6.3, 0, frames["data_confirmed"]),
          "proxy forwards the DATA_CONFIRMED frame heard at -97.5 dBm, SNR 6.3 dB"),
         ("downlink", M_DOWNLINK, boot, 2, downlink_msg_body(rx_t, 1_000_000, frames["downlink_ack"]),
@@ -1331,7 +1512,7 @@ def session_vectors() -> dict:
         return steps[-1]
 
     def status(hello_seq):
-        return env(M_SERVER_STATUS, boot, server.next_seq(), server_status_body(T0, [], hello_seq))
+        return env(M_SERVER_STATUS, boot, server.next_seq(), server_status_body(T0, hello_seq))
 
     def req(b, n):
         return env(M_HELLO_REQUEST, b, 0, hello_request_body(n))
@@ -1418,7 +1599,37 @@ def server_vectors() -> dict:
             "counter16_unwrap": {"modulus": 65536, "sequence": unwrap_cases},
             "retransmission": retransmission_vectors(),
             "dl_ack": dl_ack_vectors(),
-            "join": join_vectors()}
+            "join": join_vectors(),
+            "tag_table": tag_table_vectors()}
+
+
+def tag_table_vectors() -> dict:
+    """The home server's tag table (07 section 3) and the bootstrap fallback (07 section 4, step 4)."""
+    fv = frame_vectors()
+    frames = {f["name"]: bytes.fromhex(f["frame"]) for f in fv["frames"]}
+    sess = keys_from(bytes.fromhex(fv["derived"]["k_session"]), DEV_EUI)
+    e = epoch_of(T0)
+    table = TagTable()
+    table.update("device", sess.k_dev_tag, e, 4)
+    far_sync = seal(sess, T_SYNC, bootstrap_tag(sess.k_dev_tag, 200), 200, bytes([UF_TIME_UNSURE]))
+    late = seal(sess, T_HEARTBEAT, normal_tag(sess.k_dev_tag, e + 2), 5, bytes([0]))
+    cases = [
+        ("heartbeat", frames["heartbeat"], True, "normal tag of epoch e"),
+        ("sync_after_reboot", frames["sync_after_reboot"], True, "fcnt 65: block 1, in the table"),
+        ("sync_far", far_sync, True, "fcnt 200: block 3, past the table; heard locally, so trial decryption"),
+        ("sync_far_federated", far_sync, False, "the same frame heard through federation: not tried"),
+        ("join", frames["join"], True, "JOIN of a device being paired: never in the table, so trial decryption"),
+        ("heartbeat_epoch_e_plus_2", late, True, "normal tag outside e-1..e+1: no fallback for normal frames"),
+    ]
+    out = []
+    for name, frame, local, note in cases:
+        route, devices = identify_route(table, frame, local)
+        out.append({"name": name, "note": note, "local": local, "frame": frame.hex(), "route": route,
+                    "devices": devices})
+    return {"note": "the device of frame-v1.json, paired, at epoch e with last_fcnt 4", "epoch": e,
+            "last_fcnt": 4, "sync_blocks_ahead": SYNC_BLOCKS_AHEAD,
+            "entries": [{"kind": k, "index": i.hex(), "tag": t.hex()} for k, i, t in table.by_device["device"]],
+            "lookups": out}
 
 
 def dl_ack_steps(ctr: UplinkCounter, acks: CommandAcks[str], steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1441,7 +1652,7 @@ def dl_ack_vectors() -> dict:
         {"event": "uplink", "fcnt": 20, "dl_ack": False, "note": "commands queued: SET_HEARTBEAT"},
         {"event": "downlink", "reply_to": 20, "commands": ["SET_HEARTBEAT"]},
         {"event": "uplink", "fcnt": 21, "dl_ack": True, "note": "fresh fcnt above reply_to: settles"},
-        {"event": "downlink", "reply_to": 21, "commands": ["SET_NETWORK"], "note": "network key rotation"},
+        {"event": "downlink", "reply_to": 21, "commands": ["SET_VALUE"], "note": "the user sets a channel value"},
         {"event": "uplink", "fcnt": 18, "dl_ack": True, "via": "relay",
          "note": "neighbor's late copy of an older frame, with DL_ACK for an older downlink: settles nothing"},
         {"event": "uplink", "fcnt": 21, "dl_ack": True,
@@ -1572,14 +1783,25 @@ def verify(d: str) -> int:
     bad += k_sess.hex() != dv["k_session"]
     for name, ks in sets.items():
         bad += ks.k_enc.hex() != dv[name]["k_enc"] or ks.k_dev_tag.hex() != dv[name]["k_dev_tag"]
-    route = derive_net_route(bytes.fromhex(i["k_net"]))
-    bad += route.hex() != dv["k_net_route"]
-    bad += any(net_tag(route, int(ep)).hex() != t for ep, t in dv["net_tag"].items())
-    bad += any(dev_tag(sets["session"].k_dev_tag, int(ep)).hex() != t for ep, t in dv["dev_tag"].items())
+    for c in v["tags"]["normal"] + v["tags"]["bootstrap"]:
+        index = epoch_index(c["epoch"]) if "epoch" in c else block_index(c["fcnt"])
+        seed = tag_seed(sets[c["keys"]].k_dev_tag, index)
+        pub = ed25519_pub(seed)
+        ok = (index.hex(), seed.hex(), pub.hex(), tag_of_pub(pub).hex()) == (c["index"], c["seed"], c["pub"], c["tag"])
+        label = f"epoch {c['epoch']}" if "epoch" in c else f"fcnt {c['fcnt']}"
+        print(f"{'ok  ' if ok else 'FAIL'} tag     {c['keys']} {label}")
+        bad += not ok
+    answered: dict[int, bytes] = {}  # uplink fcnt -> its tag, for the downlinks answering it
     for c in v["frames"]:
-        h, pt = open_frame(sets[c["keys"]], bytes.fromhex(c["frame"]))
+        keys = sets[c["keys"]]
+        h, pt = open_frame(keys, bytes.fromhex(c["frame"]))
+        if is_downlink(h.ftype):
+            want_tag = answered.get(struct.unpack(">I", pt[:4])[0])
+        else:
+            want_tag = uplink_tag(keys, h.ftype, h.fcnt, i["time"])
+            answered[h.fcnt] = h.tag
         ok = (pt.hex() == c["plaintext"] and h.ftype == c["type"] and h.fcnt == c["fcnt"]
-              and h.net_tag.hex() == c["net_tag"] and h.dev_tag.hex() == c["dev_tag"])
+              and h.tag.hex() == c["tag"] and h.tag == want_tag)
         print(f"{'ok  ' if ok else 'FAIL'} frame   {c['name']}")
         bad += not ok
     for c in v["invalid"]:
@@ -1629,6 +1851,24 @@ def verify(d: str) -> int:
             ok = sensor.root_floor == c["root_floor"]
             label = f"{c['event']}, floor {c['root_floor']}"
         print(f"{'ok  ' if ok else 'FAIL'} root floor {label}")
+        bad += not ok
+    sensor = SensorPairing(k_root, eui)
+    for c in p["provisional"]["sequence"]:
+        ev = c["event"]
+        if ev == "join":
+            ok = sensor.join(c["fcnt"], bytes.fromhex(c["sensor_ephemeral_private"])).hex() == c["frame"]
+        elif ev == "downlink":
+            ok = sensor.downlink(bytes.fromhex(c["frame"])) == c["result"]
+        elif ev == "uplink":
+            frame = bytes.fromhex(c["frame"])
+            h, pt = open_frame(keys_from(sensor.k_session, eui), frame)
+            ok = sensor.uplink(h.ftype, h.fcnt, c["unix_time"], pt) == frame
+        else:
+            getattr(sensor, ev)()
+            ok = True
+        ok = ok and (sensor.state, sensor.root_floor, sensor.k_session is not None) == (
+            c["state"], c["root_floor"], c["has_session"])
+        print(f"{'ok  ' if ok else 'FAIL'} provisional {ev} -> {c['state']}")
         bad += not ok
     rf = p["root_floor"]["sequence"]
     ok = rf[0]["frame"] == vframes["join"] and rf[1]["frame"] == vframes["downlink_key_exchange"]
@@ -1722,6 +1962,17 @@ def verify(d: str) -> int:
     ok = jv["sequence"][0]["frame"] == vframes["downlink_key_exchange"]
     print(f"{'ok  ' if ok else 'FAIL'} join starts from the frame-v1 exchange")
     bad += not ok
+    tt = sv["tag_table"]
+    table = TagTable()
+    table.update("device", sets["session"].k_dev_tag, tt["epoch"], tt["last_fcnt"])
+    ok = [{"kind": k, "index": x.hex(), "tag": t.hex()} for k, x, t in table.by_device["device"]] == tt["entries"]
+    print(f"{'ok  ' if ok else 'FAIL'} tag table entries")
+    bad += not ok
+    for c in tt["lookups"]:
+        route, devices = identify_route(table, bytes.fromhex(c["frame"]), c["local"])
+        ok = (route, devices) == (c["route"], c["devices"])
+        print(f"{'ok  ' if ok else 'FAIL'} tag table {c['name']} -> {c['route']}")
+        bad += not ok
     with open(os.path.join(d, "federation-v1.json")) as f:
         fd = json.load(f)
     b = fd["bip340_check"]

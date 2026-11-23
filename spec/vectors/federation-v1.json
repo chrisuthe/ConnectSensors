@@ -17,14 +17,14 @@
     {
       "name": "uplink",
       "event": {
-        "id": "3ab7b398a66f1239e027a16f0fd6851ff33552884e230554b19e4d0128af140c",
+        "id": "ee5efbce49f7dbed6e8d8bdca2274c0a9a85c3b2fe175556b6837216ff67ff58",
         "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
         "created_at": 1795226460,
         "kind": 21110,
         "tags": [
           [
             "h",
-            "61"
+            "b0"
           ],
           [
             "r",
@@ -35,14 +35,14 @@
             "1"
           ]
         ],
-        "content": "ARrFEmHTBtNFImj0AAAAA3h0IedR0PnI7lDaHgC0AQECAwQFBgcI+5v/2AA=",
-        "sig": "c201a47c941b8873521feb6845e6fd548e40788f71e79b3cb13b67f788681e5ac30654ad8f4c292bc14924be70fcd14ef7125b3f16433d2e4620d3354f356d05"
+        "content": "ARrFErCOikNnpbW6AAAAA3h0IecqYPlmVz+c2wC0AQECAwQFBgcI+5v/2AA=",
+        "sig": "f7ac899c8e82b41903e96ba53a046365a83b54c3f368fc70d3fdca7b33b5c247c99dda5674df1fad058229411cf553a20a57b72e7dc6e0a80c7619090e9c8586"
       }
     },
     {
       "name": "downlink_request",
       "event": {
-        "id": "5b6225f7eba719a36de8ac9a623e0d2a60232d6534a0c86f15551a542da25277",
+        "id": "77d376698078266e37a5fe7efe677aae0333675384fe493425644deee795af55",
         "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
         "created_at": 1795226460,
         "kind": 21111,
@@ -52,8 +52,8 @@
             "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa"
           ]
         ],
-        "content": "AQECAwQFBgcIH8UYYdMG00UiaPQAAAACb/1pV+7Zh69Zsi/7cYPS2ik=",
-        "sig": "e28569a21654a80c565d896724c98c46bbb0e14d54ce91f7363b5f54efe616f462f2f4a1e51d161eecca0086dc0ab9cc16cb21ded5eb46769b1fe6c5a612232c"
+        "content": "AQECAwQFBgcIH8UYsI6KQ2eltboAAAACb/1pV+7Zh69ZfTKcf1Ll5L4=",
+        "sig": "e829112b29da7972d4ba540881298a5c4733a94be6274c660930d38a2231cd992ad32a30f75a88e10aa5b8a897e34a706e0ac81a012025b1fb5d8ec9deda31e8"
       }
     },
     {
@@ -76,22 +76,22 @@
     {
       "name": "uplink_multi_reception",
       "event": {
-        "id": "b6829b1d63b48691544bf0a42ab966bb5358ae8e87755aba2db94c4dec58ddfd",
+        "id": "6be7806cfccdc2ca734752058be63345ae0e2b018f4af18f74f92fdd6b284fe2",
         "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
         "created_at": 1795226490,
         "kind": 21110,
         "tags": [
           [
             "h",
-            "61"
+            "b0"
           ],
           [
             "r",
             "US915"
           ]
         ],
-        "content": "AR3FE2HTBtNFImj0AAAABLunAC2UwcORQINXyDv45wGaAxESExQVFhcY/JAAXwAhIiMkJSYnKPwLABQAMTIzNDU2Nzj7Zf+eAQ==",
-        "sig": "7bfd1ee72f9d4d5af728b07c3937e863dc10390e9a299464ad75a77a9eb54f641870620330a7f894b1b59ed346b628c09e3685ccdf5f3b86a7c3d32088b9063f"
+        "content": "AR3FE7COikNnpbW6AAAABLunAC2UwcOWCl+lGFXBmgGaAxESExQVFhcY/JAAXwAhIiMkJSYnKPwLABQAMTIzNDU2Nzj7Zf+eAQ==",
+        "sig": "6fee6d006eae6a1f349d2a97b146ce5763a0745132f1503ad5e62120f173697ee3d3d36d8ff54fc94565423781fcff851821e852053073669ab99299b57fb8cb"
       },
       "note": "HEARTBEAT heard by three of the publisher's proxies, one TS_UNCERTAIN"
     }
@@ -100,14 +100,14 @@
     {
       "name": "bad_signature",
       "event": {
-        "id": "3ab7b398a66f1239e027a16f0fd6851ff33552884e230554b19e4d0128af140c",
+        "id": "ee5efbce49f7dbed6e8d8bdca2274c0a9a85c3b2fe175556b6837216ff67ff58",
         "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
         "created_at": 1795226460,
         "kind": 21110,
         "tags": [
           [
             "h",
-            "61"
+            "b0"
           ],
           [
             "r",
@@ -118,8 +118,8 @@
             "1"
           ]
         ],
-        "content": "ARrFEmHTBtNFImj0AAAAA3h0IedR0PnI7lDaHgC0AQECAwQFBgcI+5v/2AA=",
-        "sig": "c201a47c941b8873521feb6845e6fd548e40788f71e79b3cb13b67f788681e5ac30654ad8f4c292bc14924be70fcd14ef7125b3f16433d2e4620d3354f356d04"
+        "content": "ARrFErCOikNnpbW6AAAAA3h0IecqYPlmVz+c2wC0AQECAwQFBgcI+5v/2AA=",
+        "sig": "f7ac899c8e82b41903e96ba53a046365a83b54c3f368fc70d3fdca7b33b5c247c99dda5674df1fad058229411cf553a20a57b72e7dc6e0a80c7619090e9c8587"
       },
       "reason": "bad signature",
       "rule": "09 section 6.1",
@@ -128,14 +128,14 @@
     {
       "name": "edited_content",
       "event": {
-        "id": "3ab7b398a66f1239e027a16f0fd6851ff33552884e230554b19e4d0128af140c",
+        "id": "ee5efbce49f7dbed6e8d8bdca2274c0a9a85c3b2fe175556b6837216ff67ff58",
         "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
         "created_at": 1795226460,
         "kind": 21110,
         "tags": [
           [
             "h",
-            "61"
+            "b0"
           ],
           [
             "r",
@@ -146,8 +146,8 @@
             "1"
           ]
         ],
-        "content": "ARrFEmHTBtNFImj0AAAAA3h0IedR0PnI7lDaHgC1AQECAwQFBgcI+5v/2AA=",
-        "sig": "c201a47c941b8873521feb6845e6fd548e40788f71e79b3cb13b67f788681e5ac30654ad8f4c292bc14924be70fcd14ef7125b3f16433d2e4620d3354f356d05"
+        "content": "ARrFErCOikNnpbW6AAAAA3h0IecqYPlmVz+c2wC1AQECAwQFBgcI+5v/2AA=",
+        "sig": "f7ac899c8e82b41903e96ba53a046365a83b54c3f368fc70d3fdca7b33b5c247c99dda5674df1fad058229411cf553a20a57b72e7dc6e0a80c7619090e9c8586"
       },
       "reason": "id mismatch",
       "rule": "09 section 6.1",
@@ -156,22 +156,22 @@
     {
       "name": "no_receptions",
       "event": {
-        "id": "decf8ce8355c02824ce912cd5b30a661b9ef72449e851fdbdb90b1a192d7ced9",
+        "id": "d362676895ae8db5ed579207395367bedf7728e85f123003e7dae64a77e601db",
         "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
         "created_at": 1795226460,
         "kind": 21110,
         "tags": [
           [
             "h",
-            "61"
+            "b0"
           ],
           [
             "r",
             "US915"
           ]
         ],
-        "content": "ARrFEmHTBtNFImj0AAAAA3h0IedR0PnI7lDaHgC0AA==",
-        "sig": "212d63f5c5812b4aaa988ab4b37b57da9491dc918ff0b95534a234d9db2bad0ba2c280f63c02cc1cd9db9dd10c578c0b1e4d4d65200394b276ecb49267d2bb99"
+        "content": "ARrFErCOikNnpbW6AAAAA3h0IecqYPlmVz+c2wC0AA==",
+        "sig": "80a04c3bd19260d0b724a694e26947edfe366e7bbd2bd8bd7925c9af8a972bd80376bc3816282cad206a51b59a346b73bc9894f84586e058dca1dae3f4d147a0"
       },
       "reason": "bad n_rx",
       "rule": "09 section 4.1",
