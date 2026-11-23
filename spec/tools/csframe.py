@@ -1201,6 +1201,21 @@ def sync_window(last_fcnt: int, silence_s: int, h_minutes: int) -> tuple[int, in
     return first, first + ahead
 
 
+RTT_UNKNOWN = 65535
+RX2_REQUEST_BY_MS = 2700  # RX2 at 3 000 ms, less the proxy's start window and jitter (09 section 7.6)
+
+
+def federated_request_ok(age_ms: int, rtt_pub_ms: int, rtt_owner_ms: int | None, waited_ms: int) -> bool:
+    """Whether an owner may still request RX2 through a delivered reception (09 section
+    7.6). waited_ms is the time since the delivery arrived. Without either round-trip
+    time it may not; the halves are kept exact by comparing doubled values."""
+    if rtt_owner_ms is None or rtt_pub_ms >= RTT_UNKNOWN:
+        return False
+    t_first2 = 2 * age_ms + rtt_pub_ms + rtt_owner_ms + 2 * 150
+    t_back2 = rtt_owner_ms + rtt_pub_ms + 2 * 300
+    return t_first2 + 2 * waited_ms + t_back2 <= 2 * RX2_REQUEST_BY_MS
+
+
 class MailboxTransmissions:
     """The server's transmission rule, one request per transmission, and result
     handling (09 sections 7.2, 7.3, 7.5), on the server's clock in milliseconds."""
@@ -1234,23 +1249,36 @@ class MailboxTransmissions:
             self.by_ref[ref] = {"tx": match, "at": now_ms, "publisher": publisher, "forwarded": False}
         return match["n"], status
 
-    def request(self, now_ms: int, rx_ref: bytes) -> str:
+    def check_request(self, now_ms: int, rx_ref: bytes) -> str:
+        """request() without its effect: forward, UNKNOWN_RX_REF or ALREADY_ANSWERED."""
         r = self.by_ref.get(rx_ref)
         if r is None or now_ms - r["at"] > RX_REF_MS:
             return "UNKNOWN_RX_REF"
         tx = r["tx"]
         if tx["requested"] and now_ms - tx["forwarded_at"] < FORWARD_TIMEOUT_MS:
             return "ALREADY_ANSWERED"
+        return "forward"
+
+    def request(self, now_ms: int, rx_ref: bytes) -> str:
+        status = self.check_request(now_ms, rx_ref)
+        if status != "forward":
+            return status
+        r = self.by_ref[rx_ref]
+        tx = r["tx"]
         for other in self.by_ref.values():  # a timed-out forward's late result no longer counts
             if other["tx"] is tx:
                 other["forwarded"] = False
         tx["requested"], tx["forwarded_at"], r["forwarded"] = True, now_ms, True
         return "forward"
 
-    def result(self, publisher: str, rx_ref: bytes, code: int) -> str:
-        """accepted or ignored: one result per forward, from its publisher (09 section 7.5)."""
+    def result(self, now_ms: int, publisher: str, rx_ref: bytes, code: int) -> str:
+        """accepted or ignored: one result per forward, from its publisher, before the
+        forward times out (09 section 7.5)."""
         r = self.by_ref.get(rx_ref)
         if r is None or not r["forwarded"] or r["publisher"] != publisher:
+            return "ignored"
+        if now_ms - r["tx"]["forwarded_at"] >= FORWARD_TIMEOUT_MS:
+            r["forwarded"] = False
             return "ignored"
         r["forwarded"] = False
         if code != 0:  # non-SENT releases the transmission
@@ -2066,9 +2094,16 @@ def federation_vectors() -> dict:
         ("request", 10300, "", "a4", 0, "forward", "3.1 s after C's forward it no longer blocks"),
         ("result", 10400, "C", "c1", 0, "ignored", "C's late result after the timeout"),
         ("request", 11000, "", "b1", 0, "UNKNOWN_RX_REF", "an rx_ref older than 5 s"),
+        ("publish", 20000, "D", "d1", 150, "new 4", "D publishes transmission 4"),
+        ("request", 20100, "", "d1", 0, "forward", "the owner's request through D"),
+        ("result", 23100, "D", "d1", 2, "ignored", "D's BUSY 3 s after the forward, which has timed out"),
     ]
     tx_seq = [{"op": op, "t_ms": t, "publisher": p, "rx_ref": r, "age_ms" if op == "publish" else "code": a,
                "expect": x, "note": n} for op, t, p, r, a, x, n in steps]
+    timing = [(180, 48, 30, 5, "the exchange above"), (2000, 100, 100, 0, "exactly at the 2 700 ms limit"),
+              (2001, 100, 100, 0, "1 ms past it"), (1500, 400, 400, 200, "a slow path"),
+              (180, RTT_UNKNOWN, 30, 0, "rtt_pub unknown: never request"),
+              (180, 48, 31, 0, "an odd rtt_owner, so the halves are not whole")]
     windows = [(3, 600, 60), (3, 4 * 3600, 60), (130, 3 * 86400, 60), (130, 3 * 86400, 240), (1, 86400, 1),
                (64, 0, 1440), (65, 0, 1440)]
     return {
@@ -2094,6 +2129,8 @@ def federation_vectors() -> dict:
                           "sequence": tx_seq},
         "sync_window": [{"last_fcnt": f, "silence_s": s, "h_minutes": h, "blocks": list(sync_window(f, s, h))}
                         for f, s, h in windows],
+        "request_timing": [{"age_ms": a, "rtt_pub_ms": p, "rtt_owner_ms": o, "waited_ms": w,
+                            "request": federated_request_ok(a, p, o, w), "note": n} for a, p, o, w, n in timing],
     }
 
 
@@ -2189,10 +2226,12 @@ def verify_federation(fd: dict, sess: DeviceKeys) -> int:
         elif s["op"] == "request":
             ok = ok and mt.request(s["t_ms"], ref) == s["expect"]
         else:
-            ok = ok and mt.result(s["publisher"], ref, s["code"]) == s["expect"]
+            ok = ok and mt.result(s["t_ms"], s["publisher"], ref, s["code"]) == s["expect"]
     report(ok, "transmissions")
     report(all(list(sync_window(c["last_fcnt"], c["silence_s"], c["h_minutes"])) == c["blocks"]
                for c in fd["sync_window"]), "sync windows")
+    report(all(federated_request_ok(c["age_ms"], c["rtt_pub_ms"], c["rtt_owner_ms"], c["waited_ms"]) == c["request"]
+               for c in fd["request_timing"]), "request timing")
     return bad
 
 
