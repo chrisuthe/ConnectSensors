@@ -302,6 +302,8 @@ SYNC_REG_S = 86400           # SYNC registrations, renewed each epoch while in t
 RENEW_BEFORE_S = cs.EPOCH_SECONDS
 FED_BOOTSTRAP_PER_MINUTE = 50  # federated SYNC limiter (07 section 4.4)
 QUOTA_HALF_LIFE_S = 3600
+TX_RESULT_WAIT_S = 5         # RX2 at 3 s, plus airtime and margin
+RADIO_ERROR = 6              # 05 section 5.5
 
 
 def error_name(code: int) -> str:
@@ -371,9 +373,18 @@ class MailboxLink:
         await self.send([cs.MB_PING])
 
     async def recv(self) -> list:
-        """The next server message other than pong_s and ping_s, which are handled here."""
+        """The next server message other than pong_s and ping_s, which are handled here.
+        Messages of unknown type are skipped (09 section 12.5)."""
         while True:
-            m = cs.mb_decode(await self.ws.recv())
+            data = await self.ws.recv()
+            if isinstance(data, bytes) and data[:1] and data[0] >> 5 == 4:  # an array: look at its type first
+                try:
+                    v = cs.uncbor(data)
+                except ValueError:
+                    v = None
+                if isinstance(v, list) and v and type(v[0]) is int and v[0] not in cs.MB_SCHEMA:
+                    continue
+            m = cs.mb_decode(data)
             if m[0] == cs.MB_PING_S:
                 await self.send([cs.MB_PONG, m[1]])
             elif m[0] == cs.MB_PONG_S:
@@ -429,6 +440,7 @@ class Federation:
         self.publish_pending: dict[bytes, dict] = {}  # frame key -> transmission being collected
         self.recent: dict[bytes, dict] = {}  # frame key -> last published transmission
         self.owner_pending: dict[bytes, dict] = {}  # frame key -> transmission an answer is being chosen for
+        self.frequency: int | None = None
         self.last_publisher: dict[str, bytes] = {}  # device -> publisher of its last request
         self.fed_bootstrap: list[float] = []
         self.fed_downlinks: list[float] = []
@@ -613,7 +625,10 @@ class Federation:
     async def choose(self, key: bytes) -> None:
         """Pick one reception and request through its server (09 sections 7.6, 9, 10)."""
         pend = self.owner_pending.get(key)
-        if pend is None or pend["local"] or pend["requested"] is not None:
+        if pend is None or pend["requested"] is not None:
+            return
+        if pend["local"]:
+            self.owner_pending.pop(key, None)
             return
         t = time.monotonic()
         ok = [c for c in pend["cands"] if c["server"].up and (c["server"], c["rx_ref"]) not in pend["tried"]
@@ -641,8 +656,12 @@ class Federation:
             f"{c['publisher'].hex()} rx_ref {c['rx_ref'].hex()} (age {c['age']} ms, rtt_pub {c['rtt_pub']} ms, "
             f"rtt_owner {s.link.rtt_ms} ms, {pend['answer']['what']})")
         timeout = (cs.FORWARD_TIMEOUT_MS + s.link.rtt_ms) / 1000  # 09 section 7.5
-        asyncio.get_running_loop().call_later(timeout, lambda: self.owner_pending.get(key) is pend
-                                              and self.owner_pending.pop(key, None))
+
+        def expire() -> None:
+            s.pending.pop(seq, None)
+            if self.owner_pending.get(key) is pend:
+                self.owner_pending.pop(key, None)
+        asyncio.get_running_loop().call_later(timeout, expire)
 
     async def request_failed(self, key: bytes, rx_ref: bytes, why: str) -> None:
         pend = self.owner_pending.get(key)
@@ -679,9 +698,12 @@ class Federation:
             log(f"{p.proxy_id.hex()}: JOIN not published (09 section 8)")
             return
         hello = p.hello
-        if hello is None or hello["region"] != self.args.region or \
+        if hello is not None and self.frequency is None:
+            self.frequency = hello["frequency_hz"]  # no configured channel: the first proxy's is the network's
+        if hello is None or hello["region"] != self.args.region or hello["frequency_hz"] != self.frequency or \
                 (hello["sf"], hello["bw_khz"] * 1000) != cs.REGIONS.get(self.args.region):
-            log(f"{p.proxy_id.hex()}: not published: proxy profile unknown or not {self.args.region}")
+            log(f"{p.proxy_id.hex()}: not published: proxy profile unknown or not the network's "
+                f"({self.args.region}, {self.frequency} Hz)")
             return
         t = time.monotonic()
         key = cs.frame_key(frame)
@@ -783,6 +805,10 @@ class Federation:
         amount, at = s.quota.get(requester, (0.0, t))
         s.quota[requester] = (amount * 0.5 ** ((t - at) / QUOTA_HALF_LIFE_S) + airtime, t)
         self.dl_map[(iss.pid, seq)] = (s, rx_ref)
+        # Exactly one result per forward (09 section 7.5), even if the proxy never
+        # reports: by then the server's forward timeout has passed, so it releases nothing.
+        asyncio.get_running_loop().call_later(
+            TX_RESULT_WAIT_S, lambda: asyncio.ensure_future(self.tx_result(iss.pid, seq, RADIO_ERROR, 0)))
         log(f"mailbox {s.url}: forward {rx_ref.hex()} from {requester.hex()}: {iss.pid.hex()} -> DOWNLINK seq {seq} "
             f"in rx2 for a neighbor's sensor")
 

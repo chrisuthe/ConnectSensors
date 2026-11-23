@@ -13,7 +13,8 @@ reference module, [`spec/tools/csframe.py`](../spec/tools/csframe.py).
 
 ## Run
 
-From the checkout (Python 3.12 or later, with `cryptography` and `websockets`):
+From the checkout (Python 3.12 or later, with `cryptography` and `websockets`;
+installed as a package it needs 3.13, as `connectsensors` does):
 
 ```sh
 python3 mailbox/cs_mailbox.py --host mailbox.example \
@@ -49,8 +50,9 @@ Homes connect with `devtools/cs_testserver.py --mailbox wss://mailbox.example:84
 | `--admit-per-hour N` | 20 | Without `--members`: new client keys admitted per source address per hour (mode 4, 09 section 5.4). |
 | `--reg-burst`, `--reg-per-hour` | 2048, 512 | Registration entries per owner key: an initial burst, then a steady rate. |
 | `--reg-max-live` | 4096 | Live registrations per owner key. |
-| `--publish-rate`, `--publish-burst` | 5, 20 | Publishes per second per connection. |
-| `--request-rate` | 10 | Requests per second per connection. |
+| `--publish-rate`, `--publish-burst` | 5, 20 | Publishes per second per client key. |
+| `--request-rate` | 10 | Requests per second per client key. |
+| `--message-rate` | 50 | Signed messages of any kind per second per client key, burst twice that. |
 
 The limit defaults are mode 4's (09 section 11). An entry or message over a limit
 gets `RATE_LIMITED` and is not acted on.
@@ -89,7 +91,12 @@ connection. Nothing survives a restart: the server then picks a new
 
 - A key may connect more than once. Frames for it are delivered on every
   connection, and a forwarded request goes to the connection that published the
-  `rx_ref`.
+  `rx_ref`. Its limits are shared by all its connections.
+- Besides 09's limits, each key may send `--message-rate` signed messages a
+  second (default 50, burst 100); beyond that a message gets `RATE_LIMITED`
+  before its signature is checked. A client that leaves 256 server messages
+  unread is closed with code 1008.
+- New keys are counted per source address, and per /64 for IPv6.
 - A request is checked against the request rate whether or not it passes the
   earlier checks, so failed requests count. `RATE_LIMITED` is still reported only
   for a request that passed checks 1 to 4 (09 section 7.3).

@@ -191,14 +191,17 @@ async def routing(url: str) -> None:
     now = int(time.time())
     e = cs.epoch_of(now)
     good = entry(owner)
+    s_plus_l = (int.from_bytes(good[1][32:], "little") + cs._EL).to_bytes(32, "little")
+    # pub the neutral element, R = B and S = 1: a cofactorless lax verifier accepts it for any message
+    small = [(1).to_bytes(32, "little"), cs.ed_pub_point_b() + (1).to_bytes(32, "little"), now + 60]
     await owner.send([cs.MB_REGISTER, [good, entry(owner, now + cs.REG_MAX_AHEAD + 5), entry(owner, now - 1),
-                                       [good[0], good[1][:32] + bytes(32), good[2]],
+                                       [good[0], good[1][:32] + s_plus_l, good[2]],
                                        cs.reg_entry(secrets.token_bytes(32), owner.server_id, other.pub, now + 60),
-                                       [bytes(32), bytes(64), now + 60]]])
+                                       small]])
     reg = await expect(owner, cs.MB_REGISTERED)
     check(reg is not None and reg[2] == [0, E["BAD_EXPIRES"], E["BAD_EXPIRES"], E["BAD_PROOF"], E["BAD_PROOF"],
                                          E["BAD_PROOF"]],
-          "register statuses: OK, BAD_EXPIRES x2, BAD_PROOF x3 (bad S, other owner, small-order pub)"
+          "register statuses: OK, BAD_EXPIRES x2, BAD_PROOF x3 (S + L, other owner, small-order pub)"
           + (f" {reg[2]}" if reg else ""))
     await expect(pub, cs.MB_PING_S, 0.5)  # answers it inside recv
 
@@ -233,6 +236,10 @@ async def routing(url: str) -> None:
         check(err == [cs.MB_ERROR, seq, E[code]], f"request with {what}: {code}")
 
     # The forward timeout: a publisher that never answers stops blocking after 3 s.
+    # A fresh transmission, so its rx_refs are well inside their 5 s at the end.
+    r1, r2 = secrets.token_bytes(8), secrets.token_bytes(8)
+    await pub.send([cs.MB_PUBLISH, frame(15), [rx(r1), rx(r2)]])
+    await expect(owner, cs.MB_DELIVER)
     await owner.send([cs.MB_REQUEST, r1, dl])
     check((await expect(pub, cs.MB_FORWARD) or [0, b""])[1] == r1, "the request is forwarded")
     seq = await owner.send([cs.MB_REQUEST, r2, dl])
@@ -240,7 +247,7 @@ async def routing(url: str) -> None:
           "a second request: ALREADY_ANSWERED")
     await asyncio.sleep(cs.FORWARD_TIMEOUT_MS / 1000 + 0.1)
     await pub.send([cs.MB_RESULT, r1, 2, 0])
-    check(await expect(owner, cs.MB_RESULT_S, 0.3) is None, "a result after the forward timed out is ignored")
+    check(await expect(owner, cs.MB_RESULT_S, 0.2) is None, "a result after the forward timed out is ignored")
     await owner.send([cs.MB_REQUEST, r2, dl])
     check((await expect(pub, cs.MB_FORWARD) or [0, b""])[1] == r2, "after 3 s the transmission is no longer blocked")
 
@@ -310,8 +317,38 @@ async def rate_limits(url: str) -> None:
     errs = []
     while (m := await expect(owner, cs.MB_ERROR, 0.3)) is not None:
         errs.append(m)
-    check(errs and all(m[2] == E["RATE_LIMITED"] for m in errs) and min(m[1] for m in errs) > 10 + 1,
-          f"requests past 10 a second: RATE_LIMITED (seqs {[m[1] for m in errs]})")
+    forwards = 0
+    while await expect(pub, cs.MB_FORWARD, 0.3) is not None:
+        forwards += 1
+    check(errs and all(m[2] == E["RATE_LIMITED"] for m in errs) and 10 <= forwards <= 11
+          and forwards + len(errs) == 13,
+          f"requests past 10 a second: RATE_LIMITED ({forwards} forwarded, {len(errs)} refused)")
+
+
+async def message_rate(url: str) -> None:
+    lk = await link(url)
+    for _ in range(130):  # the default 50 a second, burst 100
+        await lk.send([cs.MB_PING])
+    refused = []
+    while (m := await expect(lk, cs.MB_ERROR, 0.3)) is not None:
+        refused.append(m)
+    check(refused and all(m[2] == E["RATE_LIMITED"] for m in refused) and min(m[1] for m in refused) > 100,
+          f"signed messages past --message-rate, after the burst of 100: RATE_LIMITED ({len(refused)} of 130)")
+    await lk.send([cs.MB_PING])
+    check(lk.ws.state.name == "OPEN", "... not fatal: the seq goes on")
+
+
+async def client_skips_unknown() -> None:
+    class FakeWS:
+        def __init__(self, msgs: list[bytes]):
+            self.msgs = msgs
+
+        async def recv(self) -> bytes:
+            return self.msgs.pop(0)
+
+    lk = ts.MailboxLink("ws://x/", bytes(32), insecure=True)
+    lk.ws = FakeWS([cs.cbor([50, 1, b"future"]), cs.cbor([cs.MB_RESULT_S, bytes(8), 0, 0])])
+    check(await lk.recv() == [cs.MB_RESULT_S, bytes(8), 0, 0], "the client skips a server message of unknown type")
 
 
 async def hosts(port: int, port_one_host: int) -> None:
@@ -388,6 +425,8 @@ def main() -> int:
         procs.append(p2)
         asyncio.run(hosts(port, port2))
         asyncio.run(rate_limits(url))
+        asyncio.run(message_rate(url))
+        asyncio.run(client_skips_unknown())
         asyncio.run(routing(f"ws://127.0.0.1:{port2}/"))
 
         cert, key = self_signed(work)

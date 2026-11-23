@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import os
 import secrets
 import signal
@@ -52,6 +53,8 @@ from websockets.exceptions import ConnectionClosed  # noqa: E402
 SUBPROTOCOL = "cs-mailbox.1"
 PING_INTERVAL_S = 30
 SWEEP_INTERVAL_S = 10
+OUT_QUEUE = 256           # server messages waiting for a client; a client that falls this far behind is closed
+KEY_MEMORY_S = 86400      # an admitted key is remembered this long after its last connection
 CODE = {name: i for i, name in enumerate(cs.MB_ERRORS)}
 
 
@@ -86,23 +89,41 @@ class Fatal(Exception):
         self.code, self.seq = code, seq
 
 
+class KeyState:
+    """Limits per client key, shared by all its connections (09 section 11)."""
+
+    def __init__(self, args: argparse.Namespace):
+        self.messages = Bucket(args.message_rate, 2 * args.message_rate)
+        self.publish = Bucket(args.publish_rate, args.publish_burst)
+        self.request = Bucket(args.request_rate, args.request_rate)
+        self.register = Bucket(args.reg_per_hour / 3600, args.reg_burst)
+        self.seen = time.monotonic()
+
+
 class Client:
     """One authenticated connection."""
 
-    def __init__(self, ws: ServerConnection, nonce_s: bytes, pub: bytes, pseud: bytes):
-        self.ws, self.nonce_s, self.pub, self.pseud = ws, nonce_s, pub, pseud
+    def __init__(self, ws: ServerConnection, nonce_s: bytes, pub: bytes, pseud: bytes, key: KeyState):
+        self.ws, self.nonce_s, self.pub, self.pseud, self.key = ws, nonce_s, pub, pseud, key
         self.name = pseud.hex()
         self.seq = 0  # last accepted seq (09 section 12.4)
         self.rtt_ms = cs.RTT_UNKNOWN
         self.ping: tuple[int, int] | None = None  # (nonce, sent at ms)
-        self.out: asyncio.Queue[bytes] = asyncio.Queue()
-        self.publish_bucket: Bucket | None = None
-        self.request_bucket: Bucket | None = None
+        self.out: asyncio.Queue[bytes] = asyncio.Queue(OUT_QUEUE)
+        self.closing = False
 
     def post(self, msg: list[Any]) -> None:
         """Queue a server message; a writer task sends them in order, so a slow
-        client never holds up another's handler."""
-        self.out.put_nowait(cs.cbor(msg))
+        client never holds up another's handler, and one that stops reading is
+        closed rather than buffered without end."""
+        if self.closing:
+            return
+        try:
+            self.out.put_nowait(cs.cbor(msg))
+        except asyncio.QueueFull:
+            self.closing = True
+            log(f"{self.name}: not reading, closing")
+            asyncio.ensure_future(self.ws.close(1008, "not reading"))
 
 
 class Mailbox:
@@ -117,15 +138,14 @@ class Mailbox:
         # tag -> owner pub -> expires (Unix seconds)
         self.regs: dict[bytes, dict[bytes, int]] = {}
         self.live: dict[bytes, int] = {}  # owner pub -> live registrations
-        self.reg_buckets: dict[bytes, Bucket] = {}
         self.conns: dict[bytes, set[Client]] = {}
         self.tx = cs.MailboxTransmissions()
         # rx_ref -> owner pubs it was delivered to, when, the frame's tag, and the
         # publishing connection (09 section 7.3, checks 1 and 2)
         self.refs: dict[bytes, dict[str, Any]] = {}
         self.requested_by: dict[bytes, bytes] = {}  # rx_ref -> requesting owner pub
-        self.known_keys: set[bytes] = set()
-        self.admissions: dict[str, list[float]] = {}  # source address -> admission times
+        self.keys: dict[bytes, KeyState] = {}  # admitted client keys
+        self.admissions: dict[str, list[float]] = {}  # source network -> admission times
 
     # ---------------------------------------------------------------- connection
 
@@ -144,7 +164,7 @@ class Mailbox:
                     raise Fatal("MALFORMED")
                 await self.message(client, data)
         except Fatal as f:
-            await self.fatal(ws, f, client.name if client else peer)
+            await self.fatal(ws, f, client.name if client else peer, client)
         except ConnectionClosed:
             pass
         finally:
@@ -154,14 +174,20 @@ class Mailbox:
                 self.conns.get(client.pub, set()).discard(client)
                 if not self.conns.get(client.pub):
                     self.conns.pop(client.pub, None)
+                client.key.seen = time.monotonic()
                 log(f"{client.name} disconnected")
 
-    async def fatal(self, ws: ServerConnection, f: Fatal, who: str) -> None:
+    async def fatal(self, ws: ServerConnection, f: Fatal, who: str, c: Client | None) -> None:
         log(f"{who}: {f.code}, closing")
+        err = [cs.MB_ERROR, f.seq, CODE[f.code]]
         try:
-            await ws.send(cs.cbor([cs.MB_ERROR, f.seq, CODE[f.code]]))
+            if c is None:
+                await ws.send(cs.cbor(err))
+            else:  # behind what is already queued, so replies keep their order
+                c.post(err)
+                await asyncio.wait_for(c.out.join(), 2)
             await ws.close(4000 + CODE[f.code], f.code)
-        except ConnectionClosed:
+        except (ConnectionClosed, TimeoutError):
             pass
 
     async def writer(self, c: Client) -> None:
@@ -171,6 +197,8 @@ class Mailbox:
                 await c.ws.send(data)
             except ConnectionClosed:
                 return
+            finally:
+                c.out.task_done()
 
     async def pinger(self, c: Client) -> None:
         """ping_s at once, so rtt_pub is known from the start, then every 30 s
@@ -217,13 +245,12 @@ class Mailbox:
         client_pub = auth[1]
         if cs.ed_verify_error(client_pub, cs.auth_msg(self.server_id, nonce_c, nonce_s, client_pub), auth[2]):
             raise Fatal("BAD_SIGNATURE")
-        if not self.admit(client_pub, ws.remote_address[0] if ws.remote_address else ""):
+        key = self.admit(client_pub, ws.remote_address[0] if ws.remote_address else "")
+        if key is None:
             raise Fatal("NOT_PERMITTED")
         pseud = cs.pseudonym(self.server_id, client_pub)
         await ws.send(cs.cbor([cs.MB_WELCOME, pseud]))
-        c = Client(ws, nonce_s, client_pub, pseud)
-        c.publish_bucket = Bucket(self.args.publish_rate, self.args.publish_burst)
-        c.request_bucket = Bucket(self.args.request_rate, self.args.request_rate)
+        c = Client(ws, nonce_s, client_pub, pseud, key)
         log(f"{c.name} welcome from {peer} (host {host})")
         return c
 
@@ -238,21 +265,23 @@ class Mailbox:
             asked = asked.split(":")[0]
         return asked if asked in self.hosts else self.hosts[0]
 
-    def admit(self, pub: bytes, addr: str) -> bool:
+    def admit(self, pub: bytes, addr: str) -> KeyState | None:
         """Admission (09 sections 5.4 and 11): a member list, or open admission with
-        new keys rate-limited per source address."""
+        new keys rate-limited per source network. Returns the key's state, or None."""
+        if pub in self.keys:
+            return self.keys[pub]
         if self.members is not None:
-            return pub in self.members
-        if pub in self.known_keys:
-            return True
-        t = time.monotonic()
-        recent = [x for x in self.admissions.get(addr, []) if t - x < 3600]
-        if len(recent) >= self.args.admit_per_hour:
-            return False
-        recent.append(t)
-        self.admissions[addr] = recent
-        self.known_keys.add(pub)
-        return True
+            if pub not in self.members:
+                return None
+        else:
+            net = source_network(addr)
+            t = time.monotonic()
+            recent = [x for x in self.admissions.get(net, []) if t - x < 3600]
+            if len(recent) >= self.args.admit_per_hour:
+                return None
+            self.admissions[net] = recent + [t]
+        self.keys[pub] = KeyState(self.args)
+        return self.keys[pub]
 
     # ---------------------------------------------------------------- messages
 
@@ -263,6 +292,12 @@ class Mailbox:
             raise Fatal("MALFORMED") from None
         if m[0] not in cs.MB_SIGNED:  # a handshake or server message type from a client
             raise Fatal("MALFORMED")
+        if not c.key.messages.take():
+            # Refused before the (costly) signature check; the seq still has to follow.
+            if m[1] != c.seq + 1:
+                raise Fatal("BAD_SEQUENCE", m[1])
+            c.seq = m[1]
+            return self.error(c, m[1], "RATE_LIMITED")
         try:
             m = cs.open_signed(data, c.pub, self.server_id, c.nonce_s, c.seq + 1)
         except ValueError as ex:
@@ -288,15 +323,18 @@ class Mailbox:
         """09 section 5.2, one status per entry."""
         now = int(time.time())
         self.sweep_regs(now)
-        bucket = self.reg_buckets.setdefault(c.pub, Bucket(self.args.reg_per_hour / 3600, self.args.reg_burst))
         statuses = []
         for entry in m[2]:
-            status = cs.check_entry(entry, self.server_id, c.pub, now)
             tag = cs.tag_of_pub(entry[0])
             replaces = c.pub in self.regs.get(tag, {})
-            if status == "OK" and (not bucket.take()
-                                   or (not replaces and self.live.get(c.pub, 0) >= self.args.reg_max_live)):
+            # Every entry is charged before its proof is checked, so failing proofs
+            # cannot buy unlimited verification time.
+            if not c.key.register.take():
                 status = "RATE_LIMITED"
+            else:
+                status = cs.check_entry(entry, self.server_id, c.pub, now)
+                if status == "OK" and not replaces and self.live.get(c.pub, 0) >= self.args.reg_max_live:
+                    status = "RATE_LIMITED"
             if status == "OK":
                 self.regs.setdefault(tag, {})[c.pub] = entry[2]
                 if not replaces:
@@ -344,8 +382,7 @@ class Mailbox:
         types, frames failing the keyless checks and repeated rx_refs within the
         message."""
         _, seq, frame, receptions, _ = m
-        assert c.publish_bucket is not None
-        if not c.publish_bucket.take():
+        if not c.key.publish.take():
             log(f"{c.name} publish refused: RATE_LIMITED")
             return self.error(c, seq, "RATE_LIMITED")
         t = now_ms()
@@ -359,13 +396,14 @@ class Mailbox:
             return
         tag = frame[2:10]
         owners = self.live_owners(tag, int(time.time()))
-        for r in receptions:
-            self.refs[r[0]] = {"owners": set(owners), "at": t, "tag": tag, "publisher": c}
-        sent = 0
+        sent, reached = 0, set()
         for owner in owners:
             for oc in self.conns.get(owner, ()):
                 oc.post([cs.MB_DELIVER, frame, receptions, c.pseud, c.rtt_ms])
                 sent += 1
+                reached.add(owner)
+        for r in receptions:
+            self.refs[r[0]] = {"owners": reached, "at": t, "tag": tag, "publisher": c}
         log(f"{c.name} publish tag {tag.hex()} fcnt {int.from_bytes(frame[10:14], 'big')}, "
             f"{len(receptions)} receptions: {status} transmission {n}, delivered to {sent}")
 
@@ -377,8 +415,7 @@ class Mailbox:
     def request(self, c: Client, m: list[Any]) -> None:
         """09 section 7.3: the checks in order, then forward."""
         _, seq, rx_ref, downlink, _ = m
-        assert c.request_bucket is not None
-        within_rate = c.request_bucket.take()
+        within_rate = c.key.request.take()
         t = now_ms()
         self.sweep_refs(t)
         ref = self.refs.get(rx_ref)
@@ -399,7 +436,8 @@ class Mailbox:
         if status != "forward":
             log(f"{c.name} request {rx_ref.hex()}: {status}")
             return self.error(c, seq, status)
-        assert self.tx.request(t, rx_ref) == "forward"
+        forwarded = self.tx.request(t, rx_ref)
+        assert forwarded == "forward"
         self.requested_by[rx_ref] = c.pub
         ref["publisher"].post([cs.MB_FORWARD, rx_ref, downlink, c.pseud])
         log(f"{c.name} request {rx_ref.hex()}: forwarded to {ref['publisher'].name}")
@@ -424,6 +462,23 @@ class Mailbox:
             await asyncio.sleep(SWEEP_INTERVAL_S)
             self.sweep_regs(int(time.time()))
             self.sweep_refs(now_ms())
+            t = time.monotonic()
+            self.admissions = {n: v for n, v in self.admissions.items() if t - v[-1] < 3600}
+            self.keys = {k: v for k, v in self.keys.items() if k in self.conns or t - v.seen < KEY_MEMORY_S}
+
+
+def source_network(addr: str) -> str:
+    """What admission counts by: the address, or its /64 for IPv6, where one
+    host commonly holds a whole /64."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return addr
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
 
 
 def load_members(path: str) -> set[bytes]:
@@ -472,9 +527,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     lim.add_argument("--reg-burst", type=int, default=2048, help="registrations per owner key, burst")
     lim.add_argument("--reg-per-hour", type=int, default=512, help="registrations per owner key, steady rate")
     lim.add_argument("--reg-max-live", type=int, default=4096, help="live registrations per owner key")
-    lim.add_argument("--publish-rate", type=float, default=5, help="publishes per second per connection")
-    lim.add_argument("--publish-burst", type=int, default=20, help="publish burst per connection")
-    lim.add_argument("--request-rate", type=float, default=10, help="requests per second per connection")
+    lim.add_argument("--publish-rate", type=float, default=5, help="publishes per second per client key")
+    lim.add_argument("--publish-burst", type=int, default=20, help="publish burst per client key")
+    lim.add_argument("--request-rate", type=float, default=10, help="requests per second per client key")
+    lim.add_argument("--message-rate", type=float, default=50,
+                     help="signed messages of any kind per second per client key (burst twice that)")
     lim.add_argument("--admit-per-hour", type=int, default=20,
                      help="new client keys admitted per source address per hour, without --members")
     ap.add_argument("--ping-interval", type=float, default=PING_INTERVAL_S, help=argparse.SUPPRESS)
