@@ -269,6 +269,7 @@ class Mailbox:
         """Admission (09 sections 5.4 and 11): a member list, or open admission with
         new keys rate-limited per source network. Returns the key's state, or None."""
         if pub in self.keys:
+            self.keys[pub].seen = time.monotonic()  # so the sweeper keeps it through the handshake
             return self.keys[pub]
         if self.members is not None:
             if pub not in self.members:

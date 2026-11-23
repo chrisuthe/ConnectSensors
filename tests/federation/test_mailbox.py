@@ -334,8 +334,13 @@ async def message_rate(url: str) -> None:
         refused.append(m)
     check(refused and all(m[2] == E["RATE_LIMITED"] for m in refused) and min(m[1] for m in refused) > 100,
           f"signed messages past --message-rate, after the burst of 100: RATE_LIMITED ({len(refused)} of 130)")
-    await lk.send([cs.MB_PING])
-    check(lk.ws.state.name == "OPEN", "... not fatal: the seq goes on")
+    await asyncio.sleep(1)  # refill
+    seq = await lk.send([cs.MB_PING])
+    pong = None
+    async with asyncio.timeout(2):
+        while pong is None or pong[0] != cs.MB_PONG_S:
+            pong = cs.mb_decode(await lk.ws.recv())  # raw: MailboxLink.recv() consumes pong_s
+    check(pong == [cs.MB_PONG_S, seq], "... not fatal: the seq goes on and the next ping is answered")
 
 
 async def client_skips_unknown() -> None:

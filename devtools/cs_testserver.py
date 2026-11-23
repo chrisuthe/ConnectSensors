@@ -493,6 +493,7 @@ class Federation:
         s.up = True
         s.registered.clear()  # every live tag again on each connection; cheap, and covers a new generation
         s.issued.clear()
+        s.pending.clear()  # seq starts again at 1
         await s.link.ping()
         await self.register(s)
 
@@ -580,6 +581,9 @@ class Federation:
             what = s.pending.pop(m[1], None)
             name = error_name(m[2])
             log(f"mailbox {s.url}: error {name} for seq {m[1]}" + (f" ({what[0]})" if what else ""))
+            if what and what[0] == "register":  # refused whole: none of its tags is registered
+                for t, _ in what[1]:
+                    s.registered.pop(t, None)
             if what and what[0] == "request":
                 await self.request_failed(what[1], what[2], name)
         # other types: ignored (09 section 12.5)
@@ -657,8 +661,11 @@ class Federation:
             f"rtt_owner {s.link.rtt_ms} ms, {pend['answer']['what']})")
         timeout = (cs.FORWARD_TIMEOUT_MS + s.link.rtt_ms) / 1000  # 09 section 7.5
 
+        mine = s.pending[seq]
+
         def expire() -> None:
-            s.pending.pop(seq, None)
+            if s.pending.get(seq) is mine:
+                s.pending.pop(seq)
             if self.owner_pending.get(key) is pend:
                 self.owner_pending.pop(key, None)
         asyncio.get_running_loop().call_later(timeout, expire)
@@ -808,7 +815,7 @@ class Federation:
         # Exactly one result per forward (09 section 7.5), even if the proxy never
         # reports: by then the server's forward timeout has passed, so it releases nothing.
         asyncio.get_running_loop().call_later(
-            TX_RESULT_WAIT_S, lambda: asyncio.ensure_future(self.tx_result(iss.pid, seq, RADIO_ERROR, 0)))
+            TX_RESULT_WAIT_S, lambda: asyncio.ensure_future(self.tx_result(iss.pid, seq, RADIO_ERROR, 0, rx_ref)))
         log(f"mailbox {s.url}: forward {rx_ref.hex()} from {requester.hex()}: {iss.pid.hex()} -> DOWNLINK seq {seq} "
             f"in rx2 for a neighbor's sensor")
 
@@ -830,10 +837,12 @@ class Federation:
                 return "requester's share"
         return ""
 
-    async def tx_result(self, pid: bytes, seq: int, result: int, offset_us: int) -> None:
-        hit = self.dl_map.pop((pid, seq), None)
-        if hit is None:
+    async def tx_result(self, pid: bytes, seq: int, result: int, offset_us: int, only: bytes | None = None) -> None:
+        """Pass a TX_RESULT on as the result; with only, just for that rx_ref."""
+        hit = self.dl_map.get((pid, seq))
+        if hit is None or only is not None and hit[1] != only:
             return
+        del self.dl_map[(pid, seq)]
         s, rx_ref = hit
         if s.up:
             await s.link.send([cs.MB_RESULT, rx_ref, result, offset_us])
