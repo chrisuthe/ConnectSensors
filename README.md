@@ -39,7 +39,7 @@ Early development: the spec is a draft and nothing is ready for real deployments
 | [`python/`](python/) | The `connectsensors` Python package: the reference implementation, packaged for network servers such as the Home Assistant integration |
 | [`devtools/cs_testserver.py`](devtools/cs_testserver.py) | Development server for testing proxies and pairing sensors |
 | [`examples/`](examples/) | ESPHome configurations for a proxy, sensors (mains and deep sleep) and a test transmitter |
-| [`tests/`](tests/) | Unit tests for the proxy and sensor cores and a smoke test for the test server |
+| [`tests/`](tests/) | Unit tests for the proxy and sensor cores, a smoke test for the test server, and the proxy engine run as a host program against it |
 
 ## Running the tests
 
@@ -49,8 +49,12 @@ python3 spec/tools/csframe.py verify spec/vectors   # spec test vectors
 make -C tests/proxy_core                            # proxy core, C++
 make -C tests/sensor_core                           # sensor core, C++
 python3 tests/devtools/test_testserver.py           # test server
+make -C tests/host_proxy                            # proxy engine on the host against the test server
 tests/package/check.sh                              # Python package build and smoke test (needs uv)
 ```
+
+CI runs each of these as its own job in [`.github/workflows/tests.yml`](.github/workflows/tests.yml),
+along with ESPHome config validation and compiles against ESPHome `dev`.
 
 ## Trying a proxy
 
