@@ -37,9 +37,10 @@ Early development: the spec is a draft and nothing is ready for real deployments
 | [`components/cs_sensor/`](components/cs_sensor/) | ESPHome external component: the sensor, on the host-tested protocol core (`sensor_core`) |
 | [`components/ssd1306_paced/`](components/ssd1306_paced/) | ESPHome external component: an SSD1306 display driver that never blocks the main loop for a whole frame |
 | [`python/`](python/) | The `connectsensors` Python package: the reference implementation, packaged for network servers such as the Home Assistant integration |
-| [`devtools/cs_testserver.py`](devtools/cs_testserver.py) | Development server for testing proxies and pairing sensors |
+| [`devtools/cs_testserver.py`](devtools/cs_testserver.py) | Development server for testing proxies and pairing sensors, and a federation home (`--mailbox`) |
+| [`mailbox/`](mailbox/) | `cs-mailbox`, the reference mailbox server for federation (spec 09) |
 | [`examples/`](examples/) | ESPHome configurations for a proxy, sensors (mains and deep sleep) and a test transmitter |
-| [`tests/`](tests/) | Unit tests for the proxy and sensor cores, a smoke test for the test server, and the proxy engine run as a host program against it |
+| [`tests/`](tests/) | Unit tests for the proxy and sensor cores, a smoke test for the test server, the proxy engine run as a host program against it, and homes federating through `cs-mailbox` |
 
 ## Running the tests
 
@@ -50,6 +51,7 @@ make -C tests/proxy_core                            # proxy core, C++
 make -C tests/sensor_core                           # sensor core, C++
 python3 tests/devtools/test_testserver.py           # test server
 make -C tests/host_proxy                            # proxy engine on the host against the test server
+make -C tests/federation                            # cs-mailbox against 09, and two homes through it (needs websockets)
 tests/package/check.sh                              # Python package build and smoke test (needs uv)
 ```
 
