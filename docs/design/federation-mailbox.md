@@ -1,27 +1,27 @@
 # Design note: federation through blind mailboxes
 
-Status: proposal, revision 2, for review. If accepted, it replaces the Nostr
-design of `spec/09-federation-relay.md` and most of `spec/10-control-plane.md`
-sections 5-7.
+Status: proposal, revision 3, for review. If accepted, it replaces the Nostr
+design of `spec/09-federation-relay.md`, changes how frame tags are derived (02
+sections 6 and 11), and removes most of `spec/10-control-plane.md` sections 5-7.
 
-Revision 2 answers review round 1 (PR #90). Its main changes:
-- routing on the 64-bit tag pair (section 3);
-- a registration *deadline* instead of first sighting (section 4);
-- durable registrations keyed to an owner (section 4.3);
-- salted per-server registration (section 4.4);
-- bootstrap tags derived from the device's own key set (section 5);
-- downlink hardening (section 6) and publisher choice by `DL_ACK` only (section 8);
-- an explicit residual-risk invariant (section 10.1).
+Revision history:
+- **Revision 1:** first-sighting ownership. Review round 1 broke it: a radio
+  beats the server.
+- **Revision 2:** a registration deadline on per-device tag pairs. Review round 2
+  found skew exposure, cold-start gaps, brute-forceable registration hashes and
+  unprotected bootstrap blocks.
+- **Revision 3 (this one):** **ownership by cryptographic proof**. Every frame's
+  tags are the hash of a public key derived from the device's key set.
+  Registering means proving you hold the matching private key. There is no
+  deadline, no timing race and no special case for bootstrap frames.
 
 ## 1. Why
 
 The Phase 0 review of spec 09 (#77-#88, tracked in #89) traced most problems to
-two root causes:
-
-1. **Anyone can take part anonymously.** Any Nostr key can publish, request
-   downlinks or flood a bucket. This causes #78, #79, #80, #84 and #86.
-2. **Relays are dumb and untrusted.** They can't route a frame to its owner, so
-   owners hide in broad buckets (#81), and every publisher has to defend itself.
+two causes:
+- **Anonymous participation:** any key can publish, request or flood.
+- **Dumb, untrusted relays:** they can't route a frame to its owner, so owners
+  hide in buckets (#81), and every publisher has to defend itself.
 
 This note proposes servers that route frames to their owners without knowing who
 the owners are, and without any central coordinator.
@@ -33,388 +33,406 @@ the owners are, and without any central coordinator.
 | 1 Standalone | none | - | own proxies | own proxies |
 | 2 Private | a group's own mailbox server | invite or admin | routed | yes |
 | 3 Public | a large operator's mailbox server | operator accounts | routed | yes |
-| 4 Open | any mailbox server | none | routed | yes, best effort (10.1) |
+| 4 Open | any mailbox server | none | routed | yes, best effort (11.1) |
 
 Modes 2-4 share one protocol and one reference server, `cs-mailbox`. They differ
-only in admission policy and defaults (section 9). Mode 4 needs nobody's
+only in admission policy and defaults (section 10). Mode 4 needs nobody's
 permission, so there is no control plane anyone has to answer to.
 
-## 3. Core idea: route by the tag pair
+## 3. Tags become key fingerprints
 
-Every normal frame carries two rotating tags (02 section 6):
+### 3.1 Derivation (replaces 02 sections 6.1 and 11)
+
+The header's two 4-byte tag fields become one 8-byte routing `tag`, derived per
+device:
 
 ```
-net_tag = trunc32(HMAC(k_net_route, "net" | epoch))   per network
-dev_tag = trunc32(HMAC(k_dev_tag,   "dev" | epoch))   per device (session key set)
-epoch   = floor(unix_time / 3600)
+index = "e" | uint32(epoch)          normal frames, epoch = floor(unix_time / 3600)
+      | "b" | uint32(fcnt / 64)      bootstrap frames (JOIN, SYNC); 64 = 02 section 8.2's block
+seed  = HMAC-SHA256(k_dev_tag, "cs1 tag key" | index)        32 bytes
+pub   = Ed25519 public key for seed (RFC 8032)
+tag   = trunc64(SHA-256("cs1 tag" | pub))
 ```
 
-Without the keys, both look random, can't be linked across hours, and **can't be
-predicted**. A mailbox server routes each frame by its 64-bit **pair**
-`(net_tag, dev_tag)`:
+`k_dev_tag` is from the key set the frame is sent under (02 section 5.1):
+- the root key set for `JOIN`;
+- the session key set for everything else.
 
+There is no network key in the derivation.
+
+Properties:
+- **Unpredictable and unlinkable without `k_dev_tag`.** This is unchanged from
+  today, and better in one respect: devices of the same network no longer share
+  a `net_tag`, so an observer can't group them.
+- **Possession can be proved without revealing `k_dev_tag`.** The holder can
+  derive `seed`, so it can sign with the key behind `pub`. Someone who only heard
+  `tag` would need a 64-bit SHA-256 preimage to find a usable `pub`.
+- **Bootstrap frames get real tags.** They're routable and identifiable by lookup
+  instead of trial decryption, which helps mode 1 too. The block size is 64,
+  matching 02 section 8.2's counter reservation. `fcnt` is clear in the header
+  already, so a block-wide tag adds no linkability.
+- **Cost on the sensor:** one Ed25519 key generation per epoch, plus one per
+  64-counter block while sending bootstrap frames. That is milliseconds on ESP32
+  and nRF52, and it can be precomputed before the epoch boundary.
+- **Cost on the home server:** three key generations per device per epoch for
+  the 02 section 6.3 window (`e - 1`, `e`, `e + 1`). That is trivial.
+
+### 3.2 Consequences for the rest of the spec
+
+- **`k_net_route` and its tag role disappear.** `SET_NETWORK` no longer carries a
+  routing key. Pairing shortens:
+  - `KEY_EXCHANGE` already sets the sensor's clock (`server_time` in every
+    downlink, 02 section 10).
+  - So after accepting it, the sensor can compute normal tags at once. Its next
+    uplink, with `DL_ACK`, completes pairing.
+  - The `SYNC` / `SET_NETWORK` step and network-key rotation (04 section 7) go
+    away. To renew a device's keys, renew `k_session`; that mechanism already
+    exists.
+  - The exact 04 state-machine edits belong in the spec rewrite.
+- **Lookups move to the 8-byte tag.** The home server keeps a table from `tag` to
+  device, three entries per device. Proxies key rate limiting and dedupe on
+  `tag` (06 sections 3 and 8; today they use `dev_tag`). The bootstrap limiter
+  (06, keyed on `dev_tag` 0 today) keys on frame type instead.
+- **No zero substitution:** a computed all-zero tag is legal. 02 section 6.2 goes.
+- **Versioning:** v1 is still a draft with no deployed devices, so the change is
+  made in place. No compatibility mode.
+
+## 4. Mailbox routing
+
+A mailbox server routes each frame by its `tag`:
 - **A publisher**, a home server whose proxy heard a frame none of its devices
   verified, hands the frame to the server.
-- **An owner** registers the pairs its devices will use (section 4). The server
-  delivers each frame only to the registrants of its pair.
-- **The server** holds no device keys and reads no payloads, which stay
-  encrypted under device keys (02 section 5).
+- **An owner** registers the tags its devices will use (section 5). The server
+  delivers each frame only to that tag's registrants.
+- **The server** holds no device keys and reads no payloads.
 
 There are no buckets, decoys or broadcast. Each owner receives only its own
 devices' frames, and the server does one table lookup per frame.
 
-**Why the pair and not `net_tag` alone:** `net_tag` is shared by every device in
-a network. If routing used it alone, hearing any one device on air would expose
-the whole network's routing for that hour, remote devices included (round 1, H2).
-With the pair, a frame heard on air exposes only that one device.
+**Collisions:** with `T` live tags, the chance that any two collide is about
+`T^2 / 2^65`, negligible even at 10^8.
 
-**Collisions:** with `D` registered devices, the expected number of colliding
-pairs per epoch is about `D^2 / 2^65`, which is negligible even at 10^8 devices.
+## 5. Registration by proof
 
-## 4. Ownership by registering ahead
-
-### 4.1 The deadline rule
-
-The pair for epoch `x` can be computed only with the device's keys. The server
-enforces:
-
-- A registration names a target epoch `x` and a pair hash (4.4).
-- **It is accepted only while the server's epoch is less than `x - 1`.** So the
-  registration must arrive before epoch `x - 1` starts.
-- It is **live** during epochs `x - 1`, `x` and `x + 1`. That matches the 02
-  section 6.3 tag window, which accepts sensor clocks up to an hour off.
-- Several registrations of the same hash are all accepted, and the server
-  delivers to every live registrant.
-
-An attacker who hears a pair on air can register it only for a *later* target
-epoch, because the deadline for the current one has passed. That later
-registration goes live one epoch later, when the device has moved on to a new
-pair. The only frames it can still catch are from that device while its clock is
-an hour or more slow. A device whose clock is an hour fast exposes its next pair
-early, and an attacker who hears that can register it and catch the next epoch.
-Both cases are local to a device the attacker can hear (10.1).
-
-The rule needs no sighting state, so a reconnect, an owner restart or a server
-restart never locks an owner out (round 1, H3 and M2).
-
-### 4.2 Horizon
-
-- The owner keeps registrations for a **horizon** of epochs `e + 2` to `e + H`.
-  The default `H` is 48, so two days ahead.
-- Each epoch it tops up one new epoch for each device.
-- If the owner is offline longer than the horizon, its next registrations can
-  only target `e + 2` onward. Federated frames from up to two epochs are lost.
-  Local traffic is unaffected. This is documented, and the horizon is
-  configurable.
-- **Network key rotation** (04 section 7) changes `net_tag`. During the overlap
-  the owner registers pairs under both keys.
-
-### 4.3 Owner identity, durability, limits
-
-- Each home has a long-lived **owner key** per server, an Ed25519 key pair. It
-  signs registrations and requests, and it is pseudonymous. A home MAY use a
-  different key on each server.
-- **Registrations are durable.** The server keeps them until they expire (end of
-  epoch `x + 1`), across reconnects and its own restarts. A server that lost its
-  state accepts re-registrations under the normal deadline. Only the epochs
-  inside the deadline are lost.
-- **Limits are per owner key per day**, sized for the horizon: devices × epochs.
-  For example, 100 devices × 24 new epochs a day is 2 400 registrations a day.
-  A mode 4 server rate-limits new owner keys, for example with proof of work or
-  slow admission. Modes 2 and 3 tie owner keys to members.
-- **Padding:** the number of registrations reveals the number of devices. An
-  owner MAY pad with random hashes up to a round number.
-
-### 4.4 Salted per-server registration
-
-A registration carries `reg = SHA-256("cs-reg" | server_salt | x | net_tag | dev_tag)`,
-not the pair itself:
-- `server_salt` is a public random value per server.
-- On each published frame, the server computes `reg` for the frame's pair and the
-  current epochs, and looks it up.
-
-A server therefore learns a pair only when the pair is on air. That is past the
-deadline, so it can't pre-register an owner's future pairs on other servers
-(round 1, M1). A malicious server can still misroute or drop frames for homes that
-use it (10.2).
-
-## 5. Bootstrap frames
-
-`JOIN` and `SYNC` use all-zero tags today (02 section 11), because a sensor
-without a clock can't compute an epoch. A mailbox can't route them, and after 3
-undelivered confirmed uplinks a sensor sends every confirmed attempt as `SYNC`
-(08 section 6). So a device heard only through federation would become
-unroutable just when it needs help.
-
-### 5.1 Counter-based bootstrap tags
-
-The tags come from the frame's own key set, not a network key, and from its
-uplink counter instead of the clock:
+### 5.1 The registration
 
 ```
-block   = floor(fcnt / B)                 B = 16 (open: section 12)
-net_tag = trunc32(HMAC(k_dev_tag, "boot-net" | uint32(block)))
-dev_tag = trunc32(HMAC(k_dev_tag, "boot-dev" | uint32(block)))
+register(pub, sig, expires)
+  sig = Ed25519-Sign(seed-key, "cs1 reg" | server_salt | owner_pub | uint32(expires))
 ```
 
-`k_dev_tag` is the key set's own:
-- the root key set for `JOIN`;
-- the session key set for `SYNC`, which is what 04 section 4.3 and 02 section
-  5.1 already use for it.
+- `server_salt` is a public random value per server, sent in its greeting.
+- `owner_pub` is the registering home's owner key (5.3). The message as a whole
+  is also signed by the owner key.
 
-No network key is needed, so this works in `JOIN`, in `SESSION`, and for a device
-that missed a key rotation (04 section 7).
+The server verifies `sig` under `pub` and computes `tag` from `pub`. It then
+stores `tag → owner` until `expires`, which is capped (5.2).
 
-- A computed value of `00000000` becomes `00000001`, as in 02 section 6.2.
-- **Privacy:** `fcnt` is already clear in the header (02 section 2), so the
-  bootstrap tags add no linkability.
-- **Mode 1** benefits too: a server identifies bootstrap frames by lookup instead
-  of trial decryption.
+Why this holds:
+- **Someone who heard `tag` can't register it.** They'd need a `pub` whose hash
+  matches, which is a 64-bit preimage, and then the private key behind it.
+- **A server can't replay a registration** to another server or for another
+  owner: the signature binds `server_salt` and `owner_pub`.
+- **Brute force** for *any* live tag among `T` costs about `2^64 / T` Ed25519 key
+  generations: about 2^44 at a million live tags. That is days of GPU time per
+  hit, and it buys one random device's `rx_ref`s for less than an hour. Normal
+  tags rotate every epoch, and bootstrap tags are rarely live. Accepted, and
+  documented.
 
-### 5.2 Registering bootstrap tags
+Several homes may hold a valid proof for one tag only in one case: a previous
+owner who kept `k_root` can prove `JOIN` tags (5.4). The server delivers to every
+valid registrant.
 
-Bootstrap tags have no epoch, so they use **standing registrations**: no target
-epoch and no deadline, valid until the owner withdraws them. The owner keeps
-these registered:
-- **A paired device:** the blocks from the one holding the last `fcnt` seen
-  through `W` blocks beyond it. `W` starts at 6, because a boot can skip up to 64
-  counter values (02 section 8.2), which is 4 blocks, plus margin. It grows by 1
-  for every `B` uplinks the owner expects the device sent while it heard nothing,
-  capped at 32.
-- **A device being paired:** the first blocks after the pairing code is entered,
-  covering `fcnt` 1 onward. New devices start at 1 (02 section 8.1).
+### 5.2 Timing and lifetime
 
-An attacker who hears a bootstrap frame can register its block and catch the
-`rx_ref`s of that device's later frames in the same block, at most `B` frames.
-That is device-local (10.1).
+There is no deadline. A proof is valid whenever it is presented, including late.
 
-### 5.3 Second-hand devices
+| Tag | When registered | `expires` cap |
+|---|---|---|
+| Normal, epoch `x` | any time; the owner keeps `e - 1` to `e + 2` registered and tops up each epoch | end of epoch `x + 1` |
+| Bootstrap block | while the device is pairing or might send `SYNC` (5.4) | 7 days, renewable |
 
-A factory reset keeps `fcnt` (02 section 8). The new owner can't predict a used
-device's bootstrap blocks. **The first pairing of a second-hand device MUST be
-done near one of the owner's own proxies**, which needs no registration. After
-that the owner knows `fcnt` and federation works.
+- **Fresh keys** (pairing, re-keying): the owner registers the new session
+  key's tags the moment it derives `k_session`. There is no cold-start gap.
+- **A mailbox that lost its state** says so with a new `generation` value in its
+  greeting, and owners re-register.
+- **Owners offline:** frames for an offline owner are dropped anyway, because the
+  server stores nothing. Registering far ahead buys nothing, so registrations
+  stay short and reveal less.
 
-The previous owner knows `k_root` and so can register the `JOIN` blocks. That is
-the same exposure 02 section 13 already accepts for a previous owner during
-re-pairing. Local pairing limits it to the time the pairing takes.
+### 5.3 Owner keys and limits
+
+- Each home has a long-lived, pseudonymous **owner key** (Ed25519) per server. It
+  signs every message the home sends. Homes MAY use different keys on different
+  servers.
+- **Owner-key lifecycle:**
+  - `withdraw` affects only the caller's own registrations.
+  - A compromised owner key is replaced by registering under a new key and
+    letting the old registrations expire. Proofs of device tags can't be forged
+    with an owner key alone.
+- **Limits per owner key:**
+  - a burst for the initial fill, about 4 × devices;
+  - then a steady rate of about 1 per device per epoch, plus bootstrap blocks.
+  - Mode 4 servers rate-limit new owner keys (proof of work or slow admission).
+- **Padding:** the count of live registrations reveals roughly how many devices a
+  home has. Owners MAY pad with registrations for random keys.
+
+### 5.4 Bootstrap windows and second-hand devices
+
+The owner keeps bootstrap blocks registered whenever a device might send `JOIN`
+or `SYNC`:
+- **A device being paired:**
+  - `JOIN` blocks for the root key set, covering `fcnt` from 1 to 64 × 8. That
+    allows for boots in factory QA, since every boot skips up to 64 (02 section
+    8.2).
+  - The session key's `SYNC` blocks once `k_session` exists.
+- **A paired device:**
+  - Normally, the `SYNC` block holding the last `fcnt` seen, plus the next 2.
+  - In lost contact (07 section 8), the window grows by one block for every 64
+    uplinks the owner expects it missed, capped at 16 blocks.
+
+**Second-hand devices:**
+- A factory reset keeps `fcnt`, so the new owner can't predict the `JOIN` blocks
+  of a used device.
+- The previous owner, who knows `k_root`, *can* prove `JOIN` tags. They could
+  race the new owner's federated pairing.
+- **So the first pairing of a second-hand device MUST be done near one of the
+  owner's own proxies.**
+- Local pairing needs no registration and gives a new `k_session`. From then on
+  only the new owner can prove the device's tags.
 
 ## 6. Downlinks: `rx_ref` capabilities
 
 1. **Publish.** The publisher hands the server `(frame, receptions)`. Each
-   reception carries:
+   reception has:
    - a random `rx_ref`, issued per server;
-   - SNR, RSSI, `age_ms`, and the `TS_UNCERTAIN` flag;
-   - a downlink-capable flag, set only when that proxy is a 07 section 6.1
+   - SNR, RSSI and `age_ms`;
+   - the `TS_UNCERTAIN` flag;
+   - a downlink-capable flag. It is set only when that proxy is a 07 section 6.1
      candidate and the frame is a confirmed type.
-2. **Deliver.** The server sends the frame and its `rx_ref`s **only to live
-   registrants** of the frame's pair.
-3. **Request.** The owner decides to answer (07 section 5) and sends one signed
+2. **Deliver.** The server sends the frame and its `rx_ref`s **only to the
+   registrants** of the frame's `tag`. With each delivery it includes its
+   measured round-trip time to the publisher.
+3. **Request.** The owner decides to answer (07 section 5), then sends a signed
    `(rx_ref, DOWNLINK)`.
-   - **The server accepts at most one request per frame hash,** across all
-     `rx_ref`s and requesters, then forwards it to the publisher that issued the
-     `rx_ref`.
-4. **Check.** The publisher checks:
+   - The owner sends at most **one request per transmission**, through one
+     server.
+   - A *transmission* is a frame hash plus the 2 s rule of 07 section 4.3. So a
+     retry (the same bytes, at least 4 s later) is a new transmission.
+4. **Server check.** At most one request per transmission is forwarded.
+5. **Publisher check.** The publisher verifies:
    - the `rx_ref` is known, unused and fresh;
-   - the keyless checks pass, with the same tags as the uplink;
-   - **the transmission hasn't already been answered through any server**, which
-     it tracks by frame hash;
-   - its federated airtime budget, both per proxy and **per requester
-     pseudonym**, allows it.
+   - the keyless checks pass, with the same `tag` as the uplink;
+   - it hasn't already answered this transmission through any server;
+   - its federated airtime budget allows it, per proxy and per requester
+     pseudonym. The per-requester share is a decaying quota that lowers
+     priority, never a ban.
+
    It then sends the `DOWNLINK` with `tx_offset_us = 3 000 000` (RX2). Its own
    traffic has priority.
-5. **Result.** The publisher returns the `TX_RESULT` through the server.
-6. **Requester records.** If the publisher's own proxy hears the same frame
-   retransmitted after it transmitted a downlink for it, the sensor didn't accept
-   that downlink. The publisher demotes that requester pseudonym: lower priority,
-   then refusal.
+6. **Result.** The `TX_RESULT` goes back through the server. A non-`SENT` result
+   releases the transmission's slot at the server, so the owner may retry
+   through another publisher if time allows.
 
 Neither side learns the other's identity: the server gives each a stable
-pseudonym derived from its key.
+pseudonym derived from its key. Requests need an `rx_ref`, and only holders of
+the device's key set ever receive one (section 11.1).
 
 ### 6.1 Timing
 
-Federated downlinks use RX2 only, which opens 3 s after the uplink (01 section 4).
+Federated downlinks use RX2, which opens 3 s after the uplink. The owner
+requests only if this holds:
 
-| Step | Time |
-|---|---|
-| Publisher's collection window (07 section 4.1) | 150 ms |
-| Publisher to server to owner | about 50-300 ms |
-| Owner decides and builds the downlink | under 50 ms |
-| Owner to server to publisher to proxy | about 50-300 ms |
-| Proxy transmits | 3 s after the uplink, inside its 40 ms start window (01 section 4.1) |
+```
+elapsed + rtt_owner/2 + rtt_pub/2 + 300 ms  <=  2700 ms
+elapsed = age_ms + publisher→server leg (rtt_pub/2) + time since delivery
+```
 
-How the owner estimates timing:
-- **Elapsed time** is `age_ms` plus the time since the event arrived.
-- **Transit back** is measured as the round-trip time of the server connection,
-  using application-level pings every 30 s, and halved.
-- The owner requests only if `elapsed + transit_back + 300 ms ≤ 2800 ms`.
-  Otherwise it doesn't request; the sensor retries.
+- `rtt_owner` is the owner's own measured round-trip time to the server, from a
+  ping every 30 s.
+- `rtt_pub` is the server's measured round-trip time to the publisher, sent with
+  each delivery.
+- The 300 ms margin covers the publisher-to-proxy hop and the proxy's scheduling.
+  The proxy still enforces its own 40 ms start window (01 section 4.1).
+
+If the check fails, the owner doesn't request, and the sensor retries.
 
 ### 6.2 Commands and `PENDING`
 
-Today a queued command sets `PENDING`, which makes the sensor send an unconfirmed
-`HEARTBEAT` (08 section 7). That heartbeat opens only RX1, which federation can't
-use (#85).
-
-**Proposal:**
-- When a downlink carrying `PENDING` is received in **RX2**, the follow-up
-  `HEARTBEAT` is confirmed, so it opens RX2.
-- This also applies after a local RX2 fallback (07 section 6.3). That is a small
-  change in local behaviour, and only after an RX2 answer.
-- An unanswered follow-up does **not** count as an undelivered uplink for 08
-  section 6, so a federation path that fails mid-drain can't push the sensor into
-  lost contact.
-
-**Latency:** a device heard only through federation gets its *first* queued
-command on its next confirmed uplink: a state change, or the confirmed heartbeat,
-which is every 4 h recommended and 24 h at most (08 section 4.2). After that,
-`PENDING` drains the queue promptly. This is documented in 07.
+- **Follow-up heartbeats:**
+  - When a downlink carrying `PENDING` arrives in RX2, the follow-up `HEARTBEAT`
+    is **confirmed**, so it opens RX2. This also applies after a local RX2
+    fallback, a small local change.
+  - An unanswered follow-up doesn't count as undelivered for 08 section 6.
+- **First-command latency:** a device heard only through federation gets its
+  first queued command on its next confirmed uplink. That is a state change, or
+  the confirmed heartbeat, which is 4 h recommended and 24 h at most (08 section
+  4.2). Clock corrections wait the same way. This is documented in 07.
+- **`NOP` (0x05)** gets reserved in 02 section 10.3.
+  - No firmware change is needed: an unknown command is skipped and still sets
+    `DL_ACK` (02 section 10.2).
+  - Owners add it when they need delivery evidence (section 8).
 
 ## 7. Commissioning
 
 1. **A pre-sold sensor near your own proxy:** unchanged. Scan the QR code (or
-   type the `CS:1:…` code) in **Add device**, press the button, and it is paired.
-   No ESPHome build server is involved.
-2. **A pre-sold sensor heard only by a neighbour:** the steps you take are the
-   same.
-   - Entering the code lets the integration compute the root key set and
-     register the first bootstrap blocks, as standing registrations.
-   - The `JOIN` is routed to you alone, and `KEY_EXCHANGE` and `SET_NETWORK` go
-     out in RX2 through the neighbour's proxy.
-   - From then on you register normal pairs ahead.
-3. **A second-hand sensor:** pair it locally first (5.3).
-4. **A proxy:** not part of federation. Today it is adopted in ESPHome and given
-   the `cs_proxy:` snippet. Plug-and-play proxies would need Improv Wi-Fi plus
-   mDNS discovery (06 section 3.2), which is tracked separately.
+   type the code) in **Add device**, press the button, and it's paired. No
+   ESPHome build server is involved.
+2. **A pre-sold sensor heard only by a neighbour:** the same steps.
+   - Entering the code lets the integration register the `JOIN` blocks (5.4).
+   - The `JOIN` is routed to you, and `KEY_EXCHANGE` goes out in RX2 through the
+     neighbour's proxy.
+   - You register the new session key's tags at once, so the sensor's next
+     uplink, with `DL_ACK`, completes pairing.
+3. **A second-hand sensor:** pair locally first (5.4).
+4. **Proxies:** not part of federation. Plug-and-play proxies would need Improv
+   Wi-Fi plus mDNS discovery. That's tracked separately.
 
 ## 8. Choosing a publisher
 
-In mode 4, an attacker with a radio can republish a frame it heard, claim a good
-SNR, and then drop the request (#79). The owner keeps a **success record per
-publisher pseudonym**:
+In mode 4, anyone with a radio can publish a frame it heard, claim a good SNR,
+and then drop the request (#79). The owner keeps a **record per publisher
+pseudonym**. It is best effort:
 
-- **Success is counted only on `DL_ACK`.** A downlink counts as delivered only
-  when the sensor's next new uplink sets `DL_ACK` (07 section 7). `DL_ACK` exists
-  only for downlinks carrying a command (02 section 10.2), so the owner MAY add a
-  new no-op command, `NOP` (0x05, no arguments, no effect), to a downlink when it
-  needs the evidence. That is a small 02 and `sensor_core` addition. Silence and
-  missing retransmissions count as nothing.
-- **Order:** proven publishers by SNR, then unknown publishers, then failed ones.
-  A failure ranks *below* unknown.
-- **Rotation:** across a sensor's retries of one frame, the owner picks a
-  different publisher each time, so one bad publisher can't hold every attempt.
+- **Credit** comes only from an exchange where exactly one downlink answered the
+  frame, across all its transmissions, and the sensor's next new uplink sets
+  `DL_ACK`. The owner adds `NOP` when the downlink carries no command and it
+  wants evidence. If several publishers answered the same frame, nobody is
+  credited and nobody blamed.
+- **Failure** is counted only when the uplink with `fcnt = reply_to + 1`
+  arrives without `DL_ACK`. Silence, lost uplinks and missing retries count as
+  nothing.
+- **Order:**
+  - proven publishers, by SNR;
+  - then unknowns, picked at random. The server may attest a key's age in
+    coarse buckets, and older keys are preferred.
+  - then failed publishers.
+- **Rotation:** across a frame's retries, the owner picks a different publisher
+  each time. Retries are at least 4 s apart, and RX2 is at 3 s, so this fits.
 - **SNR cap:** values outside the profile's physical range are ignored.
-- **Pseudonyms** are derived by the server from the publisher's key, so
-  reconnecting doesn't reset a record.
+- **Phantom retries** are possible: a publisher republishes a delivered frame as
+  a "retry". Under the credit rule, that makes the exchange ambiguous. It can
+  deny an honest publisher credit, but can't earn the attacker any. Accepted.
 
-A Sybil key starts unknown and can win at most the first attempt, then ranks
-below unknown. Mode 4 downlinks stay best effort against a local radio attacker
-(10.1).
+**Supervision (#84):**
+- A federated path is one publisher pseudonym on one server.
+- Federated paths are shown separately from the home's own proxies, and **never
+  clear the single-path flag**.
 
-**Supervision (#84):** a federated path is one publisher pseudonym on one
-server. Federated paths are shown separately from the home's own proxies, and
-**never clear the single-path flag**. Only paths through the home's own proxies
-count toward it.
+## 9. Several servers
 
-## 9. Mode policies
+A home MAY use several servers. Each issues its own `rx_ref`s:
+- **The owner** requests each transmission through one server only, the one
+  with the lowest `rtt_owner + rtt_pub`.
+- **Publishers** answer each transmission at most once across servers.
+- Since only the device's key holders receive `rx_ref`s, two homes can't both
+  request the same frame, except in the second-hand `JOIN` case (5.4). That is
+  why the local-pairing rule exists.
+
+## 10. Mode policies
 
 | | Mode 2 Private | Mode 3 Public | Mode 4 Open |
 |---|---|---|---|
 | Who may connect, publish and register | members (invite) | account holders | anyone, admission rate-limited |
-| Downlink budget per publisher proxy | group default, generous | operator default | 0.5% airtime per hour, split per requester |
+| Federated downlink budget per publisher proxy | group default, generous | operator default | 0.5% airtime per hour, shared by decaying per-requester quotas |
 | Removing abusers | admin | operator | none; owners rely on records |
-| What the server sees | metadata (10.2) | metadata | metadata |
+| What the server sees | metadata (11.2) | metadata | metadata |
 
 The protocol defines the mechanisms. The spec gives recommended defaults per
 mode, and operators MAY set others.
 
-## 10. Threat model
+## 11. Threat model
 
-### 10.1 Invariant
+### 11.1 Invariant
 
-**Without radio reception of a device, an attacker can't affect that device's
-federated traffic, beyond what the server the owner chose can do.**
+**Only holders of a device's key set can register its tags, so only they receive
+its frames' `rx_ref`s through a mailbox.** Hearing a frame by radio, or seeing it
+through a server, doesn't grant routing or downlink access. The exceptions are
+explicit:
+- **A previous owner holding `k_root`** can prove `JOIN` tags. It is handled by
+  local pairing (5.4).
+- **A malicious server** can misroute, drop, delay or leak `rx_ref`s to an
+  accomplice, but only for homes that use it.
+- **A publisher** can drop or delay the frames it publishes. Section 8 counters
+  this for downlinks; for uplinks it remains (#83).
+- **Brute force** for a random live tag costs about `2^64 / T` key generations
+  (5.1).
 
-With radio reception, an attacker can disrupt downlinks for that device in narrow
-cases:
-- when the device's clock is skewed by an hour or more (4.1);
-- within the bootstrap block it heard (5.2).
+What remains for a radio attacker near a device is jamming, as in any LoRa
+system.
 
-That is comparable to jamming the device, which any LoRa system has to accept.
-
-### 10.2 Threats
+### 11.2 Threats
 
 | Threat | Mitigation |
 |---|---|
 | A server reads readings | It can't: payloads are encrypted under device keys. |
-| A server links an owner's registrations | Inherent: registrations are signed by the owner key. Clear `fcnt` continuity also links frames (02 section 13). Documented, not solved. Owners may use separate keys on separate servers. |
-| A server sees each home's event timeline | It sees, per owner key, the time, type nibble and length of each delivered frame. Documented. Modes 2 and 3 choose a trusted operator. |
-| A server or publisher maps proxies with a sensor | Stable publisher pseudonyms plus signal values let someone moving a sensor around map proxies. Documented. Publishers MAY coarsen RSSI and SNR to 1 dB steps. |
-| An attacker black-holes downlinks (#78) | Requests need an `rx_ref`, which only live registrants get. Registering needs foreknowledge before the deadline. A radio attacker is limited to the device it hears (10.1). |
-| Fake publisher SNR (#79) | Success counted on `DL_ACK` only, failures ranked below unknown, rotation across retries, SNR cap (section 8). |
-| Bootstrap flood (#80) | Bootstrap frames are routed by pair, so a replayed frame reaches only its owner. The server dedupes by frame hash and rate-limits per publisher. Federated bootstrap frames use a separate limiter from local ones in 07 section 4. |
-| Airtime drain by registrants (M5) | Per-requester budgets, one request per frame hash at the server, one answer per transmission at the publisher, and demotion by heard retransmission (6.6). In mode 4, Sybil requesters near a proxy can exhaust its federated budget, which is a local, radio-present attack. |
-| A malicious server | Misroutes, drops or delays frames for homes that use it, and can leak `rx_ref`s to an accomplice. It can't learn future pairs (4.4). Homes MAY use several servers, since publishers enforce one answer per transmission. |
-| A sole-path publisher or server delays frames (#83) | Receptions that came only through federation are marked. Users can exclude late federated events. Documented. |
-| Random registration | Needs a hit in a 64-bit space before the deadline. Negligible. |
+| A server links a home's registrations and traffic | Inherent: they're signed by the owner key. Clear `fcnt` also links frames (02 section 13). The server sees per-owner timing, type nibble and length. Documented. Owners MAY use separate keys per server. |
+| Proxy mapping with a moving sensor | Stable publisher pseudonyms plus signal values. Documented. Publishers MAY coarsen RSSI and SNR. |
+| Black-holed downlinks (#78) | Only key holders get `rx_ref`s (11.1). One request per transmission, released on failure. |
+| Fake publisher SNR (#79) | Credit and failure rules, random choice among unknowns, rotation, SNR cap (section 8). |
+| Bootstrap flood (#80) | Bootstrap frames are routed by `tag` to their owner only. The server dedupes by transmission and rate-limits per publisher. A separate federated bootstrap limiter in 07 section 4 keeps local pairing unaffected. |
+| Airtime drain | Per-proxy budget split into decaying per-requester quotas. Only key holders can request at all. Sybil requesters would need their own devices transmitting near the proxy. |
+| A malicious server | Limited to homes that use it. It can't replay proofs elsewhere (5.1). |
+| A sole-path publisher or server delays frames (#83) | Receptions that came only through federation are marked, and users can exclude late federated events. Documented. |
 
-## 11. Protocol sketch (for implementers)
+## 12. Protocol sketch
 
-WebSocket over TLS. CBOR messages, each signed by the sender's key unless noted.
-Message types:
-- **owner to server:** `register(x, reg[])`, `register_standing(reg[])`,
-  `withdraw(reg[])`, `request(rx_ref, downlink)`, `ping`
-- **publisher to server:** `publish(frame, receptions[])`,
-  `result(rx_ref, result, offset_us)`
-- **server to owner:** `deliver(frame, receptions[])` with publisher pseudonyms,
-  `result(...)`
-- **server to publisher:** `forward(rx_ref, downlink, requester pseudonym)`
+WebSocket over TLS, with CBOR messages signed by the sender's key. The server's
+greeting carries `server_salt` and `generation`.
 
-Error codes cover a late registration, rate limits, an unknown `rx_ref`, and a
-transmission already answered. The wire format, sizes and test vectors are for
-the spec rewrite.
+| Direction | Messages |
+|---|---|
+| owner → server | `register(pub, sig, expires)[]`, `withdraw(tag[])`, `request(rx_ref, downlink)`, `ping` |
+| publisher → server | `publish(frame, receptions[])`, `result(rx_ref, result, offset_us)` |
+| server → owner | `deliver(frame, receptions[], publisher pseudonym, rtt_pub)`, `result(...)` |
+| server → publisher | `forward(rx_ref, downlink, requester pseudonym)` |
 
-## 12. Open questions
+Errors cover a bad proof, rate limits, an unknown `rx_ref` and an
+already-answered transmission. The wire format, sizes and vectors are for the
+spec rewrite.
 
-1. **Bootstrap block size `B`:** 16 bounds the attacker to 16 frames of a heard
-   device, and costs `W` standing registrations per device. Is 8 better?
-2. **Horizon `H` and per-day limits:** are 48 epochs and the rate limits right
-   for mode 3 scale?
+## 13. Open questions
+
+1. **Ed25519 on nRF52:** key generation time on the XIAO nRF52840, and whether
+   hardware acceleration (CryptoCell) is usable from ESPHome's nRF52 platform.
+   This needs measuring (#38).
+2. **The 8-byte tag in the header:** keep two 4-byte fields named `tag_hi` and
+   `tag_lo`, or one field? It is cosmetic. This note assumes one.
 3. **Mode 4 admission:** proof of work, slow admission, or both?
-4. **Several servers:** a frame's `rx_ref`s arrive through each server. Should
-   the owner request through the server with the best measured round-trip time?
-5. **Fallback if the deadline rule fails review:** hash-preimage tags, where the
-   pair is `trunc64(H(token_x))` and registering means revealing `token_x`. That
-   is a cryptographic ownership proof with no timing, but it needs both tags from
-   one hash, so `net_tag` would no longer be per network. Proxies filter by
-   `net_tag` (05), so this would be a deeper frame redesign.
-6. **Federated RX1:** out of scope for v1.
+4. **Attested key age (section 8):** is it worth the metadata it gives the server?
+5. **Federated RX1:** out of scope for v1.
 
-## 13. Impact
+## 14. Impact
 
 **Specs:**
+- 02: tag derivation (sections 6 and 11), the 8-byte header field, section 6.2
+  removed, `NOP` reserved, `k_net_route` removed.
+- 04: shorter pairing (no `SYNC` / `SET_NETWORK` step), section 7 rotation
+  removed.
+- 05 and 06: lookups, rate limits and dedupe keyed on the 8-byte tag, the
+  bootstrap limiter keyed by frame type, and the 05 section 5.3 diagnostics tag
+  list updated.
+- 07:
+  - the tag table;
+  - the federated bootstrap limiter;
+  - registration and publishing hooks;
+  - supervision paths;
+  - command latency.
+- 08: the confirmed follow-up heartbeat after an RX2 `PENDING`, which doesn't
+  count as undelivered.
 - 09: rewritten as mailbox federation.
-- 02:
-  - counter-based bootstrap tags in section 11;
-  - `NOP` command 0x05.
-- 07: registration and publishing hooks, the separate federated bootstrap
-  limiter, supervision paths, and command latency.
-- 08: confirmed follow-up heartbeat after an RX2 `PENDING`, which doesn't count
-  as undelivered.
 - 10: trust and coverage records reduced or dropped. Device profiles stay.
 
 **Code:**
-- `sensor_core`: bootstrap tags, follow-up heartbeat, `NOP`
-- `csframe.py` and vectors
-- `cs_testserver`
-- the new `cs-mailbox` reference server
-- the Home Assistant integration's federation client
+- `sensor_core`: tags, pairing, follow-up heartbeat
+- `cs_proxy` and `proxy_core`: tag width, limiter
+- `csframe.py`, vectors, `cs_testserver`
+- the Home Assistant integration: tag table and pairing
+- a new `cs-mailbox`, and the integration's federation client
 
 **Issues:**
-- Moot or retargeted: #77, #78, #79, #80, #81, #84, #86, and most of #87 and
-  #88.
+- Moot or retargeted: #77, #78, #79, #80, #81, #84, #86, and most of #87 and #88.
 - Stay in revised form: #82, #83, #85.
 
-**Out of v1:** standalone-proxy publishing (09 section 5.2), federated RX1, and
+**Out of v1:** standalone-proxy publishing, federated RX1, and
 mailbox-to-mailbox federation.
