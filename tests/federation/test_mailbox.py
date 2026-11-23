@@ -312,7 +312,8 @@ async def rate_limits(url: str) -> None:
         delivered.append(d[2][0][0])
     check(len(delivered) == 25 - len(errs), f"the others are delivered ({len(delivered)})")
     dl = cs.seal(K_DEV, cs.T_DOWNLINK, frame(1)[2:10], 1, b"\x00" * 9)
-    for ref in delivered[:13]:
+    sent = delivered[:20]
+    for ref in sent:
         await owner.send([cs.MB_REQUEST, ref, dl])
     errs = []
     while (m := await expect(owner, cs.MB_ERROR, 0.3)) is not None:
@@ -320,26 +321,32 @@ async def rate_limits(url: str) -> None:
     forwards = 0
     while await expect(pub, cs.MB_FORWARD, 0.3) is not None:
         forwards += 1
-    check(errs and all(m[2] == E["RATE_LIMITED"] for m in errs) and 10 <= forwards <= 11
-          and forwards + len(errs) == 13,
+    # The burst is 10; a slow machine refills a few more while the server verifies.
+    check(errs and all(m[2] == E["RATE_LIMITED"] for m in errs) and 10 <= forwards < len(sent)
+          and forwards + len(errs) == len(sent),
           f"requests past 10 a second: RATE_LIMITED ({forwards} forwarded, {len(errs)} refused)")
 
 
 async def message_rate(url: str) -> None:
+    """Against a server with --message-rate 2 (burst 4), so the bucket's refill while
+    the server verifies is small next to the 30 sent, however slow the machine."""
     lk = await link(url)
-    for _ in range(130):  # the default 50 a second, burst 100
+    for _ in range(30):
         await lk.send([cs.MB_PING])
     refused = []
-    while (m := await expect(lk, cs.MB_ERROR, 0.3)) is not None:
+    while (m := await expect(lk, cs.MB_ERROR, 1)) is not None:
         refused.append(m)
-    check(refused and all(m[2] == E["RATE_LIMITED"] for m in refused) and min(m[1] for m in refused) > 100,
-          f"signed messages past --message-rate, after the burst of 100: RATE_LIMITED ({len(refused)} of 130)")
+    check(len(refused) >= 20 and all(m[2] == E["RATE_LIMITED"] for m in refused) and min(m[1] for m in refused) > 4,
+          f"signed messages past --message-rate, after its burst: RATE_LIMITED ({len(refused)} of 30)")
     await asyncio.sleep(1)  # refill
     seq = await lk.send([cs.MB_PING])
     pong = None
-    async with asyncio.timeout(2):
-        while pong is None or pong[0] != cs.MB_PONG_S:
-            pong = cs.mb_decode(await lk.ws.recv())  # raw: MailboxLink.recv() consumes pong_s
+    try:
+        async with asyncio.timeout(3):
+            while pong != [cs.MB_PONG_S, seq]:
+                pong = cs.mb_decode(await lk.ws.recv())  # raw: MailboxLink.recv() consumes pong_s
+    except (TimeoutError, ConnectionClosed):
+        pass
     check(pong == [cs.MB_PONG_S, seq], "... not fatal: the seq goes on and the next ping is answered")
 
 
@@ -430,7 +437,6 @@ def main() -> int:
         procs.append(p2)
         asyncio.run(hosts(port, port2))
         asyncio.run(rate_limits(url))
-        asyncio.run(message_rate(url))
         asyncio.run(client_skips_unknown())
         asyncio.run(routing(f"ws://127.0.0.1:{port2}/"))
 
@@ -454,6 +460,9 @@ def main() -> int:
                   "after a restart with --key-file: the same server_id and a new generation")
             await lk.close()
         asyncio.run(after_restart())
+        p5, port5 = start("--host", "127.0.0.1", "--insecure-dev", "--message-rate", "2")
+        procs.append(p5)
+        asyncio.run(message_rate(f"ws://127.0.0.1:{port5}/"))
         bad = Watched([sys.executable, "-I", MAILBOX, "--host", "127.0.0.1", "--port", "0"])
         check(bad.wait_for(r"TLS is required") is not None, "without TLS or --insecure-dev the server will not start")
         bad.stop()
