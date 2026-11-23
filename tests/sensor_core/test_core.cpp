@@ -11,7 +11,9 @@
 #include <vector>
 
 #include "cs_crypto.h"
+#include "cs_ed25519.h"
 #include "cs_sha256.h"
+#include "cs_sha512.h"
 #include "cs_x25519.h"
 #include "sensor_core.h"
 #include "vectors.inc"
@@ -71,6 +73,56 @@ static const FrameVector &fv(const char *name) {
 static constexpr uint64_t MS = 1000;
 static constexpr uint64_t S = 1000000;
 static constexpr uint64_t MIN = 60 * S;
+
+// ---------------------------------------------------------------- SHA-512 and Ed25519 key generation
+
+static void test_sha512_ed25519() {
+  struct {
+    const char *msg;
+    const char *digest;
+  } sha[] = {
+      {"abc",
+       "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"},
+      {"",
+       "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"},
+      {"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu",
+       "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909"},
+  };
+  for (const auto &v : sha) {
+    uint8_t out[64];
+    sha512(reinterpret_cast<const uint8_t *>(v.msg), std::strlen(v.msg), out);
+    CHECK(hex(out, 64) == v.digest);
+    // The same digest fed a byte at a time crosses the block boundary on every path.
+    Sha512 s;
+    for (size_t i = 0; v.msg[i]; i++)
+      s.update(reinterpret_cast<const uint8_t *>(v.msg + i), 1);
+    s.finish(out);
+    CHECK(hex(out, 64) == v.digest);
+  }
+
+  // RFC 8032 section 7.1: TEST 1, 2, 3, 1024 and SHA(abc).
+  struct {
+    const char *seed;
+    const char *pub;
+  } ed[] = {
+      {"9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+       "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"},
+      {"4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+       "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"},
+      {"c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+       "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025"},
+      {"f5e5767cf153319517630f226876b86c8160cc583bc013744c6bf255f5cc0ee5",
+       "278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e"},
+      {"833fe62409237b9d62ec77587520911e9a759cec1d19755b7da901b96dca3d42",
+       "ec172b93ad5e563bf4932c70e1245034c35467ef2efd4d64ebf819683467e2bf"},
+  };
+  for (const auto &v : ed) {
+    Bytes seed = unhex(v.seed);
+    uint8_t pub[32];
+    cs_ed25519_public_key(seed.data(), pub);
+    CHECK(hex(pub, 32) == v.pub);
+  }
+}
 
 // ---------------------------------------------------------------- crypto
 
@@ -1608,6 +1660,7 @@ static void test_reading_first_value_after_boot() {
 
 int main() {
   test_crypto();
+  test_sha512_ed25519();
   test_frame_vectors();
   test_payload_vectors();
   test_pairing_code();

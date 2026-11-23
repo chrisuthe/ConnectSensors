@@ -7,8 +7,10 @@ all: run
 vectors.inc: gen_vectors.py ../../spec/vectors/frame-v1.json ../../spec/vectors/payload-v1.json ../../spec/vectors/pairing-v1.json
 	python3 gen_vectors.py
 
-SOURCES := $(COMPONENT)/sensor_core.cpp $(COMPONENT)/cs_crypto.cpp $(COMPONENT)/cs_x25519.cpp $(COMPONENT)/cs_sha256.cpp
-HEADERS := $(COMPONENT)/sensor_core.h $(COMPONENT)/cs_crypto.h $(COMPONENT)/cs_x25519.h $(COMPONENT)/cs_sha256.h
+SOURCES := $(COMPONENT)/sensor_core.cpp $(COMPONENT)/cs_crypto.cpp $(COMPONENT)/cs_x25519.cpp $(COMPONENT)/cs_sha256.cpp \
+           $(COMPONENT)/cs_sha512.cpp $(COMPONENT)/cs_ed25519.cpp
+HEADERS := $(COMPONENT)/sensor_core.h $(COMPONENT)/cs_crypto.h $(COMPONENT)/cs_x25519.h $(COMPONENT)/cs_sha256.h \
+           $(COMPONENT)/cs_sha512.h $(COMPONENT)/cs_ed25519.h $(COMPONENT)/cs_fe25519.h
 
 test_core: test_core.cpp vectors.inc $(SOURCES) $(HEADERS)
 	$(CXX) $(CXXFLAGS) -I$(COMPONENT) -o $@ test_core.cpp $(SOURCES)

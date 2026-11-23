@@ -180,6 +180,9 @@ dependency, which the component wraps.
 | `sensor_core.h/.cpp` | Frames, readings, pairing and sensor behaviour, plus the platform interfaces |
 | `cs_crypto.h/.cpp` | AES-128, AES-128-CCM with an 8-byte tag, HKDF-SHA256 |
 | `cs_x25519.h/.cpp` | X25519 |
+| `cs_ed25519.h/.cpp` | Ed25519 public-key generation, for tags |
+| `cs_fe25519.h` | Field arithmetic shared by X25519 and Ed25519 |
+| `cs_sha512.h/.cpp` | SHA-512, for Ed25519 |
 | `cs_sha256.h/.cpp` | SHA-256 and HMAC-SHA256, copied from `cs_proxy` |
 | `cs_clock.h` | The 64-bit microsecond clock, per platform, copied from `cs_proxy` |
 
@@ -249,6 +252,8 @@ frequent passes.
 | AES-128, AES-CCM, HKDF | Written for this repository | The repository's |
 | X25519 | TweetNaCl `crypto_scalarmult` (Bernstein et al.), adapted to C++ without undefined behaviour | Public domain |
 | SHA-256, HMAC | `components/cs_proxy/cs_sha256.*` | The repository's |
+| Ed25519 key generation | TweetNaCl `crypto_sign_keypair` point arithmetic, on the same field code | Public domain |
+| SHA-512 | Written for this repository (FIPS 180-4) | The repository's |
 
 None of it uses platform crypto APIs, so ESP32 and nRF52 run the same code. The
 tests check AES against FIPS 197, CCM against RFC 3610, HKDF against RFC 5869,
