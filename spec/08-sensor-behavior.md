@@ -170,7 +170,9 @@ forget its pairing because of it. Only `LEAVE` or a factory reset (the
   section 10.2).
 - If the downlink has `PENDING` set, the sensor SHOULD send a follow-up
   heartbeat 2 to 4 seconds later (random), so the server can deliver the next
-  command. It MUST NOT do this more than 4 times in a row.
+  command. It MUST NOT do this more than 4 times in a row: a row is the
+  follow-ups sent since the last accepted downlink that answered an uplink other
+  than a follow-up.
   - If it accepted the downlink in RX1, the follow-up is a `HEARTBEAT`.
   - If it accepted it in RX2, the follow-up is a `HEARTBEAT_CONFIRMED`, so RX2
     opens after it too. A server that answered in RX2 may only be able to answer

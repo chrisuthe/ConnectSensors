@@ -1329,7 +1329,6 @@ static void test_pending_rx1_unconfirmed() {
         DownlinkResult::ACCEPT);
   Tx f = rig.wait_tx(n + 2, 5 * S);
   CHECK(type_of(f) == T_HEARTBEAT);
-  rig.tick_to(f.done_us + 1200 * MS);
   rig.tick_to(f.done_us + 2990 * MS);
   CHECK(!rig.radio.rx);
   rig.run(60 * S);
@@ -1409,6 +1408,12 @@ static void test_pending_rx2_limit() {
     }
   }
   CHECK(rig.core->undelivered() == 0);
+  // The next uplink that is not a follow-up starts a new row, even with commands still queued.
+  rig.core->report(true);
+  t = rig.wait_tx(n + 6);
+  CHECK(rig.in_rx2(t, server.downlink(fcnt_of(t), V_TIME + 200, DF_PENDING)) == DownlinkResult::ACCEPT);
+  t = rig.wait_tx(n + 7, 5 * S);
+  CHECK(type_of(t) == T_HEARTBEAT_CONFIRMED);
 }
 
 static void test_abandon_retries() {

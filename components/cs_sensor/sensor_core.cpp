@@ -1301,6 +1301,9 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
       this->dl_ack_ = true;
     // 08 section 7: PENDING asks for a HEARTBEAT in 2-4 s, at most 4 times in a row.
     // After RX2 it is confirmed, so its own RX2 opens for a server that only uses RX2.
+    // A row restarts with any answered uplink that was not itself a follow-up.
+    if (this->cur_.purpose != Purpose::FOLLOW_UP)
+      this->pending_hb_count_ = 0;
     if ((dflags & DF_PENDING) && this->state_ == PairingState::PAIRED && !this->want_leave_heartbeat_ &&
         this->pending_hb_count_ < MAX_PENDING_HEARTBEATS) {
       this->pending_hb_count_++;
