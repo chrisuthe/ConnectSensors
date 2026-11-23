@@ -293,8 +293,9 @@ A sensor implementation MUST pass at least:
     accepts a session downlink. It reproduces the `provisional` sequence of
     `vectors/pairing-v1.json`. In `SESSION` (04 section 4.3) it returns to
     `UNPAIRED`, with the root floor kept, when that uplink goes unanswered after
-    its retries and after a restart. A short press in `JOINING` or `SESSION`
-    sends nothing.
+    its retries and after a restart. A session downlink carrying `LEAVE` makes
+    it `PAIRED` first, so it sends the final `HEARTBEAT` with `DL_ACK` (section
+    8) before it unpairs. A short press in `JOINING` or `SESSION` sends nothing.
 12. Its tags match `vectors/frame-v1.json`: the normal tags for the three epochs,
     and the bootstrap tags of both key sets at `fcnt` 1, 64, 65 and 129. A
     `JOIN` and a `SYNC` carry the bootstrap tag of their `fcnt`'s block, and every

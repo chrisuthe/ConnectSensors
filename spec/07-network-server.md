@@ -77,9 +77,8 @@ rebuilt at startup.
 That is 6 entries per device, each costing one Ed25519 key generation to build.
 
 - At each epoch boundary the server drops epoch `e - 2` and adds `e + 2` (the new
-  `e + 1`), and sends `SERVER_STATUS` with `hello_seq` 0 to every connected proxy
-  within 10 seconds (05 section 5.3). It SHOULD compute the new entries before
-  the boundary.
+  `e + 1`). It SHOULD compute the new entries before the boundary. Proxies need
+  nothing at the boundary: they hold no tags (05 section 5.3).
 - When a device's `last_fcnt` moves into a new block, the server moves its
   bootstrap entries along: the block holding `last_fcnt` and the 2 after it.
 - If the system clock jumps by more than 60 seconds, the server rebuilds the whole
@@ -107,8 +106,8 @@ For each `UPLINK` message:
    retransmission (02 section 8.3): start a new entry and wait for the
    collection window (section 4.1) before step 8.
 4. **Identify.** Look up the frame's `tag` in the tag table (section 3) and try
-   each candidate's key set until a MIC verifies (02 section 6.4). If none
-   matches:
+   each candidate's key set until a MIC verifies (02 section 6.4). If the tag
+   misses the table, or no candidate's MIC verifies:
    - a bootstrap frame heard by one of the server's own proxies falls back to
      trial decryption (02 section 11.3): `JOIN` under the root key set of each
      `SCANNED` or `EXCHANGED` device, `SYNC` under the session key set of each
@@ -135,8 +134,9 @@ For each `UPLINK` message:
      if the frame's `fcnt` is greater than their downlink's `reply_to` (section
      7). A late arrival can carry `DL_ACK` for an earlier downlink.
    - Readings: update states, unwrap counters, fire `button` events.
-   - `JOIN`, `SYNC`: advance the pairing state machine (04) as applicable. A
-     `JOIN` is answered as in section 5.1.
+   - Pairing (04 section 4.2): a `JOIN` is answered as in section 5.1, and the
+     first uplink under an `EXCHANGED` device's pending `k_session` marks it
+     `PAIRED`.
    - Record the uplink time for supervision.
    - Note clock skew: if the frame's tag matched epoch `e - 1` or `e + 1` rather
      than `e`, and the frame arrived more than 5 minutes from an epoch boundary,

@@ -137,9 +137,10 @@ tag   = trunc64(SHA-256("cs1 tag fp" | pub))
 
 - `k_dev_tag` is from the key set the frame is sent under (5.1): the root key
   set for `JOIN`, the session key set for every other uplink.
-- The block size 64 is the reservation block of 8.2. `fcnt` starts at 1 and
-  each boot starts on a reservation boundary, so one bootstrap tag covers the
-  counter values of one block: 1-64, 65-128, and so on.
+- The tag block is 64 counter values, whatever block size `B` a sensor
+  reserves with (8.2). With the RECOMMENDED `B` of 64, `fcnt` starting at 1 and
+  each boot starting on a reservation boundary, one bootstrap tag covers the
+  counter values of one reservation block: 1-64, 65-128, and so on.
 - A `DOWNLINK` carries the tag of the uplink it answers, whichever key set it
   is sent under. A sensor does not check a downlink's tag; the MIC and
   `reply_to` decide (10.2).
@@ -223,7 +224,7 @@ which is harmless.
 ### 8.3 Retransmission
 
 A confirmed uplink that is not answered is retransmitted as exactly the same
-bytes: same `fcnt`, same tags, same ciphertext. It is not a new frame and does not
+bytes: same `fcnt`, same `tag`, same ciphertext. It is not a new frame and does not
 use a new counter value, but it is a new transmission: the first retry comes at
 least 4 seconds after the original (08 section 5). Proxies and the server
 therefore tell transmissions apart by time, not by bytes: copies received within

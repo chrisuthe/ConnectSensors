@@ -20,6 +20,8 @@ constexpr uint8_t FRAME_MAGIC = 0xC5;
 constexpr uint8_t FRAME_VERSION = 1;
 constexpr size_t FRAME_MIN = 23;
 constexpr size_t FRAME_MAX = 86;
+constexpr uint8_t FRAME_JOIN = 0x5;
+constexpr uint8_t FRAME_SYNC = 0x6;
 
 enum class FrameCheck : uint8_t { OK, BAD_LENGTH, BAD_MAGIC, BAD_VERSION, BAD_TYPE };
 

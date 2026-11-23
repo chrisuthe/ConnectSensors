@@ -757,7 +757,9 @@ class TagTable:
 def identify_route(table: TagTable, frame: bytes, local: bool) -> tuple[str, list[str]]:
     """How the server looks for a frame's device (07 section 4, step 4): "table" with
     the candidates whose MIC to try, "fallback" for trial decryption of a locally heard
-    bootstrap frame that missed the table, or "drop"."""
+    bootstrap frame that missed the table, or "drop". A locally heard bootstrap frame
+    whose table candidates all fail the MIC falls back too; that takes the MIC, so it
+    is the caller's step."""
     h = parse_header(frame)
     if h is None:
         return "drop", []
@@ -1533,7 +1535,7 @@ def session_vectors() -> dict:
     dl_b = env(M_DOWNLINK, boot, server.next_seq(), b"\x00")
     down(1200, dl_b, "DOWNLINK overtaking the one sent before it")
     down(1210, dl_a, "the earlier DOWNLINK arriving late: not above the floor (a proxy has no reorder window)")
-    down(3000, status(0), "unsolicited SERVER_STATUS at an epoch boundary")
+    down(3000, status(0), "unsolicited SERVER_STATUS (hello_seq 0)")
     old = hello(9, b=old_boot)
     n_old = up(5000, old, "HELLO from an earlier boot, replayed: no switch, only a HELLO_REQUEST", "replay")["nonce"]
     up(5100, old, "replayed again within a second: no second HELLO_REQUEST", "replay")

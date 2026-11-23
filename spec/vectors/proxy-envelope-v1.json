@@ -273,7 +273,7 @@
       {
         "t_ms": 3000,
         "to": "proxy",
-        "note": "unsolicited SERVER_STATUS at an epoch boundary",
+        "note": "unsolicited SERVER_STATUS (hello_seq 0)",
         "message": "0181348518fffe0000011a2b3c4d000000056b00fb200000000054d8b3fe07f9e6ea648ed68a34cf6770",
         "result": "accepted"
       },

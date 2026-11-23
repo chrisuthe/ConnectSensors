@@ -47,7 +47,7 @@ FrameHeader parse_header(const uint8_t *data) {
   return FrameHeader{uint8_t(data[1] & 0x0F), be64(data + 2), be32(data + 10)};
 }
 
-bool is_bootstrap(const FrameHeader &h) { return h.type == 0x5 || h.type == 0x6; }
+bool is_bootstrap(const FrameHeader &h) { return h.type == FRAME_JOIN || h.type == FRAME_SYNC; }
 
 uint64_t frame_key(const uint8_t *data, size_t len) {
   uint8_t digest[32];

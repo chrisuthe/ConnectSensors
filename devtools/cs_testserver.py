@@ -207,11 +207,8 @@ class Devices:
         if route == "table":
             tries = [self.devices[c] for c in candidates]
         elif route == "fallback":
-            t = time.monotonic()
-            self.fallbacks = [x for x in self.fallbacks if t - x < 60]
-            if len(self.fallbacks) >= BOOTSTRAP_PER_MINUTE:
+            if not self._fallback_allowed():
                 return None
-            self.fallbacks.append(t)
             tries = list(self.devices.values())
         else:
             return None
@@ -219,7 +216,22 @@ class Devices:
             opened = dev.open(frame, h)
             if opened is not None:
                 return (dev, *opened, route)
+        if route == "table" and cs.is_bootstrap(h.ftype) and self._fallback_allowed():
+            # A colliding entry: still a bootstrap frame nobody verified (07 section 4).
+            for dev in self.devices.values():
+                if dev not in tries:
+                    opened = dev.open(frame, h)
+                    if opened is not None:
+                        return (dev, *opened, "fallback")
         return None
+
+    def _fallback_allowed(self) -> bool:
+        t = time.monotonic()
+        self.fallbacks = [x for x in self.fallbacks if t - x < 60]
+        if len(self.fallbacks) >= BOOTSTRAP_PER_MINUTE:
+            return False
+        self.fallbacks.append(t)
+        return True
 
 
 class Proxy:

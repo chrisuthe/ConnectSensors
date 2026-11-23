@@ -240,12 +240,13 @@ downlinks through such a proxy.
 ### 5.3 `SERVER_STATUS` (0x81)
 
 Sent by the server in reply to every `HELLO` from the proxy's current boot,
-including the one that makes it current (section 3.2), and to every connected
-proxy within 10 seconds after each epoch boundary.
+including the one that makes it current (section 3.2). The server MAY also send
+one unsolicited to a connected proxy, with `hello_seq` 0, for example to refresh
+its connection state (06 section 9) sooner than the next `HELLO`.
 
 ```
 server_time  uint32  Unix time
-hello_seq    uint32  seq of the HELLO this answers; 0 at an epoch boundary
+hello_seq    uint32  seq of the HELLO this answers; 0 if unsolicited
 ```
 
 The body is exactly 8 bytes. It carries no tags: tags are per device (02 section

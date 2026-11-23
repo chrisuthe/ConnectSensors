@@ -322,6 +322,13 @@ struct WarmState {
   uint8_t state_count;
   uint8_t pad[3];
   Reading state_readings[STATE_SLOTS];
+  // Normal tags already computed, so a wake does not repeat the key generation
+  // (02 section 6.1). key_check ties them to the session key they came from.
+  uint8_t tag_count;
+  uint8_t pad2[3];
+  uint8_t tag_key_check[4];
+  uint32_t tag_epochs[2];
+  uint8_t tags[2][TAG_LEN];
   uint32_t check;
 };
 
@@ -434,6 +441,7 @@ class SensorCore {
   void tag_for_(bool root, bool bootstrap, uint32_t n, uint8_t out[TAG_LEN]);
   void forget_session_tags_();
   void precompute_tag_();
+  void tag_key_check_(uint8_t out[4]) const;
 
   void start_next_(uint64_t now);
   bool build_(Purpose purpose, bool confirmed, uint64_t now);

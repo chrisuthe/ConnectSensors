@@ -1,5 +1,7 @@
 #include "cs_sha512.h"
 
+#include "cs_crypto.h"
+
 #include <cstring>
 
 namespace esphome::cs_sensor {
@@ -77,6 +79,8 @@ void Sha512::block_(const uint8_t *p) {
   this->h_[5] += f;
   this->h_[6] += g;
   this->h_[7] += h;
+  // The input here is a tag seed, an Ed25519 private key: leave none of it behind.
+  secure_zero(w, sizeof(w));
 }
 
 void Sha512::update(const uint8_t *data, size_t len) {
@@ -112,6 +116,7 @@ void Sha512::finish(uint8_t out[64]) {
     for (int j = 0; j < 8; j++)
       out[8 * i + j] = uint8_t(this->h_[i] >> (56 - 8 * j));
   }
+  secure_zero(this->buf_, sizeof(this->buf_));
   this->reset();
 }
 

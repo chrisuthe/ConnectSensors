@@ -1532,6 +1532,49 @@ static void test_tag_cache_and_precompute() {
   rig.clock.set_unix_time(boundary + 600);
   rig.run(10 * S);
   CHECK(rig.core->tag_computations() == before + 1);
+  // A deep sleep keeps the computed tags: the frame after the wake needs no key generation.
+  CHECK(rig.sleep_wake(MIN));
+  rig.core->report(false);
+  const Tx &w = rig.wait_tx(rig.radio.sent.size() + 1);
+  CHECK(tag_hex(w) == tag_hex(want));
+  CHECK(rig.core->tag_computations() == 0);
+}
+
+static void test_storage_failure_while_pairing() {
+  // 04 section 4.6: the PAIRED write fails, so the downlink is not acted on and pairing fails.
+  Rig rig;
+  rig.boot();
+  rig.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
+  rig.core->short_press();
+  const Tx &join = rig.wait_tx(1);
+  CHECK(rig.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
+  const Tx &first = rig.wait_tx(2);
+  Server server;
+  server.keys = session_keys(rig.core->session_key());
+  rig.storage.fail = true;
+  CHECK(rig.in_rx1(first, server.downlink(fcnt_of(first), V_TIME, 0, {CMD_SET_HEARTBEAT, 2, 0, 9})) ==
+        DownlinkResult::EXCHANGE_FAILED);
+  CHECK(rig.core->state() == PairingState::UNPAIRED);
+  CHECK(rig.saw(SensorEvent::PAIRING_FAILED));
+  CHECK(rig.core->session_key() == nullptr);
+  CHECK(rig.core->heartbeat_minutes() != 9);
+  CHECK(rig.core->root_floor() == 1);
+  rig.run(MIN);
+  CHECK(rig.radio.sent.size() == 2);
+
+  // The root floor write fails at KEY_EXCHANGE: no session, nothing sent under it.
+  Rig r2;
+  r2.boot();
+  r2.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
+  r2.core->short_press();
+  const Tx &j2 = r2.wait_tx(1);
+  r2.storage.fail = true;
+  CHECK(r2.in_rx1(j2, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::EXCHANGE_FAILED);
+  CHECK(r2.core->state() == PairingState::UNPAIRED);
+  CHECK(r2.core->session_key() == nullptr);
+  CHECK(r2.core->root_floor() == 0);
+  r2.run(MIN);
+  CHECK(r2.radio.sent.size() == 1);
 }
 
 static void test_firmware_until_delivered() {
@@ -1814,6 +1857,7 @@ int main() {
   test_confirmed_every_24h();
   test_provisional_exit();
   test_tag_cache_and_precompute();
+  test_storage_failure_while_pairing();
   test_firmware_until_delivered();
   test_factory_reset_without_erase();
   test_airtime_window_is_an_hour();

@@ -488,6 +488,12 @@ bool SensorCore::current_tag(uint8_t type, uint8_t out[TAG_LEN]) {
   return true;
 }
 
+void SensorCore::tag_key_check_(uint8_t out[4]) const {
+  uint8_t d[32];
+  sha256(this->session_keys_.k_dev_tag, 16, d);
+  std::memcpy(out, d, 4);
+}
+
 // 08 section 3.2: the next epoch's tag is ready before a frame needs it.
 void SensorCore::precompute_tag_() {
   if (!this->has_session_ || (this->state_ != PairingState::PAIRED && this->state_ != PairingState::SESSION))
@@ -514,7 +520,7 @@ void SensorCore::begin() {
 namespace {
 
 constexpr uint32_t WARM_MAGIC = 0x43535753;  // "CSWS"
-constexpr uint16_t WARM_VERSION = 1;
+constexpr uint16_t WARM_VERSION = 2;
 constexpr uint8_t WF_TIME_SURE = 0x01, WF_DL_ACK = 0x02, WF_FIRMWARE_SENT = 0x04, WF_ANSWERED_EVER = 0x08,
                   WF_CONFIRMED_SENT = 0x10, WF_FULL_STATE_SENT = 0x20, WF_HB_ARMED = 0x40, WF_AIR_STARTED = 0x80;
 
@@ -558,13 +564,35 @@ bool SensorCore::suspend(WarmState &out) const {
   out.state_count = uint8_t(this->state_count_);
   for (size_t i = 0; i < this->state_count_; i++)
     out.state_readings[i] = this->state_readings_[i];
+  if (this->has_session_) {
+    // The two most recent normal tags: normally this epoch's and, near the boundary, the next.
+    const TagEntry *pick[2] = {nullptr, nullptr};
+    for (const auto &e : this->tag_cache_) {
+      if (!e.used || e.root || e.bootstrap)
+        continue;
+      if (pick[0] == nullptr || e.stamp > pick[0]->stamp) {
+        pick[1] = pick[0];
+        pick[0] = &e;
+      } else if (pick[1] == nullptr || e.stamp > pick[1]->stamp) {
+        pick[1] = &e;
+      }
+    }
+    for (const TagEntry *e : pick) {
+      if (e == nullptr)
+        continue;
+      out.tag_epochs[out.tag_count] = e->n;
+      std::memcpy(out.tags[out.tag_count], e->tag, TAG_LEN);
+      out.tag_count++;
+    }
+    this->tag_key_check_(out.tag_key_check);
+  }
   out.check = warm_check(out);
   return true;
 }
 
 bool SensorCore::resume(const WarmState &in) {
   if (in.magic != WARM_MAGIC || in.version != WARM_VERSION || in.size != sizeof(WarmState) ||
-      in.check != warm_check(in) || in.state_count > STATE_SLOTS)
+      in.check != warm_check(in) || in.state_count > STATE_SLOTS || in.tag_count > 2)
     return false;
   if (in.state != uint8_t(PairingState::UNPAIRED) && in.state != uint8_t(PairingState::PAIRED))
     return false;
@@ -585,6 +613,20 @@ bool SensorCore::resume(const WarmState &in) {
     this->has_session_ = false;
     this->state_ = PairingState::UNPAIRED;
     return false;
+  }
+  uint8_t key_check[4];
+  if (this->has_session_ && in.tag_count) {
+    this->tag_key_check_(key_check);
+    if (std::memcmp(key_check, in.tag_key_check, 4) == 0) {
+      for (uint8_t i = 0; i < in.tag_count; i++) {
+        TagEntry &e = this->tag_cache_[i];
+        e.used = true;
+        e.root = e.bootstrap = false;
+        e.n = in.tag_epochs[i];
+        e.stamp = ++this->tag_stamp_;
+        std::memcpy(e.tag, in.tags[i], TAG_LEN);
+      }
+    }
   }
   this->reserved_ = in.reserved;
   this->next_fcnt_ = in.next_fcnt;
