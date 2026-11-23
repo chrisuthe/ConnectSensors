@@ -618,7 +618,8 @@ bool SensorCore::resume(const WarmState &in) {
   if (this->has_session_ && in.tag_count) {
     this->tag_key_check_(key_check);
     if (std::memcmp(key_check, in.tag_key_check, 4) == 0) {
-      for (uint8_t i = 0; i < in.tag_count; i++) {
+      // A fresh core's cache is empty. Oldest first, so the newest keeps the highest stamp.
+      for (uint8_t i = in.tag_count; i-- > 0;) {
         TagEntry &e = this->tag_cache_[i];
         e.used = true;
         e.root = e.bootstrap = false;

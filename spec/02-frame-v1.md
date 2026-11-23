@@ -408,8 +408,9 @@ section 3): for each, the block holding the last `fcnt` it accepted and the 2
 blocks after it. A bootstrap frame whose tag is in the table is identified like a
 normal frame.
 
-A bootstrap frame whose tag misses the table, but that one of the server's own
-proxies heard, is identified by trial decryption:
+A bootstrap frame whose tag misses the table, or whose table candidates all fail
+the MIC, is identified by trial decryption if one of the server's own proxies
+heard it:
 
 - For `JOIN`: the server tries the root key set of each device that is waiting to
   be paired (`SCANNED` or `EXCHANGED`, 04 section 4.2). A `JOIN`'s counter is
