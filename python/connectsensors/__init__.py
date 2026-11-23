@@ -127,7 +127,7 @@ from ._csframe import (  # noqa: E402
     x25519_pub,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 __all__ = [
     # 01 radio profiles
