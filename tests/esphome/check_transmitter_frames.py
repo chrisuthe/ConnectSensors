@@ -1,7 +1,7 @@
 """Check that the test transmitter's hand-copied frames match spec/vectors/frame-v1.json.
 
-Every `send_packet` whose data starts with the frame magic must be a vector frame
-byte for byte, its button label must name that frame's type, and each expected
+Every `transmit` script call whose hex starts with the frame magic must be a
+vector frame byte for byte, its button label must name that frame's type, and each expected
 vector must be sent by some button.
 """
 
@@ -19,7 +19,7 @@ MAGIC = 0xC5
 LABELS = {2: "DATA_CONF", 3: "HEARTBEAT", 5: "JOIN", 8: "DOWNLINK"}
 EXPECTED = {"join", "data_confirmed", "heartbeat", "downlink_ack"}
 
-SEND = re.compile(r"send_packet:\s*\n\s*data:\s*\[([^\]]*)\](.*?)what:\s*\"([^\"]*)\"", re.S)
+SEND = re.compile(r"id: transmit\s*\n\s*hex:\s*\"([0-9A-Fa-f]*)\"\s*\n\s*what:\s*\"([^\"]*)\"")
 
 
 def main():
@@ -30,8 +30,8 @@ def main():
 
     errors = []
     sent = set()
-    for data, _, label in sends:
-        frame = bytes(int(b, 16) for b in data.replace(",", " ").split())
+    for data, label in sends:
+        frame = bytes.fromhex(data)
         if not frame or frame[0] != MAGIC:
             continue
         vector = vectors.get(frame)
