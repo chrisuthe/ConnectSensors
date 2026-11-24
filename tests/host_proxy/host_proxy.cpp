@@ -8,7 +8,9 @@
 //   uplink HEX     the radio heard this frame (rssi -90, snr 7.5)
 //   quit
 // Events on stdout, one per line:
-//   ready | connected 0|1 | hello GAP_MS | sent TYPE SEQ | tx HEX | tx_done | log TEXT
+//   ready | connected 0|1 | hello GAP_MS | sent TYPE SEQ | tx HEX | log TEXT
+//   heard US       an uplink command reached the radio at this proxy-clock time
+//   tx_done US     the transmission ended (RX done at a sensor) at this time
 
 #include "proxy_engine.h"
 
@@ -105,7 +107,7 @@ class HostIo : public ProxyIo {
   std::chrono::steady_clock::time_point start_;
 };
 
-bool handle_command(const std::string &line, ProxyEngine &engine) {
+bool handle_command(const std::string &line, ProxyEngine &engine, HostIo &io) {
   if (line == "quit")
     return false;
   if (line.rfind("uplink ", 0) == 0) {
@@ -115,6 +117,7 @@ bool handle_command(const std::string &line, ProxyEngine &engine) {
       std::printf("log bad command\n");
       return true;
     }
+    std::printf("heard %llu\n", static_cast<unsigned long long>(io.now_us()));
     engine.on_packet(frame, h.size() / 2, -90.0f, 7.5f);
     return true;
   }
@@ -199,15 +202,15 @@ int main(int argc, char **argv) {
       size_t nl;
       bool keep_going = true;
       while (keep_going && (nl = pending.find('\n')) != std::string::npos) {
-        keep_going = handle_command(pending.substr(0, nl), engine);
+        keep_going = handle_command(pending.substr(0, nl), engine, io);
         pending.erase(0, nl + 1);
       }
       if (!keep_going)
         break;
     }
     if (io.tx_done_at != 0 && io.now_us() >= io.tx_done_at) {
+      std::printf("tx_done %llu\n", static_cast<unsigned long long>(io.tx_done_at));
       io.tx_done_at = 0;
-      std::printf("tx_done\n");
       engine.on_transmit_complete(true);
     }
 

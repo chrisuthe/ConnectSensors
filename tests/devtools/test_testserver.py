@@ -638,6 +638,11 @@ def json_main() -> int:
         except ValueError as ex:
             bad = "MAC" in str(ex)
         check(bad, "json: fault bad-mac fails the MAC check")
+        # The bad-MAC downlink used a seq the proxy never accepted; stale-seq must not reuse it.
+        set_fault("stale-seq")
+        uplink(fresh(), 12_500_000)
+        m, res = proxy.recv()
+        check(res == "ignored", "json: fault stale-seq is stale after a faulty downlink too")
         set_fault("uplink-frame")
         up = fresh()
         uplink(up, 13_000_000)

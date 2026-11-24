@@ -295,6 +295,7 @@ class Proxy:
         self.addr = None
         self.hello: dict | None = None
         self.hello_at = 0.0
+        self.status_seq = 0  # the last SERVER_STATUS seq, which the proxy holds: --fault stale-seq replays it
 
 
 def describe_payload(ftype: int, pt: bytes) -> str:
@@ -994,7 +995,7 @@ def main() -> int:
             log(f"{p.proxy_id.hex()}: fault late: DOWNLINK held past its window")
             return None
         if fault in ("bad-mac", "stale-seq", "wrong-boot"):
-            seq = p.link.seq if fault == "stale-seq" else p.link.next_seq() & 0xFFFFFFFF
+            seq = p.status_seq if fault == "stale-seq" else p.link.next_seq() & 0xFFFFFFFF
             boot = p.link.boot_id ^ 0x5A5A5A5A if fault == "wrong-boot" else p.link.boot_id
             msg = bytearray(cs.envelope(key, cs.M_DOWNLINK, p.proxy_id, boot, seq, body))
             if fault == "bad-mac":
@@ -1223,7 +1224,7 @@ def main() -> int:
                  downlink=bool(h["caps"] & 1), max_loop_gap_ms=h["max_loop_gap_ms"],
                  counters=dict(zip(("heard", "forwarded", "duplicates", "invalid", "rate_limited", "tx_ok",
                                     "tx_failed"), h["counters"])))
-            send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, m["seq"]))
+            p.status_seq = send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, m["seq"]))
             if h["caps"] & 1 and (args.ack or real) and pid not in downlink_proxies:
                 downlink_proxies.add(pid)
                 if len(downlink_proxies) == 2:
