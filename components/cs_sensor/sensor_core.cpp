@@ -31,20 +31,29 @@ bool is_downlink(uint8_t type) { return type >= 0x8; }
 
 // 02 section 6.1: seed = HMAC(k_dev_tag, "cs1 tag seed" | kind | n), tag =
 // SHA-256("cs1 tag fp" | Ed25519 public key of seed), first 8 bytes.
-void tag_of(const uint8_t k_dev_tag[16], char kind, uint32_t n, uint8_t out[TAG_LEN]) {
+void tag_seed(const uint8_t k_dev_tag[16], bool bootstrap, uint32_t n, uint8_t seed[32]) {
   uint8_t msg[12 + 1 + 4];
   std::memcpy(msg, "cs1 tag seed", 12);
-  msg[12] = uint8_t(kind);
+  msg[12] = uint8_t(bootstrap ? 'b' : 'e');
   put32(msg + 13, n);
-  uint8_t seed[32];
   hmac_sha256(k_dev_tag, 16, msg, sizeof(msg), seed);
+}
+
+void tag_fingerprint(const uint8_t pub[32], uint8_t out[TAG_LEN]) {
   uint8_t fp[10 + 32];
   std::memcpy(fp, "cs1 tag fp", 10);
-  cs_ed25519_public_key(seed, fp + 10);
-  secure_zero(seed, sizeof(seed));
+  std::memcpy(fp + 10, pub, 32);
   uint8_t digest[32];
   sha256(fp, sizeof(fp), digest);
   std::memcpy(out, digest, TAG_LEN);
+}
+
+void tag_of(const uint8_t k_dev_tag[16], bool bootstrap, uint32_t n, uint8_t out[TAG_LEN]) {
+  uint8_t seed[32], pub[32];
+  tag_seed(k_dev_tag, bootstrap, n, seed);
+  cs_ed25519_public_key(seed, pub);
+  secure_zero(seed, sizeof(seed));
+  tag_fingerprint(pub, out);
 }
 
 }  // namespace
@@ -77,9 +86,9 @@ bool derive_session(const uint8_t k_root[16], const uint8_t dev_eui[8], const ui
   return ok;
 }
 
-void normal_tag(const uint8_t k_dev_tag[16], uint32_t epoch, uint8_t out[TAG_LEN]) { tag_of(k_dev_tag, 'e', epoch, out); }
+void normal_tag(const uint8_t k_dev_tag[16], uint32_t epoch, uint8_t out[TAG_LEN]) { tag_of(k_dev_tag, false, epoch, out); }
 void bootstrap_tag(const uint8_t k_dev_tag[16], uint32_t fcnt, uint8_t out[TAG_LEN]) {
-  tag_of(k_dev_tag, 'b', tag_block(fcnt), out);
+  tag_of(k_dev_tag, true, tag_block(fcnt), out);
 }
 
 static void make_nonce(const KeySet &keys, uint32_t fcnt, uint8_t type, uint8_t nonce[13]) {
@@ -419,9 +428,12 @@ void SensorCore::load_stored_() {
 }
 
 void SensorCore::wipe_ephemeral_() {
+  if (this->key_job_.kind == KeyTarget::Kind::EPHEMERAL)
+    this->cancel_key_job_();
   secure_zero(this->ephemeral_private_, sizeof(this->ephemeral_private_));
   secure_zero(this->ephemeral_public_, sizeof(this->ephemeral_public_));
   this->has_ephemeral_ = false;
+  this->ephemeral_pending_ = false;
 }
 
 // Zeros load as "absent" for every blob, so they stand in for an erase that failed.
@@ -457,26 +469,44 @@ bool SensorCore::clock_known_() {
 
 // ---- tags
 
-void SensorCore::tag_for_(bool root, bool bootstrap, uint32_t n, uint8_t out[TAG_LEN]) {
+int SensorCore::tag_index_(bool root, bool bootstrap, uint32_t n) const {
+  for (size_t i = 0; i < TAG_CACHE; i++) {
+    const TagEntry &e = this->tag_cache_[i];
+    if (e.used && e.root == root && e.bootstrap == bootstrap && e.n == n)
+      return int(i);
+  }
+  return -1;
+}
+
+// Into an unused entry, or over the least recently used one.
+SensorCore::TagEntry &SensorCore::store_tag_(bool root, bool bootstrap, uint32_t n, const uint8_t tag[TAG_LEN]) {
   TagEntry *slot = &this->tag_cache_[0];
   for (auto &e : this->tag_cache_) {
-    if (e.used && e.root == root && e.bootstrap == bootstrap && e.n == n) {
-      std::memcpy(out, e.tag, TAG_LEN);
-      e.stamp = ++this->tag_stamp_;
-      return;
-    }
     if (!e.used || (slot->used && e.stamp < slot->stamp))
       slot = &e;
   }
-  const uint8_t *key = root ? this->root_keys_.k_dev_tag : this->session_keys_.k_dev_tag;
-  tag_of(key, bootstrap ? 'b' : 'e', n, slot->tag);
-  this->tag_computations_++;
   slot->used = true;
   slot->root = root;
   slot->bootstrap = bootstrap;
   slot->n = n;
   slot->stamp = ++this->tag_stamp_;
-  std::memcpy(out, slot->tag, TAG_LEN);
+  std::memcpy(slot->tag, tag, TAG_LEN);
+  return *slot;
+}
+
+// From the cache, or computed now, all at once.
+void SensorCore::tag_for_(bool root, bool bootstrap, uint32_t n, uint8_t out[TAG_LEN]) {
+  int i = this->tag_index_(root, bootstrap, n);
+  if (i >= 0) {
+    TagEntry &e = this->tag_cache_[i];
+    e.stamp = ++this->tag_stamp_;
+    std::memcpy(out, e.tag, TAG_LEN);
+    return;
+  }
+  const uint8_t *key = root ? this->root_keys_.k_dev_tag : this->session_keys_.k_dev_tag;
+  tag_of(key, bootstrap, n, out);
+  this->tag_computations_++;
+  this->store_tag_(root, bootstrap, n, out);
 }
 
 void SensorCore::forget_session_tags_() {
@@ -484,6 +514,11 @@ void SensorCore::forget_session_tags_() {
     if (!e.root)
       e = TagEntry{};
   }
+  // A session tag in progress, or waited for, belongs to keys that are gone.
+  if (this->key_job_.kind == KeyTarget::Kind::TAG && !this->key_job_.root)
+    this->cancel_key_job_();
+  if (this->wanted_tag_.kind == KeyTarget::Kind::TAG && !this->wanted_tag_.root)
+    this->wanted_tag_ = KeyTarget{};
 }
 
 bool SensorCore::current_tag(uint8_t type, uint8_t out[TAG_LEN]) {
@@ -507,15 +542,131 @@ void SensorCore::tag_key_check_(uint8_t out[4]) const {
   std::memcpy(out, d, 4);
 }
 
-// 08 section 3.2: the next epoch's tag is ready before a frame needs it.
-void SensorCore::precompute_tag_() {
+// ---- key work
+//
+// Each key generation runs in slices of at most KEY_SLICE_US per loop() pass. A
+// frame whose tag is not ready waits for it (tag_ready_) rather than computing it on
+// the spot, and the tags a frame is likely to need are computed ahead: the JOIN's key
+// pair and tag right after the press, the next epoch's before the boundary, and a
+// SYNC's block while SYNC is likely. The steps are the same for every key, so where
+// a slice ends reveals nothing about it.
+
+bool SensorCore::key_target_valid_(const KeyTarget &t) const {
+  switch (t.kind) {
+    case KeyTarget::Kind::EPHEMERAL:
+      return this->ephemeral_pending_;
+    case KeyTarget::Kind::TAG:
+      return t.root || this->has_session_;
+    default:
+      return false;
+  }
+}
+
+// Work in progress or due, which holds the core so the platform keeps calling loop().
+bool SensorCore::key_work_pending_() const {
+  KeyTarget t;
+  return this->key_job_.kind != KeyTarget::Kind::NONE || this->next_key_target_(t);
+}
+
+bool SensorCore::tag_ready_(bool root, bool bootstrap, uint32_t n) {
+  if (this->tag_index_(root, bootstrap, n) >= 0)
+    return true;
+  this->wanted_tag_ = KeyTarget{KeyTarget::Kind::TAG, root, bootstrap, n};
+  return false;
+}
+
+bool SensorCore::next_key_target_(KeyTarget &out) const {
+  using Kind = KeyTarget::Kind;
+  auto want = [&](bool root, bool bootstrap, uint32_t n) {
+    if (this->tag_index_(root, bootstrap, n) >= 0)
+      return false;
+    out = KeyTarget{Kind::TAG, root, bootstrap, n};
+    return true;
+  };
+  // The JOIN key pair first, then the tag a frame is waiting for.
+  if (this->ephemeral_pending_) {
+    out = KeyTarget{Kind::EPHEMERAL};
+    return true;
+  }
+  const KeyTarget &w = this->wanted_tag_;
+  if (this->key_target_valid_(w) && want(w.root, w.bootstrap, w.n))
+    return true;
+  // Then ahead of need: the JOIN's tag (02 section 6.1),
+  if (this->state_ == PairingState::JOINING && this->want_join_ && want(true, true, tag_block(this->next_fcnt_)))
+    return true;
   if (!this->has_session_ || (this->state_ != PairingState::PAIRED && this->state_ != PairingState::SESSION))
-    return;
+    return false;
   uint32_t t;
-  if (!this->clock_.unix_time(t) || EPOCH_SECONDS - t % EPOCH_SECONDS > TAG_PRECOMPUTE_LEAD_S)
-    return;
-  uint8_t tag[TAG_LEN];
-  this->tag_for_(false, false, epoch_of(t) + 1, tag);
+  bool clock = this->clock_.unix_time(t);
+  // the next epoch's before the boundary (08 section 3.2),
+  if (clock && EPOCH_SECONDS - t % EPOCH_SECONDS <= TAG_PRECOMPUTE_LEAD_S && want(false, false, epoch_of(t) + 1))
+    return true;
+  // and, while frames go out as SYNC (08 sections 3.2 and 6), the block's of the next one.
+  return (!clock || this->undelivered_ >= SYNC_AFTER_UNDELIVERED) && want(false, true, tag_block(this->next_fcnt_));
+}
+
+void SensorCore::cancel_key_job_() {
+  this->keygen_.clear();
+  this->key_job_ = KeyTarget{};
+}
+
+// Steps key generations until the deadline, but always at least one step.
+void SensorCore::key_work_(uint64_t deadline) {
+  using Kind = KeyTarget::Kind;
+  for (bool first = true;; first = false) {
+    const uint64_t start = this->clock_.now_us();
+    if (!first && start >= deadline)
+      return;
+    if (this->key_job_.kind != Kind::NONE && !this->key_target_valid_(this->key_job_))
+      this->cancel_key_job_();
+    if (this->key_job_.kind == Kind::NONE) {
+      KeyTarget t;
+      if (!this->next_key_target_(t))
+        return;
+      this->key_job_ = t;
+      this->job_us_ = this->job_slices_ = this->job_max_slice_us_ = 0;
+      if (t.kind == Kind::EPHEMERAL) {
+        this->keygen_.start_x25519(this->ephemeral_private_);
+      } else {
+        uint8_t seed[32];
+        tag_seed(t.root ? this->root_keys_.k_dev_tag : this->session_keys_.k_dev_tag, t.bootstrap, t.n, seed);
+        this->keygen_.start_ed25519(seed);
+        secure_zero(seed, sizeof(seed));
+      }
+    }
+    bool finished;
+    uint64_t now;
+    do {
+      finished = this->keygen_.step();
+      now = this->clock_.now_us();
+    } while (!finished && now < deadline);
+    const uint32_t slice = uint32_t(now - start);
+    this->job_us_ += slice;
+    this->job_slices_++;
+    if (slice > this->job_max_slice_us_)
+      this->job_max_slice_us_ = slice;
+    if (!finished)
+      return;
+
+    const KeyTarget &j = this->key_job_;
+    if (j.kind == Kind::EPHEMERAL) {
+      std::memcpy(this->ephemeral_public_, this->keygen_.result(), 32);
+      this->has_ephemeral_ = true;
+      this->ephemeral_pending_ = false;
+    } else {
+      uint8_t tag[TAG_LEN];
+      tag_fingerprint(this->keygen_.result(), tag);
+      this->store_tag_(j.root, j.bootstrap, j.n, tag);
+      this->tag_computations_++;
+    }
+    KeyWork &k = this->key_work_stats_;
+    k.jobs++;
+    k.last_was_tag = j.kind == Kind::TAG;
+    k.last_us = this->job_us_;
+    k.last_slices = this->job_slices_;
+    k.last_max_slice_us = this->job_max_slice_us_;
+    this->cancel_key_job_();
+  }
 }
 
 // ---- public API
@@ -716,10 +867,11 @@ bool SensorCore::send_event(const Reading &r, bool confirmed) {
 void SensorCore::short_press() {
   switch (this->state_) {
     case PairingState::UNPAIRED:
-      // 04 section 4.4 step 2: a fresh key pair for every JOIN.
+      // 04 section 4.4 step 2: a fresh key pair for every JOIN. loop() computes the
+      // public key, and the JOIN goes out once it and the JOIN's tag are ready.
+      this->wipe_ephemeral_();
       this->random_.fill(this->ephemeral_private_, 32);
-      x25519_base(this->ephemeral_public_, this->ephemeral_private_);
-      this->has_ephemeral_ = true;
+      this->ephemeral_pending_ = true;
       this->state_ = PairingState::JOINING;
       this->want_join_ = true;
       this->emit_(SensorEvent::PAIRING_STARTED);
@@ -764,7 +916,7 @@ bool SensorCore::immediate_work_() const {
 }
 
 bool SensorCore::hold() const {
-  return this->phase_ != Phase::IDLE || this->immediate_work_() ||
+  return this->phase_ != Phase::IDLE || this->immediate_work_() || this->key_work_pending_() ||
          (this->state_ == PairingState::PAIRED && this->want_pending_hb_ && !this->stopped_);
 }
 
@@ -781,6 +933,8 @@ uint64_t SensorCore::next_wake_us() const {
     case Phase::IDLE:
       break;
   }
+  if (this->key_work_pending_())
+    return 0;
   if (this->immediate_work_())
     return this->tx_blocked_until_us_;
   uint64_t t = UINT64_MAX;
@@ -800,11 +954,17 @@ uint64_t SensorCore::next_wake_us() const {
 void SensorCore::loop() {
   uint64_t now = this->clock_.now_us();
   switch (this->phase_) {
-    case Phase::IDLE:
-      this->start_next_(now);
-      if (this->phase_ == Phase::IDLE)
-        this->precompute_tag_();
+    case Phase::IDLE: {
+      const uint64_t deadline = now + KEY_SLICE_US;
+      this->key_work_(deadline);
+      this->start_next_(this->clock_.now_us());
+      // A frame that found its tag missing waits for it; with time left, carry on now.
+      if (this->phase_ == Phase::IDLE && this->key_work_pending_() && this->clock_.now_us() < deadline) {
+        this->key_work_(deadline);
+        this->start_next_(this->clock_.now_us());
+      }
       break;
+    }
     case Phase::TX:
       // A lost TX-done: assume it went, so a window still opens and retries go on.
       if (now - this->tx_started_us_ >= TX_TIMEOUT_US)
@@ -971,7 +1131,7 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
 
   if (purpose == Purpose::JOIN) {
     // 02 section 11.1: TIME_UNSURE is always set in JOIN.
-    if (!this->has_ephemeral_)
+    if (!this->has_ephemeral_ || !this->tag_ready_(true, true, tag_block(this->next_fcnt_)))
       return false;
     keys = &this->root_keys_;
     type = T_JOIN;
@@ -1002,6 +1162,10 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
     }
     if (clock)
       epoch = epoch_of(unix_time);
+    // Without its tag the frame waits, before anything is taken from the queues.
+    if (!(is_bootstrap(type) ? this->tag_ready_(false, true, tag_block(this->next_fcnt_))
+                             : this->tag_ready_(false, false, epoch)))
+      return false;
     if (this->dl_ack_ || purpose == Purpose::LEAVE_HEARTBEAT)
       uflags |= UF_DL_ACK;
     pt[0] = uflags;
@@ -1033,11 +1197,13 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
     this->last_confirmed_sent_us_ = now;
   }
   uint8_t tag[TAG_LEN];
-  if (is_bootstrap(type)) {
-    this->tag_for_(purpose == Purpose::JOIN, true, tag_block(fcnt), tag);
-  } else {
-    this->tag_for_(false, false, epoch, tag);
-  }
+  const bool root = purpose == Purpose::JOIN, bootstrap = is_bootstrap(type);
+  const uint32_t n = bootstrap ? tag_block(fcnt) : epoch;
+  // Checked above for this fcnt, so always cached; computed at once only as a fallback.
+  if (this->tag_index_(root, bootstrap, n) < 0)
+    this->key_work_stats_.sync_tags++;
+  this->tag_for_(root, bootstrap, n, tag);
+  this->wanted_tag_ = KeyTarget{};
   size_t len = 0;
   seal_frame(*keys, type, tag, fcnt, pt, pt_len, u.frame, len);
   u.len = uint8_t(len);
@@ -1277,8 +1443,11 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
     if (server_pub == nullptr)
       return DownlinkResult::NO_KEY_EXCHANGE;
     uint8_t k[16];
+    const uint64_t t0 = this->clock_.now_us();
     bool ok = derive_session(this->config_.k_root, this->config_.dev_eui, this->ephemeral_private_, server_pub,
                              this->ephemeral_public_, server_pub, k);
+    this->key_work_stats_.exchanges++;
+    this->key_work_stats_.last_exchange_us = uint32_t(this->clock_.now_us() - t0);
     this->wipe_ephemeral_();
     // 04 section 4.6: the new root floor is durable before SYNC goes out.
     if (ok && !this->save_u32_(Blob::ROOT_FLOOR, h.fcnt)) {

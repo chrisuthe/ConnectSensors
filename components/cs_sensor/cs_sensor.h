@@ -186,6 +186,7 @@ class CSSensor : public Component
   void tx_complete_(bool ok);
   void on_event_(SensorEvent e);
   void publish_diagnostics_();
+  void log_key_work_();
   Component *radio_component_() const;
   void schedule_wake_(uint64_t wake_us);
   uint64_t glue_wake_us_() const;
@@ -233,6 +234,7 @@ class CSSensor : public Component
   float last_rssi_{NAN};
   float last_snr_{NAN};
   bool signal_fresh_{false};
+  SensorCore::KeyWork key_work_logged_{};
 
   // Deep sleep
 #ifdef USE_CS_SENSOR_DEEP_SLEEP
