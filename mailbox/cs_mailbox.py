@@ -171,7 +171,7 @@ class Mailbox:
         peer = ws.remote_address[0] if ws.remote_address else ""
         if self.trusted(peer):
             return None
-        self.log_once(f"untrusted {peer}", f"{peer}: not a trusted proxy, refused")
+        self.log_once(f"untrusted {source_network(peer)}", f"{peer}: not a trusted proxy, refused")
         return ws.respond(HTTPStatus.FORBIDDEN, "Forbidden\n")
 
     def client_address(self, ws: ServerConnection) -> tuple[str, str]:

@@ -86,7 +86,7 @@ cs-mailbox --host mailbox.example --trusted-proxy 172.30.0.0/24 --key-file serve
 With `--trusted-proxy`:
 
 - Only peers in the given ranges may connect. Anyone else gets HTTP 403 before
-  the WebSocket handshake, logged at most once a minute per address.
+  the WebSocket handshake, logged at most once a minute per address (per /64 for IPv6).
 - Admission counts each client by the address the proxy reports: the last
   `X-Forwarded-For` entry, which the proxy appended, else `X-Real-IP`. A
   malformed value, or none, counts against the proxy's own address. These
