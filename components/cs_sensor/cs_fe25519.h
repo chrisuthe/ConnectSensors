@@ -1,105 +1,104 @@
 #pragma once
 
-// Arithmetic mod 2^255 - 19 shared by X25519 (cs_x25519.cpp) and Ed25519 key
+// Arithmetic mod p = 2^255 - 19 shared by X25519 (cs_x25519.cpp) and Ed25519 key
 // generation (cs_ed25519.cpp). Internal to the component.
 //
-// Provenance: TweetNaCl (public domain, https://tweetnacl.cr.yp.to), adapted to
-// C++ with left shifts of negative values replaced by multiplications so it is
-// free of undefined behaviour. Constant time: no branches or indices on secrets.
+// Provenance: the radix 2^25.5 representation and carry chains of ref10 (Bernstein,
+// Duif, Lange, Schwabe, Yang; public domain, SUPERCOP crypto_sign/ed25519/ref10).
+// Ten 32-bit limbs and 32x32->64 products suit 32-bit MCUs (ESP32, nRF52), where
+// the 64x64 products of a 16-limb TweetNaCl field cost several multiplies each.
+// Constant time: no branches or indices on secrets.
+//
+// Limb i holds bits from ceil(25.5 i): 26 bits for even i, 25 for odd. Products and
+// squares come out carried (|limb| <= 2^25 even, 2^24 odd, roughly); add and sub do
+// not carry, and as in ref10 a mul input may be the sum or difference of two
+// carried values but no more.
 
 #include <cstdint>
 
 namespace esphome::cs_sensor::fe25519 {
 
-// Field elements mod 2^255 - 19 as 16 limbs of 16 bits, with headroom for carries.
-using gf = int64_t[16];
+using fe = int32_t[10];
 
-inline void car25519(gf o) {
-  for (int i = 0; i < 16; i++) {
-    o[i] += int64_t(1) << 16;
-    int64_t c = o[i] >> 16;
-    o[(i + 1) * (i < 15)] += c - 1 + 37 * (c - 1) * (i == 15);
-    o[i] -= c * 65536;
+inline void copy(fe h, const fe f) {
+  for (int i = 0; i < 10; i++)
+    h[i] = f[i];
+}
+
+inline void zero(fe h) {
+  for (int i = 0; i < 10; i++)
+    h[i] = 0;
+}
+
+inline void one(fe h) {
+  zero(h);
+  h[0] = 1;
+}
+
+inline void add(fe h, const fe f, const fe g) {
+  for (int i = 0; i < 10; i++)
+    h[i] = f[i] + g[i];
+}
+
+inline void sub(fe h, const fe f, const fe g) {
+  for (int i = 0; i < 10; i++)
+    h[i] = f[i] - g[i];
+}
+
+inline void neg(fe h, const fe f) {
+  for (int i = 0; i < 10; i++)
+    h[i] = -f[i];
+}
+
+// f = g if b is 1, unchanged if 0, without branching on b.
+inline void cmov(fe f, const fe g, uint32_t b) {
+  int32_t mask = -int32_t(b);
+  for (int i = 0; i < 10; i++)
+    f[i] ^= mask & (f[i] ^ g[i]);
+}
+
+// Swap f and g if b is 1, without branching on b.
+inline void cswap(fe f, fe g, uint32_t b) {
+  int32_t mask = -int32_t(b);
+  for (int i = 0; i < 10; i++) {
+    int32_t t = mask & (f[i] ^ g[i]);
+    f[i] ^= t;
+    g[i] ^= t;
   }
 }
 
-// Swap p and q when b is 1, without branching on b.
-inline void sel25519(gf p, gf q, int64_t b) {
-  int64_t c = ~(b - 1);
-  for (int i = 0; i < 16; i++) {
-    int64_t t = c & (p[i] ^ q[i]);
-    p[i] ^= t;
-    q[i] ^= t;
-  }
-}
+void mul(fe h, const fe f, const fe g);
+void sq(fe h, const fe f);
+void sq2(fe h, const fe f);  // 2 f^2
+void mul_small(fe h, const fe f, int32_t n);  // n < 2^17
+// Bit 255 is ignored, as RFC 7748 and RFC 8032 decoding both do.
+void frombytes(fe h, const uint8_t s[32]);
+// The canonical encoding, fully reduced mod p.
+void tobytes(uint8_t s[32], const fe h);
+// Bit 0 of the canonical encoding: the "sign" of RFC 8032.
+uint32_t isnegative(const fe f);
 
-inline void pack25519(uint8_t *o, const gf n) {
-  gf m, t;
-  for (int i = 0; i < 16; i++)
-    t[i] = n[i];
-  car25519(t);
-  car25519(t);
-  car25519(t);
-  for (int j = 0; j < 2; j++) {
-    m[0] = t[0] - 0xffed;
-    for (int i = 1; i < 15; i++) {
-      m[i] = t[i] - 0xffff - ((m[i - 1] >> 16) & 1);
-      m[i - 1] &= 0xffff;
-    }
-    m[15] = t[15] - 0x7fff - ((m[14] >> 16) & 1);
-    int64_t b = (m[15] >> 16) & 1;
-    m[14] &= 0xffff;
-    sel25519(t, m, 1 - b);
-  }
-  for (int i = 0; i < 16; i++) {
-    o[2 * i] = uint8_t(t[i] & 0xff);
-    o[2 * i + 1] = uint8_t(t[i] >> 8);
-  }
-}
+// 1/z = z^(p-2), by ref10's addition chain (254 squarings, 11 multiplications), in
+// steps so a key generation can be spread across loop passes. invert() runs it all.
+class Inverter {
+ public:
+  void start(const fe z);
+  // At most max_squarings squarings, or one multiplication. True once done.
+  bool step(int max_squarings);
+  bool done() const { return this->op_ >= OPS; }
+  const int32_t *result() const { return this->r_[R_OUT]; }
+  void wipe();
 
-inline void unpack25519(gf o, const uint8_t *n) {
-  for (int i = 0; i < 16; i++)
-    o[i] = n[2 * i] + (int64_t(n[2 * i + 1]) << 8);
-  o[15] &= 0x7fff;
-}
+ private:
+  static constexpr uint8_t OPS = 12;
+  enum : uint8_t { R_Z, R_T0, R_T1, R_T2, R_OUT = R_T1 };
+  fe r_[4];
+  fe acc_;
+  uint8_t op_{OPS};
+  uint8_t left_{0};
+  bool loaded_{false};
+};
 
-inline void add(gf o, const gf a, const gf b) {
-  for (int i = 0; i < 16; i++)
-    o[i] = a[i] + b[i];
-}
-
-inline void sub(gf o, const gf a, const gf b) {
-  for (int i = 0; i < 16; i++)
-    o[i] = a[i] - b[i];
-}
-
-inline void mul(gf o, const gf a, const gf b) {
-  int64_t t[31] = {0};
-  for (int i = 0; i < 16; i++) {
-    for (int j = 0; j < 16; j++)
-      t[i + j] += a[i] * b[j];
-  }
-  for (int i = 0; i < 15; i++)
-    t[i] += 38 * t[i + 16];
-  for (int i = 0; i < 16; i++)
-    o[i] = t[i];
-  car25519(o);
-  car25519(o);
-}
-
-inline void sqr(gf o, const gf a) { mul(o, a, a); }
-
-inline void inv25519(gf o, const gf in) {
-  gf c;
-  for (int a = 0; a < 16; a++)
-    c[a] = in[a];
-  for (int a = 253; a >= 0; a--) {
-    sqr(c, c);
-    if (a != 2 && a != 4)
-      mul(c, c, in);
-  }
-  for (int a = 0; a < 16; a++)
-    o[a] = c[a];
-}
+void invert(fe out, const fe z);
 
 }  // namespace esphome::cs_sensor::fe25519

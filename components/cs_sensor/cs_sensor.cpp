@@ -588,6 +588,21 @@ void CSSensor::on_event_(SensorEvent e) {
   }
 }
 
+// Key work timings, to check on a device that none of it blocks the loop for long.
+void CSSensor::log_key_work_() {
+  const SensorCore::KeyWork &k = this->core_->key_work();
+  SensorCore::KeyWork &seen = this->key_work_logged_;
+  if (k.jobs != seen.jobs) {
+    ESP_LOGD(TAG, "%s computed: %" PRIu32 " us in %" PRIu32 " slices, longest %" PRIu32 " us",
+             k.last_was_tag ? "Tag" : "JOIN key pair", k.last_us, k.last_slices, k.last_max_slice_us);
+  }
+  if (k.sync_tags != seen.sync_tags)
+    ESP_LOGW(TAG, "A frame's tag was not ready and was computed at once");
+  if (k.exchanges != seen.exchanges)
+    ESP_LOGD(TAG, "Key exchange: shared secret in %" PRIu32 " us", k.last_exchange_us);
+  seen = k;
+}
+
 void CSSensor::publish_diagnostics_() {
   int state = int(this->core_->state());
 #ifdef USE_TEXT_SENSOR
@@ -698,6 +713,7 @@ void CSSensor::loop() {
   this->take_readings_(now);
   this->handle_button_(now);
   this->core_->loop();
+  this->log_key_work_();
   this->publish_diagnostics_();
 
   const uint64_t after = this->clock_.now_us();
@@ -721,7 +737,9 @@ void CSSensor::maybe_sleep_(uint64_t now) {
   if (this->core_->hold() || this->tx_busy_ || this->button_down_ || this->button_event_ ||
       now < this->awake_until_us_)
     return;
-  uint64_t wake = std::min(this->core_->next_wake_us(), this->glue_wake_us_());
+  // No wake just to compute the next epoch's tag ahead (08 section 3.2): it is
+  // computed if a wake falls in the window, and otherwise when a frame needs it.
+  uint64_t wake = std::min(this->core_->next_wake_us(false), this->glue_wake_us_());
   if (this->max_sleep_ms_ != 0)
     wake = std::min(wake, now + uint64_t(this->max_sleep_ms_) * 1000);
   if (wake == UINT64_MAX)

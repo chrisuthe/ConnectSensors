@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <functional>
 
+#include "cs_ed25519.h"
+
 namespace esphome::cs_sensor {
 
 // ---------------------------------------------------------------- frames (02)
@@ -300,6 +302,9 @@ constexpr uint64_t LOST_CONTACT_BACKOFF_US[4] = {60000000ULL, 300000000ULL, 9000
 constexpr uint8_t MAX_PENDING_HEARTBEATS = 4;
 // Compute the next epoch's tag this long before the boundary (08 section 3.2).
 constexpr uint32_t TAG_PRECOMPUTE_LEAD_S = 300;
+// Tags and the JOIN key pair are computed a slice at a time, at most this long per
+// loop() pass, so key generation never blocks the loop.
+constexpr uint64_t KEY_SLICE_US = 4000;
 constexpr uint64_t MAX_CONFIRMED_GAP_US = 24ULL * 3600 * 1000000;
 constexpr uint32_t COUNTER_BLOCK = 64;
 constexpr size_t STATE_SLOTS = 16;
@@ -382,11 +387,14 @@ class SensorCore {
   void factory_reset();
 
   // Sleep hint: true while the core is transmitting, inside or waiting for an RX
-  // window, holding retries, or about to send. The platform must not deep-sleep
-  // through any of that.
+  // window, holding retries, about to send, or computing a key. The platform must
+  // not deep-sleep through any of that.
   bool hold() const;
-  // When loop() next has work: the next window edge, retry, or heartbeat.
-  uint64_t next_wake_us() const;
+  // When loop() next has work: the next window edge, retry or heartbeat, and with
+  // precompute, also when the window opens for computing the next epoch's tag ahead
+  // (08 section 3.2). A deep-sleep platform leaves that out: a wake just for it
+  // costs more than the frame that may later wait a few passes for its tag.
+  uint64_t next_wake_us(bool precompute = true) const;
 
   PairingState state() const { return this->state_; }
   uint32_t root_floor() const { return this->root_floor_; }
@@ -400,6 +408,23 @@ class SensorCore {
   bool current_tag(uint8_t type, uint8_t out[TAG_LEN]);
   // For tests: Ed25519 key generations so far, cache misses only.
   uint32_t tag_computations() const { return this->tag_computations_; }
+  // Key work, for the platform's debug log. Key generations done in slices: how
+  // many so far, and the last one's time spent computing, slices (one or two per
+  // loop pass) and longest slice.
+  struct KeyWork {
+    uint32_t jobs{0};
+    bool last_was_tag{false};
+    uint32_t last_us{0};
+    uint32_t last_slices{0};
+    uint32_t last_max_slice_us{0};
+    // Frames whose tag was not ready and had to be computed at once. build_() waits
+    // for a tag instead, so this stays 0 unless something is wrong.
+    uint32_t sync_tags{0};
+    // The X25519 shared secret for a KEY_EXCHANGE, computed at once when it arrives.
+    uint32_t exchanges{0};
+    uint32_t last_exchange_us{0};
+  };
+  const KeyWork &key_work() const { return this->key_work_stats_; }
   // For tests: the session key, or nullptr without one.
   const uint8_t *session_key() const { return this->has_session_ ? this->k_session_ : nullptr; }
   DownlinkResult last_downlink_result() const { return this->last_result_; }
@@ -449,10 +474,27 @@ class SensorCore {
   void erase_blob_(Blob id, size_t len);
   void wipe_ephemeral_();
   bool clock_known_();
+  int tag_index_(bool root, bool bootstrap, uint32_t n) const;  // -1 if not cached
+  TagEntry &store_tag_(bool root, bool bootstrap, uint32_t n, const uint8_t tag[TAG_LEN]);
   void tag_for_(bool root, bool bootstrap, uint32_t n, uint8_t out[TAG_LEN]);
   void forget_session_tags_();
-  void precompute_tag_();
   void tag_key_check_(uint8_t out[4]) const;
+
+  // Key work: what loop() computes next, a slice at a time.
+  struct KeyTarget {
+    enum class Kind : uint8_t { NONE, EPHEMERAL, TAG } kind{Kind::NONE};
+    bool root{false};
+    bool bootstrap{false};
+    uint32_t n{0};  // epoch, or block
+  };
+  bool next_key_target_(KeyTarget &out) const;
+  bool key_target_valid_(const KeyTarget &t) const;
+  void key_work_(uint64_t deadline);
+  void cancel_key_job_();
+  bool key_work_pending_() const;
+  // True if the tag is ready; otherwise asks loop() for it, and the frame waits.
+  bool tag_ready_(bool root, bool bootstrap, uint32_t n);
+  uint64_t precompute_wake_us_() const;
 
   void start_next_(uint64_t now);
   bool build_(Purpose purpose, bool confirmed, uint64_t now);
@@ -496,6 +538,7 @@ class SensorCore {
   uint8_t ephemeral_private_[32]{};
   uint8_t ephemeral_public_[32]{};
   bool has_ephemeral_{false};
+  bool ephemeral_pending_{false};  // private key drawn, public key being computed
 
   // Transmission cycle.
   Phase phase_{Phase::IDLE};
@@ -546,6 +589,15 @@ class SensorCore {
   TagEntry tag_cache_[TAG_CACHE]{};
   uint32_t tag_stamp_{0};
   uint32_t tag_computations_{0};
+
+  // Key work in progress, and the tag a frame is waiting for.
+  BaseMulJob keygen_{};
+  KeyTarget key_job_{};
+  KeyTarget wanted_tag_{};
+  KeyWork key_work_stats_{};
+  uint32_t job_us_{0};
+  uint32_t job_slices_{0};
+  uint32_t job_max_slice_us_{0};
 
   // Airtime: one bucket per minute; 61 so the sum always covers a whole hour (08 section 4.4).
   uint32_t air_buckets_[61]{};

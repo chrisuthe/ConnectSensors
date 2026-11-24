@@ -16,6 +16,7 @@
 #include "cs_sha256.h"
 #include "cs_sha512.h"
 #include "cs_x25519.h"
+#include "ref_tweetnacl.h"
 #include "sensor_core.h"
 #include "vectors.inc"
 
@@ -120,6 +121,69 @@ static void test_sha512_ed25519() {
     cs_ed25519_public_key(seed.data(), pub);
     CHECK(hex(pub, 32) == v.pub);
   }
+}
+
+// The fixed-base comb (#95) against the TweetNaCl code it replaced, on edge and
+// random scalars, all at once and a step at a time.
+static void test_keygen_equivalence() {
+  uint64_t x = 0x2545F4914F6CDD1DULL;
+  auto fill = [&](uint8_t *p, int n) {
+    for (int i = 0; i < n; i++) {
+      x ^= x << 13;
+      x ^= x >> 7;
+      x ^= x << 17;
+      p[i] = uint8_t(x);
+    }
+  };
+  const uint8_t nine[32] = {9};
+  int steps_ed = -1, steps_x = -1;
+  bool same_steps = true;
+  for (int n = 0; n < 64; n++) {
+    uint8_t s[32], u[32], a[32], b[32];
+    fill(s, 32);
+    fill(u, 32);
+    if (n < 3)
+      std::memset(s, n == 0 ? 0x00 : n == 1 ? 0xFF : 0x80, 32);
+    cs_ed25519_public_key(s, a);
+    ref_tweetnacl::ed25519_public_key(s, b);
+    CHECK(std::memcmp(a, b, 32) == 0);
+    x25519_base(a, s);
+    ref_tweetnacl::x25519(b, s, nine);
+    CHECK(std::memcmp(a, b, 32) == 0);
+    x25519(a, s, u);
+    ref_tweetnacl::x25519(b, s, u);
+    CHECK(std::memcmp(a, b, 32) == 0);
+
+    // In steps: the same result, and the same number of steps for every scalar.
+    for (bool ed : {true, false}) {
+      BaseMulJob job;
+      CHECK(!job.busy() && !job.step());
+      if (ed) {
+        job.start_ed25519(s);
+      } else {
+        job.start_x25519(s);
+      }
+      int steps = 0;
+      while (job.busy()) {
+        job.step();
+        steps++;
+      }
+      CHECK(job.done() && job.step());
+      if (ed) {
+        cs_ed25519_public_key(s, a);
+      } else {
+        x25519_base(a, s);
+      }
+      CHECK(std::memcmp(job.result(), a, 32) == 0);
+      int &want = ed ? steps_ed : steps_x;
+      if (want < 0)
+        want = steps;
+      same_steps = same_steps && steps == want;
+      job.clear();
+      CHECK(!job.busy() && !job.done());
+    }
+  }
+  CHECK(same_steps && steps_ed == steps_x && steps_ed > 64);
 }
 
 // ---------------------------------------------------------------- crypto
@@ -358,7 +422,12 @@ struct FakeClock : Clock {
   bool rtc = true;
   uint32_t base = V_TIME - 600;
   uint64_t base_at = 0;
-  uint64_t now_us() override { return this->now; }
+  // Advanced on every read when set, so key work takes time and is sliced.
+  uint64_t step_us = 0;
+  uint64_t now_us() override {
+    this->now += this->step_us;
+    return this->now;
+  }
   bool unix_time(uint32_t &out) override {
     if (!this->rtc)
       return false;
@@ -1700,6 +1769,202 @@ static void test_tag_cache_and_precompute() {
   CHECK(rig.core->tag_computations() == 0);
 }
 
+// Runs single loop() passes until transmission n starts; the number of passes.
+static int passes_to_tx(Rig &rig, size_t n, int limit = 10000) {
+  int passes = 0;
+  while (rig.radio.sent.size() < n && passes < limit) {
+    rig.clock.now += MS;
+    rig.core->loop();
+    passes++;
+  }
+  return passes;
+}
+
+// #95: key work is spread across loop passes, a slice of at most KEY_SLICE_US each.
+static constexpr uint64_t SLICE_SLACK_US = 1000;  // the step that crosses the deadline, and clock reads
+
+static void test_sliced_join() {
+  Rig rig;
+  rig.boot({contact(0)});
+  rig.clock.step_us = 250;
+  rig.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
+  rig.core->short_press();
+  CHECK(rig.core->state() == PairingState::JOINING);
+  // The press only draws the private key; loop() computes the rest, and holds meanwhile.
+  CHECK(rig.core->hold() && rig.core->next_wake_us() == 0);
+  CHECK(rig.core->key_work().jobs == 0);
+  int passes = passes_to_tx(rig, 1);
+  CHECK(rig.radio.sent.size() == 1 && hex(rig.radio.sent[0].frame) == fv("join").frame);
+  // The key pair, then the JOIN's tag, each over several passes.
+  const SensorCore::KeyWork &k = rig.core->key_work();
+  CHECK(k.jobs == 2 && k.last_was_tag && k.last_slices > 1);
+  CHECK(passes > 2 && 2 * passes >= int(k.last_slices));
+  CHECK(k.last_max_slice_us <= KEY_SLICE_US + SLICE_SLACK_US);
+  CHECK(k.sync_tags == 0);
+  CHECK(rig.core->tag_computations() == 1);
+
+  // A press then an immediate factory reset: the key pair in progress is dropped.
+  Rig r2;
+  r2.boot();
+  r2.clock.step_us = 250;
+  r2.core->short_press();
+  r2.core->loop();
+  CHECK(r2.core->hold());
+  r2.core->factory_reset();
+  CHECK(!r2.core->hold());
+  r2.run(10 * S);
+  CHECK(r2.radio.sent.empty() && r2.core->key_work().jobs == 0);
+}
+
+static void test_sliced_epoch_boundary() {
+  Rig rig;
+  Server server = pair_with_vectors(rig);
+  rig.run(3 * S);  // idle
+  rig.clock.step_us = 250;
+  uint32_t now_unix = 0;
+  rig.clock.unix_time(now_unix);
+  uint32_t boundary = (epoch_of(now_unix) + 1) * EPOCH_SECONDS;
+  uint32_t computed = rig.core->tag_computations();
+
+  // Not computed ahead (the clock jumped over the boundary): the frame waits for its
+  // tag, computed a slice per pass, and goes out with it.
+  rig.clock.set_unix_time(boundary + 1);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(false);
+  int passes = passes_to_tx(rig, n + 1);
+  CHECK(passes > 1);
+  CHECK(rig.radio.sent.size() == n + 1);
+  CHECK(tag_hex(rig.radio.sent.back()) == normal_hex(server.keys, epoch_of(boundary)));
+  CHECK(rig.core->tag_computations() == computed + 1);
+  CHECK(rig.core->key_work().last_max_slice_us <= KEY_SLICE_US + SLICE_SLACK_US);
+
+  // Computed ahead: inside the lead before the next boundary an idle pass starts it,
+  // the core holds until it is done, and the frame just after the boundary goes out
+  // on its first pass.
+  rig.run(3 * S);
+  CHECK(!rig.core->hold());
+  uint32_t next = boundary + EPOCH_SECONDS;
+  rig.clock.set_unix_time(next - TAG_PRECOMPUTE_LEAD_S + 10);
+  rig.core->loop();
+  CHECK(rig.core->hold());
+  rig.run(S);
+  CHECK(!rig.core->hold());
+  CHECK(rig.core->tag_computations() == computed + 2);
+  rig.clock.set_unix_time(next + 1);
+  rig.core->report(false);
+  CHECK(passes_to_tx(rig, n + 2) == 1);
+  CHECK(tag_hex(rig.radio.sent.back()) == normal_hex(server.keys, epoch_of(next)));
+  CHECK(rig.core->tag_computations() == computed + 2);
+  CHECK(rig.core->key_work().sync_tags == 0);
+}
+
+// Paired and idle, 20 minutes before a boundary, with a day's heartbeat so nothing
+// else wakes the loop. Returns the monotonic time of the boundary.
+static uint64_t idle_before_boundary(Rig &rig, Server &server) {
+  rig.cfg.heartbeat_minutes = 1440;
+  server = pair_with_vectors(rig);
+  rig.run(3 * S);
+  uint32_t now_unix = 0;
+  rig.clock.unix_time(now_unix);
+  uint32_t boundary = (epoch_of(now_unix) + 2) * EPOCH_SECONDS;
+  rig.clock.set_unix_time(boundary - 20 * 60);
+  return rig.clock.now + 20 * MIN;
+}
+
+// A mains sensor's loop sleeps until next_wake_us() (tick_to does the same while
+// idle), so the precompute window has to be one of its wakes (08 section 3.2).
+static void test_precompute_wakes_mains() {
+  Rig rig;
+  Server server;
+  uint64_t boundary = idle_before_boundary(rig, server);
+  uint64_t open = boundary - TAG_PRECOMPUTE_LEAD_S * S;
+  CHECK(!rig.core->hold());
+  CHECK(rig.core->next_wake_us() == open);
+  CHECK(rig.core->next_wake_us(false) > boundary);
+  uint32_t computed = rig.core->tag_computations();
+  rig.clock.step_us = 250;
+  rig.tick_to(boundary - S);
+  CHECK(rig.core->tag_computations() == computed + 1);
+  CHECK(!rig.core->hold());
+  // Computed, so the next wake asked for is the window before the following boundary.
+  CHECK(rig.core->next_wake_us() >= boundary + (EPOCH_SECONDS - TAG_PRECOMPUTE_LEAD_S - 2) * S);
+  rig.tick_to(boundary + S);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(false);
+  CHECK(passes_to_tx(rig, n + 1) == 1);
+  uint32_t unix = 0;
+  rig.clock.unix_time(unix);
+  CHECK(tag_hex(rig.radio.sent.back()) == normal_hex(server.keys, epoch_of(unix)));
+  CHECK(rig.core->tag_computations() == computed + 1);
+  CHECK(rig.core->key_work().sync_tags == 0);
+}
+
+// Deep sleep: no wake just for the window. A wake that falls in it computes the tag
+// before sleeping again; otherwise the first frame after the boundary waits for it.
+static void test_precompute_deep_sleep() {
+  Rig rig;
+  Server server;
+  uint64_t boundary = idle_before_boundary(rig, server);
+  CHECK(rig.core->next_wake_us(false) > boundary);
+  // Slept through the window: the frame after the boundary computes it, sliced.
+  rig.clock.step_us = 250;
+  CHECK(rig.sleep_wake(boundary + S - rig.clock.now));
+  CHECK(rig.core->tag_computations() == 0);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(false);
+  CHECK(passes_to_tx(rig, n + 1) > 1);
+  uint32_t unix = 0;
+  rig.clock.unix_time(unix);
+  CHECK(tag_hex(rig.radio.sent.back()) == normal_hex(server.keys, epoch_of(unix)));
+  CHECK(rig.core->tag_computations() == 1 && rig.core->key_work().sync_tags == 0);
+
+  // A wake inside the next window, say for a reading: the core holds until the tag
+  // is computed, and it survives the following sleep.
+  rig.run(3 * S);
+  uint64_t next = boundary + EPOCH_SECONDS * S;
+  CHECK(rig.sleep_wake(next - 60 * S - rig.clock.now));
+  CHECK(rig.core->hold());
+  rig.run(S);
+  CHECK(!rig.core->hold() && rig.core->tag_computations() == 1);
+  CHECK(rig.sleep_wake(next + S - rig.clock.now));
+  n = rig.radio.sent.size();
+  rig.core->report(false);
+  CHECK(passes_to_tx(rig, n + 1) == 1);
+  CHECK(rig.core->tag_computations() == 0);
+}
+
+static void test_sliced_bootstrap_block() {
+  Rig rig;
+  Server server = pair_with_vectors(rig);
+  // No clock, so SYNC; the boot uplink takes fcnt 64, the last of block 0.
+  rig.storage.set_u32(Blob::COUNTER, 64);
+  rig.clock.rtc = false;
+  rig.clock.step_us = 250;
+  size_t n = rig.radio.sent.size();
+  rig.boot({contact(1)});
+  CHECK(passes_to_tx(rig, n + 1) > 1);
+  const Tx s1 = rig.radio.sent.back();
+  CHECK(type_of(s1) == T_SYNC && fcnt_of(s1) == 64 && tag_hex(s1) == bootstrap_hex(server.keys, 64));
+  // Unanswered, then idle: block 1's tag is computed ahead for the next SYNC.
+  uint32_t computed = rig.core->tag_computations();
+  rig.run(3 * MIN);  // the retries, undelivered, then idle
+  CHECK(!rig.core->hold());
+  CHECK(rig.core->tag_computations() == computed + 1);
+  rig.core->report(false);
+  CHECK(passes_to_tx(rig, rig.radio.sent.size() + 1) == 1);
+  const Tx s2 = rig.radio.sent.back();
+  CHECK(type_of(s2) == T_SYNC && fcnt_of(s2) == 65 && tag_hex(s2) == bootstrap_hex(server.keys, 65));
+  CHECK(rig.core->tag_computations() == computed + 1);
+  CHECK(rig.core->key_work().sync_tags == 0);
+
+  // A deep-sleep wake with nothing to send computes nothing ahead: no SYNC yet this run.
+  rig.run(3 * MIN);
+  CHECK(rig.sleep_wake(MIN));
+  CHECK(!rig.core->hold());
+  rig.run(10 * S);
+  CHECK(rig.core->tag_computations() == 0 && rig.core->key_work().jobs == 0);
+}
+
 static void test_storage_failure_while_pairing() {
   // 04 section 4.6: the PAIRED write fails, so the downlink is not acted on and pairing fails.
   Rig rig;
@@ -1990,6 +2255,7 @@ int main() {
   test_crypto();
   test_airtime();
   test_sha512_ed25519();
+  test_keygen_equivalence();
   test_frame_vectors();
   test_payload_vectors();
   test_pairing_code();
@@ -2023,6 +2289,11 @@ int main() {
   test_confirmed_every_24h();
   test_provisional_exit();
   test_tag_cache_and_precompute();
+  test_sliced_join();
+  test_sliced_epoch_boundary();
+  test_sliced_bootstrap_block();
+  test_precompute_wakes_mains();
+  test_precompute_deep_sleep();
   test_storage_failure_while_pairing();
   test_firmware_until_delivered();
   test_factory_reset_without_erase();

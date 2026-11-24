@@ -6,6 +6,7 @@ tests/proxy_core/test_core
 tests/proxy_core/vectors.inc
 tests/sensor_core/test_core
 tests/sensor_core/vectors.inc
+tests/sensor_core/bench_keygen
 dist/
 tests/host_proxy/host_proxy
 mailbox/uv.lock
