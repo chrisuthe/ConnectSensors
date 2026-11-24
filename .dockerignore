@@ -1,0 +1,7 @@
+# The only build in this repository is mailbox/Dockerfile: send it just what it copies.
+*
+!spec/tools/csframe.py
+!python/connectsensors/
+!mailbox/cs_mailbox.py
+!mailbox/container_entry.py
+**/__pycache__

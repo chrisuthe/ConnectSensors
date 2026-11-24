@@ -1,0 +1,114 @@
+name: Mailbox release
+
+# Publishes ghcr.io/chrisuthe/cs-mailbox for linux/amd64 and linux/arm64 on a
+# mailbox-v<version> tag, where <version> is mailbox/pyproject.toml's. Independent of
+# the v* tags that publish connectsensors to PyPI (release.yml). See
+# mailbox/README.md, "Releasing the image".
+on:
+  push:
+    tags: ["mailbox-v*"]
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/chrisuthe/cs-mailbox
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    name: Tag matches the version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      minor: ${{ steps.version.outputs.minor }}
+    steps:
+      # Actions are pinned to a commit, since a tag can be repointed; the comment
+      # is the version that commit was.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' mailbox/pyproject.toml)
+          echo "mailbox version $version, tag $GITHUB_REF_NAME"
+          [[ $GITHUB_REF == refs/tags/mailbox-v* ]] || { echo "::error::not a mailbox-v* tag"; exit 1; }
+          [[ $version =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]] || { echo "::error::version is not X.Y.Z"; exit 1; }
+          test "mailbox-v$version" = "$GITHUB_REF_NAME"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "minor=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}" >>"$GITHUB_OUTPUT"
+
+  # Each architecture smoke tested natively before anything is pushed.
+  smoke:
+    name: Smoke test (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install cryptography websockets
+      - run: make -C tests/mailbox-image
+        env:
+          CONTAINER_ENGINE: docker
+
+  publish:
+    name: Publish to GHCR
+    needs: [version, smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: mailbox-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # arm64 is built under emulation: the image's only RUN step installs prebuilt
+      # wheels, so it costs seconds, and one build gives one multi-arch index with
+      # both platforms' attestations and no manifest merge. The smoke job above ran
+      # arm64 natively.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<<"$TOKEN"
+      - name: Build and push
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          MINOR: ${{ needs.version.outputs.minor }}
+        run: |
+          docker buildx build \
+            --file mailbox/Dockerfile \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg "VERSION=$VERSION" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/chrisuthe/ConnectSensors" \
+            --annotation "index:org.opencontainers.image.description=Reference mailbox server for ConnectSensors federation (spec 09)" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            --provenance mode=max \
+            --sbom true \
+            --tag "$IMAGE:$VERSION" \
+            --tag "$IMAGE:$MINOR" \
+            --tag "$IMAGE:latest" \
+            --push \
+            .
+      - name: Published
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: docker buildx imagetools inspect "$IMAGE:$VERSION"

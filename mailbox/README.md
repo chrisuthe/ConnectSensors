@@ -29,17 +29,10 @@ With uv, which also installs the `connectsensors` package from this checkout:
 uv run --project mailbox cs-mailbox --host mailbox.example --tls-cert ... --tls-key ...
 ```
 
-As a container, built from the repository root:
+As a container, `ghcr.io/chrisuthe/cs-mailbox`: see [Container image](#container-image).
 
-```sh
-docker build -f mailbox/Dockerfile -t cs-mailbox .
-docker run -p 8443:8443 -v cs-mailbox:/data -v /etc/letsencrypt/live/mailbox.example:/tls:ro \
-    cs-mailbox --host mailbox.example --tls-cert /tls/fullchain.pem --tls-key /tls/privkey.pem
-```
-
-The container keeps the server key in `/data/server.key`.
-
-Homes connect with `devtools/cs_testserver.py --mailbox wss://mailbox.example:8443/`.
+Homes connect with `devtools/cs_testserver.py --mailbox wss://mailbox.example:8443/`,
+or as described in [Pointing a home at the server](#pointing-a-home-at-the-server).
 
 ## Configure
 
@@ -112,13 +105,14 @@ publishing its port:
 ```sh
 docker network create --subnet 172.30.0.0/24 mailbox
 docker network connect --ip 172.30.0.2 mailbox nginx-proxy-manager   # your NPM container's name
-docker run -d --name cs-mailbox --network mailbox -v cs-mailbox:/data cs-mailbox \
+docker run -d --name cs-mailbox --network mailbox -v cs-mailbox:/data ghcr.io/chrisuthe/cs-mailbox \
     --host mailbox.example --trusted-proxy 172.30.0.2/32
 ```
 
 Trust NPM's fixed address, not the whole network: the network's gateway
 (172.30.0.1) is the Docker host itself, and connections from the host, or
-through a published port with some port drivers, arrive from it.
+through a published port with some port drivers, arrive from it. A compose
+file that does the same is under [Container image](#with-nginx-proxy-manager).
 
 Then in NPM, under Hosts, Proxy Hosts, Add Proxy Host:
 
@@ -164,6 +158,162 @@ mailbox.example {
 cs-mailbox --host mailbox.example --listen 127.0.0.1 --trusted-proxy 127.0.0.1/32 --key-file server.key
 ```
 
+## Container image
+
+`ghcr.io/chrisuthe/cs-mailbox`, for linux/amd64 and linux/arm64. Tags: the exact
+version (`0.2.0`), the minor line (`0.2`, which follows patch releases) and
+`latest`. Pin `0.2` or an exact version rather than `latest` in anything that
+updates itself.
+
+The container runs as uid 10001 and keeps the server key in `/data/server.key`.
+Give `/data` a volume: the key is the server's identity, so losing it changes
+`server_id` and every home treats the mailbox as a new server.
+
+Configure it with arguments, as [Configure](#configure) lists, or with these
+variables, which keep a compose file readable. Arguments win: a variable is
+ignored when the arguments give its option, and the TLS and proxy variables all
+are when the arguments pick a mode (`--tls-cert`, `--trusted-proxy`,
+`--insecure-dev`). An empty variable is unset.
+
+| Variable | Option |
+|---|---|
+| `CS_MAILBOX_HOST` | `--host`; several names comma-separated |
+| `CS_MAILBOX_PORT` | `--port` (default 8443) |
+| `CS_MAILBOX_TLS_CERT`, `CS_MAILBOX_TLS_KEY` | `--tls-cert`, `--tls-key` |
+| `CS_MAILBOX_TRUSTED_PROXY` | `--trusted-proxy`; several ranges comma-separated |
+| `CS_MAILBOX_MEMBERS` | `--members` |
+
+The image's healthcheck connects to `CS_MAILBOX_PORT` on 127.0.0.1, which works
+in both modes. To move the port inside the container (with `--network host`, say),
+set `CS_MAILBOX_PORT` rather than passing `--port`, so the healthcheck follows.
+
+To build it yourself, from the repository root:
+`docker build -f mailbox/Dockerfile -t cs-mailbox .`
+
+### With built-in TLS
+
+```sh
+docker run -d --name cs-mailbox --restart unless-stopped -p 8443:8443 \
+    -v cs-mailbox:/data -v "$PWD/tls:/tls:ro" \
+    -e CS_MAILBOX_HOST=mailbox.example \
+    -e CS_MAILBOX_TLS_CERT=/tls/fullchain.pem -e CS_MAILBOX_TLS_KEY=/tls/privkey.pem \
+    ghcr.io/chrisuthe/cs-mailbox:0.2
+```
+
+or with compose:
+
+```yaml
+services:
+  cs-mailbox:
+    image: ghcr.io/chrisuthe/cs-mailbox:0.2
+    restart: unless-stopped
+    ports: ["8443:8443"]
+    environment:
+      CS_MAILBOX_HOST: mailbox.example
+      CS_MAILBOX_TLS_CERT: /tls/fullchain.pem
+      CS_MAILBOX_TLS_KEY: /tls/privkey.pem
+    volumes:
+      - cs-mailbox:/data
+      - ./tls:/tls:ro
+volumes:
+  cs-mailbox:
+```
+
+The server reads the certificate at start, so restart it after a renewal. The
+key must be readable by uid 10001 in the container: `sudo chown 10001
+tls/privkey.pem` with Docker, `podman unshare chown 10001 tls/privkey.pem` with
+rootless Podman. (Mounting `/etc/letsencrypt` directly needs the same for its
+`privkey.pem`.)
+
+For a mailbox on your LAN without a public name, a self-signed certificate does:
+
+```sh
+mkdir tls && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+    -subj /CN=mailbox.lan -addext subjectAltName=DNS:mailbox.lan \
+    -keyout tls/privkey.pem -out tls/fullchain.pem
+```
+
+Each home then trusts `tls/fullchain.pem` explicitly; see
+[Pointing a home at the server](#pointing-a-home-at-the-server).
+
+### With Nginx Proxy Manager
+
+NPM holds the certificate and passes the WebSocket on over plain `ws://`; see
+[Behind a reverse proxy](#behind-a-reverse-proxy) for what `--trusted-proxy`
+does and why the trusted range is NPM's own address. In one compose file, with
+the mailbox on a network only NPM shares and its port unpublished:
+
+```yaml
+services:
+  npm:
+    image: jc21/nginx-proxy-manager:latest
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "81:81"]
+    environment:
+      IP_RANGES_FETCH_ENABLED: "false"   # unless you front it with Cloudflare or CloudFront
+    volumes:
+      - ./npm/data:/data
+      - ./npm/letsencrypt:/etc/letsencrypt
+    networks:
+      default:
+      mailbox:
+        ipv4_address: 172.30.0.2
+  cs-mailbox:
+    image: ghcr.io/chrisuthe/cs-mailbox:0.2
+    restart: unless-stopped
+    environment:
+      CS_MAILBOX_HOST: mailbox.example
+      CS_MAILBOX_TRUSTED_PROXY: 172.30.0.2/32
+    volumes:
+      - cs-mailbox:/data
+    networks: [mailbox]
+networks:
+  mailbox:
+    internal: true   # the mailbox needs no way out; NPM reaches it, nothing else does
+    ipam:
+      config: [{subnet: 172.30.0.0/24}]
+volumes:
+  cs-mailbox:
+```
+
+Then add the proxy host in NPM as in [Nginx Proxy Manager](#nginx-proxy-manager),
+forwarding to `cs-mailbox` port `8443`, and homes use `wss://mailbox.example/`.
+
+### Pointing a home at the server
+
+In Home Assistant, open the Connect Sensors integration's options (Federation)
+and add the server's URL under *Mailbox servers*:
+
+- `wss://mailbox.example:8443/` with built-in TLS on the published port, or
+  `wss://mailbox.example/` behind NPM.
+- The URL's host must be one of the `--host` (`CS_MAILBOX_HOST`) names: the
+  greeting signs it, and a home that connected under any other name rejects the
+  server.
+- With a self-signed certificate, paste it (the whole `fullchain.pem`) into
+  *Trusted certificate*. A certificate from a public CA needs nothing there.
+
+`devtools/cs_testserver.py` takes the same as `--mailbox URL` and `--mailbox-ca PEM`.
+
+### Backing up and upgrading
+
+Back up `/data/server.key`, and keep the copy as private as any key:
+
+```sh
+docker cp cs-mailbox:/data/server.key ./cs-mailbox-server.key
+```
+
+To restore it into a new volume before the first start, as the container's own user:
+
+```sh
+docker run --rm -i -v cs-mailbox:/data --entrypoint sh ghcr.io/chrisuthe/cs-mailbox:0.2 \
+    -c 'umask 077 && cat > /data/server.key' < ./cs-mailbox-server.key
+```
+
+To upgrade, pull the new tag and recreate the container on the same volume
+(`docker compose pull && docker compose up -d`). The `server_id` stays; the
+registrations, which live in memory, do not, so the server starts a new
+`generation` and every home registers its devices again when it reconnects.
+
 ## Limits
 
 | Item | Limit | Enforced as |
@@ -204,4 +354,20 @@ connection. Nothing survives a restart: the server then picks a new
 
 ```sh
 make -C tests/federation   # conformance against 09, trusted-proxy mode, then two homes through one mailbox
+CONTAINER_ENGINE=podman make -C tests/mailbox-image   # the image in both modes (default engine: docker)
 ```
+
+## Releasing the image
+
+The image's version is `version` in `mailbox/pyproject.toml`, released
+independently of the `connectsensors` package's `v*` tags.
+
+1. Bump `version` in `mailbox/pyproject.toml` and merge it to `main`.
+2. Tag that commit `mailbox-v<version>` and push the tag:
+   `git tag mailbox-v0.2.0 && git push origin mailbox-v0.2.0`.
+
+`.github/workflows/mailbox-release.yml` checks the tag matches the version, smoke
+tests the image natively on amd64 and arm64, then pushes both platforms to
+`ghcr.io/chrisuthe/cs-mailbox` as `<version>`, `<major>.<minor>` and `latest`,
+with provenance and SBOM attestations. The first publish creates the package as
+private: make it public once in its package settings on GitHub.

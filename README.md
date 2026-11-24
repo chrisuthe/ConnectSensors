@@ -30,8 +30,10 @@ Early development: the spec is a draft and nothing is ready for real deployments
   ([spec 09](spec/09-federation-relay.md)). A sensor heard only by a neighbour's proxy
   reaches its owner, with acknowledgements and queued commands going back through
   that proxy. Pairing always stays local. The reference server is
-  [`mailbox/`](mailbox/), packaged as a Home Assistant app in
-  [HAOS-cs-mailbox](https://github.com/chrisuthe/HAOS-cs-mailbox). Tested on the
+  [`mailbox/`](mailbox/), published as the container image
+  [`ghcr.io/chrisuthe/cs-mailbox`](mailbox/README.md#container-image) (built-in TLS
+  or behind a reverse proxy such as Nginx Proxy Manager) and packaged as a Home
+  Assistant app in [HAOS-cs-mailbox](https://github.com/chrisuthe/HAOS-cs-mailbox). Tested on the
   bench with two Home Assistant instances and the app on HA OS, and in CI with
   simulated homes.
 - **Python package:** [`connectsensors`](https://pypi.org/project/connectsensors/)
@@ -54,9 +56,9 @@ Early development: the spec is a draft and nothing is ready for real deployments
 | [`devtools/cs_testserver.py`](devtools/cs_testserver.py) | Development server for testing proxies and pairing sensors, and a federation home (`--mailbox`) |
 | [`devtools/bench/`](devtools/bench/) | Bench runner: scenarios against a proxy with the test transmitter, measuring downlink timing on air, and run records |
 | [`devtools/press.py`](devtools/press.py) | Press ESPHome API buttons and call actions from the command line |
-| [`mailbox/`](mailbox/) | `cs-mailbox`, the reference mailbox server for federation (spec 09) |
+| [`mailbox/`](mailbox/) | `cs-mailbox`, the reference mailbox server for federation (spec 09), and its container image |
 | [`examples/`](examples/) | ESPHome configurations for a proxy, sensors (mains and deep sleep) and a test transmitter |
-| [`tests/`](tests/) | Unit tests for the proxy and sensor cores, a smoke test for the test server, the proxy engine run as a host program against it, and homes federating through `cs-mailbox` |
+| [`tests/`](tests/) | Unit tests for the proxy and sensor cores, a smoke test for the test server, the proxy engine run as a host program against it, homes federating through `cs-mailbox`, and its container image |
 
 ## Running the tests
 
@@ -68,6 +70,7 @@ make -C tests/sensor_core                           # sensor core, C++
 python3 tests/devtools/test_testserver.py           # test server
 make -C tests/host_proxy                            # proxy engine on the host against the test server, and the bench runner simulated
 make -C tests/federation                            # cs-mailbox against 09, and two homes through it (needs websockets)
+make -C tests/mailbox-image                         # the cs-mailbox image in both modes (docker, or CONTAINER_ENGINE=podman)
 tests/package/check.sh                              # Python package build and smoke test (needs uv)
 ```
 
