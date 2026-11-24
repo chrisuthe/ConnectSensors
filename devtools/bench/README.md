@@ -111,7 +111,7 @@ The rig has three Heltec WiFi LoRa 32 V3 boards and a laptop:
 |---|---|
 | `rx1` | A fresh confirmed uplink is forwarded, answered in RX1 and `SENT` within 40 ms of the target, and heard on air within 01 section 4.1's budget (`--repeat` times) |
 | `rx2` | The same with the server in RX2 (`window rx2`) |
-| `retry` | The same frame again after 2.3 s, past the proxy's dedupe and the server's copy window, is answered again (07 section 4) |
+| `retry` | The same frame again 2.5 s after the first one's TX done, past the proxy's dedupe and the server's copy window, is answered again (07 section 4) |
 | `dedupe` | The same frame twice back to back is forwarded once, and the proxy's `duplicates` counter rises by one |
 | `rate-limit` | A burst of 10 frames from one tag, sent back to back, is cut to the per-device burst of 5 (plus refill), and `rate_limited` counts the rest |
 | `fault-bad-mac`, `fault-stale-seq`, `fault-wrong-boot` | A downlink with a bad MAC, a seq the proxy already holds, or another boot's `boot_id` is dropped silently: no `TX_RESULT` and nothing on air (05 section 3.2) |

@@ -593,8 +593,10 @@ class Bench:
         got = sum(1 for f in frames if self.srv.find("UPLINK", mark, frame=f.hex()))
         self.check(5 <= got < len(frames), f"a burst of {len(frames)} is cut to the per-device burst: {got} forwarded")
         after = self.counters()
-        self.check(after["rate_limited"] - before["rate_limited"] == len(frames) - got,
-                   f"proxy counts {len(frames) - got} rate limited")
+        # Against what the proxy heard: a send the radio refused mid-burst never went on air.
+        heard = after["heard"] - before["heard"]
+        self.check(after["rate_limited"] - before["rate_limited"] == heard - got,
+                   f"proxy counts {heard - got} rate limited of the {heard} it heard")
 
     def fault(self, name: str, result: str | None) -> None:
         mark = self.srv.mark()
