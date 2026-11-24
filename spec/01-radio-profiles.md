@@ -31,8 +31,17 @@ These apply to every profile.
 | Preamble | 8 symbols |
 | Sync word | Private, `0x12` (SX127x register value) = `0x1424` (SX126x register value) |
 | IQ | Normal, both directions |
-| Low data rate optimization | As required by the chip for the profile's symbol time (off for all current profiles) |
+| Low data rate optimization | On when the symbol time `2^SF / BW` exceeds 16 ms, otherwise off (off for all current profiles) |
 | Maximum frame length | 86 bytes (02, section 3) |
+
+The low data rate optimization rule is the one ESPHome's radio drivers apply,
+and airtime calculations (section 5.1) MUST use it with the nominal bandwidth.
+The `sx127x` component turns the optimization on above 16 ms and the `sx126x`
+component above 16.38 ms; no spreading factor and bandwidth has a nominal
+symbol time between the two (the nearest are 12.3 ms and 16.384 ms). The one
+disagreement is SF8 at 15.6 kHz, which the `sx126x` component computes from
+15 630 Hz as 16.379 ms and leaves off, while the `sx127x` component turns it
+on. A profile MUST NOT use that combination.
 
 The private sync word is shared with many other private LoRa networks. Receivers
 MUST NOT rely on it for filtering; the frame magic byte (02) does that.
@@ -204,7 +213,10 @@ Where regulation is stricter, regulation wins.
 ### 5.1 Reference airtimes (informative)
 
 Computed with the Semtech time-on-air formula, explicit header, CRC on, CR 4/5,
-8-symbol preamble.
+8-symbol preamble, and the low data rate optimization of section 2, which is
+off for both profiles. With it on, the formula divides by `4 * (SF - 2)` instead
+of `4 * SF`: a 23-byte frame at SF12, 125 kHz takes 1482.8 ms, against
+1318.9 ms without it.
 
 | Frame length | US915 (SF9, 500 kHz) | EU868 (SF9, 125 kHz) |
 |---|---|---|

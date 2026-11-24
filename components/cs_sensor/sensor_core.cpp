@@ -5,6 +5,7 @@
 #include "cs_sha256.h"
 #include "cs_x25519.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -301,6 +302,18 @@ const char *downlink_result_str(DownlinkResult r) {
       return "exchange_failed";
   }
   return "?";
+}
+
+// ---------------------------------------------------------------- airtime (01 section 5.1)
+
+uint32_t lora_airtime_us(size_t len, uint8_t sf, uint32_t bw_hz, uint8_t cr, uint16_t preamble) {
+  const double tsym = double(1u << sf) / double(bw_hz);
+  const int de = tsym > 0.016 ? 1 : 0;
+  const int num = 8 * int(len) - 4 * sf + 28 + 16;
+  const int den = 4 * (sf - 2 * de);
+  // Truncating division rounds a negative num toward 0, which the max clamps anyway.
+  const int n_payload = 8 + std::max((num + den - 1) / den * (cr + 4), 0);
+  return uint32_t(std::ceil((preamble + 4.25 + n_payload) * tsym * 1e6));
 }
 
 // ---------------------------------------------------------------- sensor core

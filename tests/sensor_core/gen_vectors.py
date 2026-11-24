@@ -120,6 +120,17 @@ def main():
                    f'{s(st.get("sensor_ephemeral_private"))}, {s(st.get("frame"))}, {s(st.get("result"))}, '
                    f'"{st["state"]}", {st["root_floor"]}u, {"true" if st["has_session"] else "false"}}},')
     out.append("};")
+    out.append("")
+
+    out.append("struct AirtimeVector { int len; int sf; int bw; unsigned us; };")
+    out.append("static const AirtimeVector AIRTIME_VECTORS[] = {")
+    # SF11 and SF12 at 125 kHz, SF10 at 62.5 kHz and SF12 at 250 kHz use the low data rate optimization.
+    for n in (23, 31, 55, 65, 86):
+        for sf, bw in ((9, 500000), (9, 125000), (7, 125000), (11, 125000), (12, 125000), (10, 62500),
+                       (12, 250000), (12, 500000)):
+            us = round(csframe.airtime_ms(n, sf, bw) * 1000)
+            out.append(f"  {{{n}, {sf}, {bw}, {us}u}},")
+    out.append("};")
 
     with open(os.path.join(HERE, "vectors.inc"), "w") as f:
         f.write("\n".join(out) + "\n")

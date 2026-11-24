@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <initializer_list>
@@ -325,6 +326,20 @@ static void test_payload_vectors() {
     bool ok = decode_readings(enc.data(), enc.size(), [](const Reading &) {});
     CHECK(ok == (std::strcmp(v.reason, "duplicate (channel, kind)") == 0));
   }
+}
+
+static void test_airtime() {
+  for (const auto &v : AIRTIME_VECTORS) {
+    // Rounded up here, to the nearest microsecond in the vectors.
+    int64_t diff = int64_t(lora_airtime_us(v.len, uint8_t(v.sf), uint32_t(v.bw))) - int64_t(v.us);
+    CHECK(diff >= -1 && diff <= 1);
+  }
+  // 01 section 5.1, worked by hand: 23 bytes at SF12, 125 kHz is 1482.752 ms with the
+  // low data rate optimization and would be 1318.912 ms without it. SF11 at 125 kHz
+  // (16.384 ms symbols) has it on too; SF9 at 125 kHz (4.096 ms) does not.
+  CHECK(std::llabs(int64_t(lora_airtime_us(23, 12, 125000)) - 1482752) <= 1);
+  CHECK(std::llabs(int64_t(lora_airtime_us(23, 11, 125000)) - 823296) <= 1);
+  CHECK(std::llabs(int64_t(lora_airtime_us(23, 9, 125000)) - 205824) <= 1);
 }
 
 static void test_pairing_code() {
@@ -1929,6 +1944,7 @@ static void test_reading_first_value_after_boot() {
 
 int main() {
   test_crypto();
+  test_airtime();
   test_sha512_ed25519();
   test_frame_vectors();
   test_payload_vectors();

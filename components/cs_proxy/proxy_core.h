@@ -114,7 +114,8 @@ RxVerdict classify_uplink(const uint8_t *data, size_t len, bool online, DedupeCa
 
 // ---------------------------------------------------------------- airtime (01 section 5)
 
-// Semtech LoRa time-on-air. cr is 1..4 for 4/5..4/8. Explicit header.
+// Semtech LoRa time-on-air. cr is 1..4 for 4/5..4/8. Explicit header. Low data rate
+// optimization above a 16 ms symbol, as the radio sets it (01 section 2).
 uint32_t lora_airtime_us(size_t payload_len, uint8_t sf, uint32_t bw_hz, uint8_t cr = 1, uint16_t preamble = 8,
                          bool crc = true);
 

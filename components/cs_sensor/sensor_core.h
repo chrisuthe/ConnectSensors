@@ -179,6 +179,12 @@ struct ReportedReading {
 bool pairing_code(const uint8_t dev_eui[8], const uint8_t k_root[16], const char *region, const char *profile,
                   char *out, size_t cap);
 
+// ---------------------------------------------------------------- airtime (01 section 5.1)
+
+// Semtech LoRa time on air, explicit header and CRC on, rounded up. cr is 1..4 for
+// 4/5..4/8. Low data rate optimization above a 16 ms symbol, as the radio sets it.
+uint32_t lora_airtime_us(size_t len, uint8_t sf, uint32_t bw_hz, uint8_t cr = 1, uint16_t preamble = 8);
+
 // ---------------------------------------------------------------- platform interfaces
 
 class Clock {

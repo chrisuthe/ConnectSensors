@@ -1,6 +1,7 @@
 // Host unit tests for the cs_proxy core. Build and run with:  make -C tests/proxy_core
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -412,6 +413,12 @@ static void test_airtime() {
     int64_t diff = int64_t(got) - int64_t(v.us);
     CHECK(diff >= -1 && diff <= 1);
   }
+  // 01 section 5.1, worked by hand: 23 bytes at SF12, 125 kHz is 1482.752 ms with the
+  // low data rate optimization and would be 1318.912 ms without it. SF11 at 125 kHz
+  // (16.384 ms symbols) has it on too; SF9 at 125 kHz (4.096 ms) does not.
+  CHECK(std::llabs(int64_t(lora_airtime_us(23, 12, 125000)) - 1482752) <= 1);
+  CHECK(std::llabs(int64_t(lora_airtime_us(23, 11, 125000)) - 823296) <= 1);
+  CHECK(std::llabs(int64_t(lora_airtime_us(23, 9, 125000)) - 205824) <= 1);
 }
 
 static void test_budget() {
