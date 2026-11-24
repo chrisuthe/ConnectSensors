@@ -216,6 +216,14 @@ static void test_seq_guard() {
   CHECK(g.accept(0x1A2B3C4D, 5));
   CHECK(!g.accept(0x1A2B3C4D, 4));
   CHECK(!g.accept(0x11111111, 6));
+  // The edges of 05 section 3.2: the proxy has no reorder window, so a value one
+  // below the floor is refused just like the floor itself.
+  CHECK(!g.accept(0x1A2B3C4D, 5));
+  CHECK(g.accept(0x1A2B3C4D, 6));
+  CHECK(g.accept(0x1A2B3C4D, 1000));  // any jump forward
+  CHECK(!g.accept(0x1A2B3C4D, 999) && !g.accept(0x1A2B3C4D, 985) && !g.accept(0x1A2B3C4D, 7));
+  CHECK(g.accept(0x1A2B3C4D, 1001));  // refusals left the floor at 1000
+  CHECK(g.accept(0x1A2B3C4D, 0xFFFFFFFFu) && !g.accept(0x1A2B3C4D, 0xFFFFFFFFu));
 }
 
 static void test_hello_echoes() {

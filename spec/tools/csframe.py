@@ -683,9 +683,13 @@ class ServerLink:
     def __init__(self, new_nonce: Callable[[], int]):
         self.new_nonce = new_nonce
         self.boot_id: int | None = None
-        self.last_seq = 0
+        self.proxy_seq = UplinkCounter(0)  # the same window as the frame counter (02 section 8.5)
         self.seq = 0
         self.requests: dict[int, list[Any]] = {}  # boot_id -> [nonce, issued_ms, last_sent_ms]
+
+    @property
+    def last_seq(self) -> int:
+        return self.proxy_seq.last
 
     def next_seq(self) -> int:
         self.seq += 1
@@ -694,16 +698,17 @@ class ServerLink:
     def receive(self, m: dict[str, Any], now_ms: int) -> dict[str, Any]:
         boot = m["boot_id"]
         if boot == self.boot_id:
-            if m["seq"] <= self.last_seq:
-                return {"result": "ignored"}
-            self.last_seq = m["seq"]
-            return {"result": "accepted"}
+            check = self.proxy_seq.offer(m["seq"])
+            return {"result": "accepted" if check.startswith("accept") else "ignored", "seq_check": check}
         req = self.requests.get(boot)
         if req is not None and now_ms - req[1] > REQUEST_NONCE_MS:
             req = None
         if m["type"] == M_HELLO and req is not None:
             if parse_hello(bytes.fromhex(m["body"]))["request_nonce"] == req[0]:
-                self.boot_id, self.last_seq, self.seq = boot, m["seq"], 0
+                # Below the HELLO nothing is late: those were sent before the switch,
+                # perhaps accepted by an earlier server instance, so count them as received.
+                q = m["seq"]
+                self.boot_id, self.proxy_seq, self.seq = boot, UplinkCounter(q, range(q - REORDER_WINDOW + 1, q)), 0
                 self.requests.clear()
                 return {"result": "switched"}
         if req is None:
@@ -1786,7 +1791,18 @@ def session_vectors() -> dict:
     dl = env(M_DOWNLINK, boot, server.next_seq(), b"\x00")
     down(1050, dl, "DOWNLINK")
     down(1060, dl, "the same DOWNLINK replayed")
-    up(1100, uplink, "the same UPLINK replayed: seq not above the highest", "replay")
+    up(1100, uplink, "the same UPLINK replayed: seq equal to the highest", "replay")
+    # The reorder window (05 section 3.2): 15 values below the highest, each accepted once.
+    held = {q: env(M_UPLINK, boot, q, bytes([q])) for q in (4, 5, 19, 20)}
+    pseq = 20
+    up(1110, held[20], "UPLINK seq 20 after 4 to 19 were held up: any gap is allowed")
+    up(1120, held[5], "UPLINK seq 5 arriving late: the oldest in the window (highest - 15)")
+    up(1130, held[4], "UPLINK seq 4 arriving late: the first below the window (highest - 16)")
+    up(1140, held[5], "seq 5 again: already accepted late", "replay")
+    up(1150, held[19], "UPLINK seq 19 arriving late: the newest below the highest")
+    pseq = 1000
+    up(1160, env(M_UPLINK, boot, pseq, b"\x00"), "UPLINK seq 1000: a large jump forward is allowed")
+    up(1170, held[19], "seq 19 again: now far below the window", "replay")
     dl_a = env(M_DOWNLINK, boot, server.next_seq(), b"\x00")
     dl_b = env(M_DOWNLINK, boot, server.next_seq(), b"\x00")
     down(1200, dl_b, "DOWNLINK overtaking the one sent before it")
@@ -1801,7 +1817,9 @@ def session_vectors() -> dict:
     server = ServerLink(lambda: next(nonces))
     n2 = up(12000, env(M_UPLINK, boot, nxt(), b"\x00"), "UPLINK to the restarted server: unknown boot")["nonce"]
     down(12020, req(boot, n2), "HELLO_REQUEST; its seq is not checked")
+    late = env(M_UPLINK, boot, nxt(), b"\x00")
     up(12020, hello(nxt(), n2), "HELLO echoing the nonce: the restarted server switches")
+    up(12030, late, "UPLINK sent just before that HELLO, arriving after it: below the switch, a duplicate")
     st = status(pseq)
     down(12040, st, "SERVER_STATUS seq 1, at or below the proxy's floor, echoing that HELLO: resync")
     down(12045, st, "the same SERVER_STATUS replayed: its echo is used up")

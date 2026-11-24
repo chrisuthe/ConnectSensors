@@ -103,6 +103,10 @@ every opened envelope with a monotonic millisecond clock; `receive` returns
   carrying `nonce` to the sender, with that message's `boot_id` and seq 0.
 - `ignored`: a replay, or a rate-limited request; drop it.
 
+A message of the current session also carries `seq_check`, its result under 05
+section 3.2: `accept` or `accept_late` (with `accepted`; the link keeps the 15-value
+reorder window), `duplicate` or `too_old` (with `ignored`).
+
 Number the messages you send with `next_seq()`. `new_nonce` returns a random nonzero
 32-bit nonce.
 
