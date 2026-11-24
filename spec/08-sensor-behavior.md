@@ -22,7 +22,7 @@ platform. Frames are defined in 02, readings in 03 and pairing in 04.
 | `dev_eui`, `k_root` | Read-only, provisioned | Never by firmware |
 | Uplink counter reservation | Non-volatile | 02 section 8.2 |
 | Pairing state, `k_session` | Non-volatile | On becoming `PAIRED` (04 section 4.6). A provisional session is never stored |
-| Root floor: last accepted root downlink counter | Non-volatile | On accepting `KEY_EXCHANGE`, before sending the first session uplink (04 section 4.6). Kept through `LEAVE` and re-pairing; cleared only by a factory reset (02 section 8.4) |
+| Root floor: last accepted root downlink counter | Non-volatile | On accepting `KEY_EXCHANGE`, before deriving `k_session` (04 section 4.6). Kept through `LEAVE` and re-pairing; cleared only by a factory reset (02 section 8.4) |
 | Session floor: last accepted session `fcnt_down` | Non-volatile | On each accepted downlink, or at least before sleeping after one. Set to 0 with each new `k_session` |
 | Heartbeat interval | Non-volatile | On `SET_HEARTBEAT` |
 | Settings from application commands | Non-volatile | As the profile defines |
@@ -338,3 +338,10 @@ A sensor implementation MUST pass at least:
     radio accepts again, the next uplink goes out at once. With a radio that
     always reports a packet arriving, uplinks still go out and every receive
     window closes within 600 ms of its end.
+15. On accepting `KEY_EXCHANGE` it stores the root floor before deriving
+    `k_session` (04 section 4.6), and sends nothing under the session key set
+    until `k_session` exists. While it is still deriving `k_session`, a
+    retransmitted or different `KEY_EXCHANGE` and a `LEAVE` are discarded, a
+    short press changes nothing, a factory reset leaves it as in item 9, and a
+    restart leaves it `UNPAIRED` with the root floor kept (04 section 4.3). An
+    all-zero shared value leaves it `UNPAIRED`, with the new root floor kept.
