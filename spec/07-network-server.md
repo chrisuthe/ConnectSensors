@@ -56,7 +56,7 @@ most homes have one.
 | `proxy_id`, `proxy_key` | yes | 05 section 4 |
 | Whether the key is shared | yes | 05 section 4.2. A proxy on a shared key never gets downlinks (section 6.1). |
 | Last address and port | no | 05 section 2.1 |
-| Current `boot_id`, last received `seq`, server `seq` | no | 05 section 3.2. After a restart they are rebuilt by `HELLO_REQUEST`. |
+| Current `boot_id`, `last_seq` and the reorder window below it, server `seq` | no | 05 section 3.2. After a restart they are rebuilt by `HELLO_REQUEST`. |
 | Outstanding `HELLO_REQUEST` nonces, per `boot_id` | no | 05 section 3.2 |
 | Capabilities and radio settings from the last `HELLO` | no | |
 | Timing record: the last 20 `TX_RESULT`s | no | Section 6 |

@@ -232,7 +232,8 @@
         "from": "proxy",
         "note": "UPLINK",
         "message": "0101348518fffe0000011a2b3c4d000000030086c3cb52329e629cca2dcee4a00419ba",
-        "result": "accepted"
+        "result": "accepted",
+        "seq_check": "accept"
       },
       {
         "t_ms": 1050,
@@ -252,9 +253,73 @@
         "t_ms": 1100,
         "to": "server",
         "from": "replay",
-        "note": "the same UPLINK replayed: seq not above the highest",
+        "note": "the same UPLINK replayed: seq equal to the highest",
         "message": "0101348518fffe0000011a2b3c4d000000030086c3cb52329e629cca2dcee4a00419ba",
-        "result": "ignored"
+        "result": "ignored",
+        "seq_check": "duplicate"
+      },
+      {
+        "t_ms": 1110,
+        "to": "server",
+        "from": "proxy",
+        "note": "UPLINK seq 20 after 4 to 19 were held up: any gap is allowed",
+        "message": "0101348518fffe0000011a2b3c4d0000001414445f376ec5fd4def5780cc5f2adc3184",
+        "result": "accepted",
+        "seq_check": "accept"
+      },
+      {
+        "t_ms": 1120,
+        "to": "server",
+        "from": "proxy",
+        "note": "UPLINK seq 5 arriving late: the oldest in the window (highest - 15)",
+        "message": "0101348518fffe0000011a2b3c4d000000050553f8b8d8d6bf90e20d48f8d992f42f77",
+        "result": "accepted",
+        "seq_check": "accept_late"
+      },
+      {
+        "t_ms": 1130,
+        "to": "server",
+        "from": "proxy",
+        "note": "UPLINK seq 4 arriving late: the first below the window (highest - 16)",
+        "message": "0101348518fffe0000011a2b3c4d0000000404eef77aff8317558598c91978b186379b",
+        "result": "ignored",
+        "seq_check": "too_old"
+      },
+      {
+        "t_ms": 1140,
+        "to": "server",
+        "from": "replay",
+        "note": "seq 5 again: already accepted late",
+        "message": "0101348518fffe0000011a2b3c4d000000050553f8b8d8d6bf90e20d48f8d992f42f77",
+        "result": "ignored",
+        "seq_check": "duplicate"
+      },
+      {
+        "t_ms": 1150,
+        "to": "server",
+        "from": "proxy",
+        "note": "UPLINK seq 19 arriving late: the newest below the highest",
+        "message": "0101348518fffe0000011a2b3c4d0000001313954310154ea72dd0d87b25ea90d78065",
+        "result": "accepted",
+        "seq_check": "accept_late"
+      },
+      {
+        "t_ms": 1160,
+        "to": "server",
+        "from": "proxy",
+        "note": "UPLINK seq 1000: a large jump forward is allowed",
+        "message": "0101348518fffe0000011a2b3c4d000003e8004d3b75882137348dd27ff821b58394bc",
+        "result": "accepted",
+        "seq_check": "accept"
+      },
+      {
+        "t_ms": 1170,
+        "to": "server",
+        "from": "replay",
+        "note": "seq 19 again: now far below the window",
+        "message": "0101348518fffe0000011a2b3c4d0000001313954310154ea72dd0d87b25ea90d78065",
+        "result": "ignored",
+        "seq_check": "too_old"
       },
       {
         "t_ms": 1200,
@@ -311,7 +376,7 @@
         "to": "server",
         "from": "proxy",
         "note": "UPLINK to the restarted server: unknown boot",
-        "message": "0101348518fffe0000011a2b3c4d0000000400dbd4c5018f5f3f4845359f85923972cc",
+        "message": "0101348518fffe0000011a2b3c4d000003e90053ccf19d5ef6e0ec3097ab6848d816ff",
         "result": "hello_request",
         "nonce": 1592590339
       },
@@ -328,21 +393,21 @@
         "to": "server",
         "from": "proxy",
         "note": "HELLO echoing the nonce: the restarted server switches",
-        "message": "0102348518fffe0000011a2b3c4d000000050105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e306931db3e096fb559f81da532f47a76a5",
+        "message": "0102348518fffe0000011a2b3c4d000003ea0105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e30603b528384fbae2d992aeca784aad070",
         "result": "switched"
       },
       {
         "t_ms": 12040,
         "to": "proxy",
         "note": "SERVER_STATUS seq 1, at or below the proxy's floor, echoing that HELLO: resync",
-        "message": "0181348518fffe0000011a2b3c4d000000016b00fb2000000005e85dcbc4cfa5c53ece80cb4a2a85fa12",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb20000003ea5c2f5b5acc2ad04b2d892bfedf5ea3a9",
         "result": "resync"
       },
       {
         "t_ms": 12045,
         "to": "proxy",
         "note": "the same SERVER_STATUS replayed: its echo is used up",
-        "message": "0181348518fffe0000011a2b3c4d000000016b00fb2000000005e85dcbc4cfa5c53ece80cb4a2a85fa12",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb20000003ea5c2f5b5acc2ad04b2d892bfedf5ea3a9",
         "result": "ignored"
       },
       {
@@ -365,14 +430,15 @@
         "to": "server",
         "from": "proxy",
         "note": "that HELLO: the boot is current, so it is a normal HELLO",
-        "message": "0102348518fffe0000011a2b3c4d000000060105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e301f17c819182cd0b2668cd6a4966bd110",
-        "result": "accepted"
+        "message": "0102348518fffe0000011a2b3c4d000003eb0105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e30ab561d5650dd909f803774de5805cd49",
+        "result": "accepted",
+        "seq_check": "accept"
       },
       {
         "t_ms": 17040,
         "to": "proxy",
         "note": "SERVER_STATUS answering it",
-        "message": "0181348518fffe0000011a2b3c4d000000036b00fb20000000065dd804fba4524203c7796476bf73023e",
+        "message": "0181348518fffe0000011a2b3c4d000000036b00fb20000003ebf6800bb43ab1b291054535089a4716da",
         "result": "accepted"
       },
       {
@@ -390,7 +456,8 @@
         "from": "replay",
         "note": "HELLO from this boot recorded before the restart: stale seq",
         "message": "0102348518fffe0000011a2b3c4d000000020105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00010e63735f70726f787920302e312e304972d011994c765c04327846f12e2b4c",
-        "result": "ignored"
+        "result": "ignored",
+        "seq_check": "too_old"
       },
       {
         "t_ms": 22000,

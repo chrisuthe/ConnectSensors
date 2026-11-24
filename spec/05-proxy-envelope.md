@@ -89,15 +89,23 @@ short handshake instead.
 
 **Server, for messages from a proxy:**
 
-- It keeps the proxy's current `boot_id` and the highest `seq` received for it. It
-  MUST discard a message from that boot whose `seq` is not greater, except that it
-  MAY accept up to 16 values below the highest that it has not yet seen, to
-  tolerate UDP reordering.
+- It keeps the proxy's current `boot_id`, `last_seq`, the highest `seq` accepted
+  from that boot, and a record of which of the 15 values below it
+  (`last_seq - 15` to `last_seq - 1`) were accepted. Each message from that boot
+  gets one of four results, the same as the frame counter's (02 section 8.5):
+  - `accept`: `seq > last_seq`. Accept it, and update `last_seq`. Any gap is
+    allowed.
+  - `accept_late`: `last_seq - 16 < seq < last_seq` and not yet accepted. The
+    server MAY accept it, to tolerate UDP reordering; `last_seq` stays. A server
+    that does not keep the record discards it instead.
+  - `duplicate`: `seq == last_seq`, or a value in the window that was already
+    accepted. Discard it.
+  - `too_old`: `seq <= last_seq - 16`. Discard it.
 - It MUST switch to another `boot_id` only on a `HELLO` from that boot whose
   `request_nonce` equals the nonce of a `HELLO_REQUEST` it sent for that boot
-  within the last 30 seconds. The `HELLO`'s `seq` becomes the highest received,
-  and the server's own `seq` for the proxy starts again, at 1 or at any higher
-  value (section 7).
+  within the last 30 seconds. The `HELLO`'s `seq` becomes `last_seq`, with
+  nothing recorded below it, and the server's own `seq` for the proxy starts
+  again, at 1 or at any higher value (section 7).
 - Any other message from a `boot_id` that is not current (the proxy rebooted, the
   server restarted, or the message is a replay) changes no state, not even the
   proxy's address. The server answers it with a `HELLO_REQUEST` for that
@@ -126,6 +134,8 @@ usually an `UPLINK`, rather than waiting for its next periodic `HELLO`.
     (section 5.6).
 - Accepting a `SERVER_STATUS` either way uses up its `hello_seq`, so a replayed
   copy is held to the floor.
+- There is no reorder window in this direction: a server message that arrives
+  after a later one is discarded.
 
 Replayed uplinks would be harmless anyway, since the server's frame counter rules
 (02 section 8.5) reject them, but replay protection stops a recorded `DOWNLINK`
@@ -382,6 +392,10 @@ Its `session` sequence walks section 3.2 from both ends: a boot handshake, a
 replayed `HELLO` from an earlier boot, a server restart recovered by
 `HELLO_REQUEST` and the `SERVER_STATUS` echo, replays of each kind of message,
 and two `DOWNLINK`s arriving out of order, the late one held to the proxy's
-floor. The server steps never rely on its optional reorder tolerance. Each step
-gives the time, the message, which side receives it and that side's result. Its
-nonces are fixed so the sequence is reproducible; real nonces are random.
+floor. The server steps take the reorder window: a gap, the oldest value accepted
+late (`last_seq - 15`), the first one refused (`last_seq - 16`), a duplicate
+inside the window, and a large jump forward. Each step gives the time, the
+message, which side receives it and that side's result; a server step in the
+current session also gives the section 3.2 result as `seq_check`. A server that
+does not take the window discards the two `accept_late` steps. Its nonces are
+fixed so the sequence is reproducible; real nonces are random.
