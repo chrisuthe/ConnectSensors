@@ -80,7 +80,7 @@ certificate and terminate TLS, and pass the WebSocket to `cs-mailbox` over plain
 see nothing different.
 
 ```sh
-cs-mailbox --host mailbox.example --trusted-proxy 172.30.0.0/24 --key-file server.key
+cs-mailbox --host mailbox.example --trusted-proxy 172.30.0.2/32 --key-file server.key
 ```
 
 With `--trusted-proxy`:
@@ -111,10 +111,14 @@ publishing its port:
 
 ```sh
 docker network create --subnet 172.30.0.0/24 mailbox
-docker network connect mailbox nginx-proxy-manager      # your NPM container's name
+docker network connect --ip 172.30.0.2 mailbox nginx-proxy-manager   # your NPM container's name
 docker run -d --name cs-mailbox --network mailbox -v cs-mailbox:/data cs-mailbox \
-    --host mailbox.example --trusted-proxy 172.30.0.0/24
+    --host mailbox.example --trusted-proxy 172.30.0.2/32
 ```
+
+Trust NPM's fixed address, not the whole network: the network's gateway
+(172.30.0.1) is the Docker host itself, and connections from the host, or
+through a published port with some port drivers, arrive from it.
 
 Then in NPM, under Hosts, Proxy Hosts, Add Proxy Host:
 
@@ -130,13 +134,20 @@ If NPM runs on another machine on your LAN, forward to the mailbox host's addres
 instead, and trust only NPM's address: `--trusted-proxy 192.168.1.20/32`.
 
 NPM passes the public name through as `Host`, and sets `X-Forwarded-For` and
-`X-Real-IP`. It also trusts an incoming `X-Real-IP` from private addresses
-(10/8, 172.16/12, 192.168/16), so a client reaching NPM from one of those, such
-as your own LAN, can choose the address it is counted by. Clients from the
-internet cannot. If NPM's access log shows a private address for internet
-clients (some Docker port setups do that), every client can, and per-address
-admission means nothing: use `--members`, or fix the port setup so NPM sees real
-client addresses.
+`X-Real-IP`. But NPM itself trusts an incoming `X-Real-IP` from private
+addresses (10/8, 172.16/12, 192.168/16) and, by default, from the Cloudflare and
+CloudFront ranges it downloads at startup. So a client on your LAN, or anyone
+who routes through their own CloudFront distribution or Cloudflare zone pointed
+at your name, can choose the address it is counted by. That only weakens open
+admission's per-address limit (no authentication depends on it). For a public
+mailbox that admits anyone:
+
+- set `IP_RANGES_FETCH_ENABLED=false` on the NPM container unless you really
+  front it with Cloudflare or CloudFront, and
+- check NPM's access log shows real client addresses (some Docker port setups
+  make every client look private).
+
+Where the address must not be choosable at all, use `--members`.
 
 ### Caddy
 

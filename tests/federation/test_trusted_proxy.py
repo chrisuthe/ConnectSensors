@@ -90,6 +90,10 @@ async def trusted_proxy(p: Watched, url: str) -> None:
     got = [await attempt(url, {"X-Real-IP": "2001:db8::1"})]
     check(got == ["welcome"] and p.wait_for(r"welcome from 2001:db8::1 via", since=mark) is not None,
           f"without X-Forwarded-For, X-Real-IP is the client {got}")
+    mark = p.mark()
+    got = [await attempt(url, {"X-Forwarded-For": "203.0.113.5", "X-Real-IP": "203.0.113.6"})]
+    check(got == ["welcome"] and p.wait_for(r"welcome from 203\.0\.113\.5 via", since=mark) is not None,
+          f"X-Forwarded-For wins over X-Real-IP {got}")
 
     # A malformed value falls back to the proxy's own address, which plain
     # connections without headers also count against.
@@ -163,6 +167,12 @@ def main() -> int:
                 pattern=r"--trusted-proxy is its own mode", what="--trusted-proxy with --insecure-dev will not start")
         refuses("--trusted-proxy", "proxy.lan",
                 pattern=r"--trusted-proxy proxy\.lan: not an address range", what="a malformed range will not start")
+        refuses("--trusted-proxy", "0.0.0.0/0",
+                pattern=r"trusts every address", what="a range that trusts everyone will not start")
+        refuses("--trusted-proxy", "10.0.0.5/8",
+                pattern=r"host bits set", what="a range with host bits set will not start")
+        refuses("--trusted-proxy", "::ffff:10.0.0.0/104",
+                pattern=r"IPv4 form", what="an IPv4-mapped range will not start")
     finally:
         outs = [p.stop() for p in procs]
     if failures:

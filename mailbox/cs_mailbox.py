@@ -145,7 +145,7 @@ class Mailbox:
         self.requested_by: dict[bytes, bytes] = {}  # rx_ref -> requesting owner pub
         self.keys: dict[bytes, KeyState] = {}  # admitted client keys
         self.admissions: dict[str, list[float]] = {}  # source network -> admission times
-        self.proxies = [ipaddress.ip_network(c, strict=False) for c in args.trusted_proxy or ()]
+        self.proxies = [ipaddress.ip_network(c) for c in args.trusted_proxy or ()]
         self.logged: dict[str, float] = {}  # log_once key -> when last logged
 
     def log_once(self, key: str, msg: str) -> None:
@@ -616,9 +616,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                  "proxy (or --insecure-dev for tests)")
     for c in args.trusted_proxy or ():
         try:
-            ipaddress.ip_network(c, strict=False)
+            net = ipaddress.ip_network(c)
         except ValueError:
-            ap.error(f"--trusted-proxy {c}: not an address range")
+            ap.error(f"--trusted-proxy {c}: not an address range, or host bits set (give the proxy's /32)")
+        if net.prefixlen == 0:
+            ap.error(f"--trusted-proxy {c}: trusts every address; that is --insecure-dev")
+        if isinstance(net, ipaddress.IPv6Network) and net.subnet_of(ipaddress.ip_network("::ffff:0:0/96")):
+            ap.error(f"--trusted-proxy {c}: give IPv4-mapped ranges in their IPv4 form")
     for h in args.host:
         try:
             h.encode("ascii")

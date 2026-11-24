@@ -640,8 +640,8 @@ host, and the rules above apply between the client and the proxy. Behind it:
   Nothing protects it but that.
 - The server MUST refuse plain connections from anyone but the proxy, before the
   greeting, so the plain port cannot be used to bypass TLS or the proxy.
-- Where the server needs a client's address, for admission (section 5.4) and the
-  limits of section 11, it MUST use the address the proxy reports for the
+- Where the server needs a client's address, for open admission (sections 5.4
+  and 11), it MUST use the address the proxy reports for the
   connection, and MUST NOT take a reported address from anyone but the proxy.
 
 Clients do not change: they connect to `wss://` and validate the certificate as
@@ -862,7 +862,7 @@ system.
 | A sole-path publisher or server delays frames | Frames carry no time. Receptions that came only through federation are marked, and users can ignore events from them (07 section 4.4). Documented. |
 | Replay of client messages | Every message is signed over the connection's `nonce_s` and a strictly increasing `seq` (section 12.4). |
 | A forged server greeting | The greeting signature covers the client's nonce and the TLS host name (section 12.3). |
-| A server behind a TLS-terminating proxy that leaves its plain port reachable | The server refuses plain connections from anyone but its proxy, before the greeting, and reads reported client addresses only from the proxy (section 12.1). Without that, anyone who reaches the port could connect without TLS and, if the server read their headers, choose the address that admission and section 11's limits count them by. Clients are not exposed by it: they connect only through `wss://` (section 12.1), and their messages stay signed and bound to `nonce_s` (section 12.4). |
+| A server behind a TLS-terminating proxy that leaves its plain port reachable | The server refuses plain connections from anyone but its proxy, before the greeting, and reads reported client addresses only from the proxy (section 12.1). Without that, anyone who reaches the port could connect without TLS and, if the server read their headers, choose the address that open admission counts them by. Clients are not exposed by it: they connect only through `wss://` (section 12.1), and their messages stay signed and bound to `nonce_s` (section 12.4). |
 
 ## 14. Test vectors
 
