@@ -220,15 +220,9 @@ bool PlatformRadio::receiving() {
   return false;
 }
 
-// Semtech LoRa time on air, explicit header and CRC on (spec/tools/csframe.py airtime_ms).
 uint32_t PlatformRadio::airtime_us(size_t len) {
   const CSSensor *p = this->parent_;
-  const double tsym = double(1u << p->sf_) / double(p->bw_hz_);
-  const int de = tsym > 0.016 ? 1 : 0;
-  const int num = 8 * int(len) - 4 * p->sf_ + 28 + 16;
-  const int den = 4 * (p->sf_ - 2 * de);
-  const int n_payload = 8 + std::max((num + den - 1) / den * (p->cr_ + 4), 0);
-  return uint32_t(std::ceil((p->preamble_ + 4.25 + n_payload) * tsym * 1e6));
+  return lora_airtime_us(len, p->sf_, p->bw_hz_, p->cr_, p->preamble_);
 }
 
 // ======================================================================== component

@@ -203,7 +203,8 @@ Tests: [`tests/sensor_core`](../../tests/sensor_core), run with
 - **Behaviour (08):** state-change frames, heartbeats with the full state and
   `firmware_version` in the first one after boot, confirmed uplinks with the
   retry schedule, RX1 and RX2, `DL_ACK`, `PENDING`, contact loss and `SYNC`, clock
-  keeping and `TIME_UNSURE`, the 1% airtime budget, and boot.
+  keeping and `TIME_UNSURE`, the 1% airtime budget, the 2 s bound on a radio
+  that refuses to transmit (08 section 4.3), and boot.
 - **Pairing (04):** `UNPAIRED`, `JOINING`, the provisional `SESSION` and
   `PAIRED` with every exit 04 section 4.3 defines (an unanswered first session
   uplink, a restart, a session downlink that makes it `PAIRED`), the `JOIN`,
@@ -273,8 +274,9 @@ adds `cs_common`. The copy differs only in its namespace. The region profiles in
 `make -C tests/sensor_core` fails if either copy drifts.
 
 The other shared parts are small: header parsing and the airtime formula. The
-sensor parses downlink headers inside `open_frame`, and the platform supplies
-airtime through `Radio::airtime_us`.
+sensor parses downlink headers inside `open_frame`. Its own copy of the airtime
+formula is `lora_airtime_us` in the core, which `Radio::airtime_us` calls with the
+region profile's settings; both cores test it against the same vectors.
 
 ## Readings of the spec
 

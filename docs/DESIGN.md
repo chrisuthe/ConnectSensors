@@ -20,8 +20,36 @@ coverage for everyone.
 - 2026.12 adds asynchronous transmit (`start_transmit_async`), so a packet goes
   out without blocking the main loop. `cs_proxy` and `cs_sensor` use it and
   require 2026.12 or later.
-- `packet_transport` runs over these radios, but it is node-to-node state sync,
-  not a forwarding network.
+- A layered packet stack runs over these radios and over `udp`, `tcp` and `uart`
+  (`esphome/components/packet_interface/`, with a link in each radio's
+  `packet_interface/` subdirectory). Its optional layers are XXTEA encryption
+  with an optional rolling code, HDLC-style reliability, sessions, 16-bit
+  addressing and fragmentation. `radio_link.h` and `listen_before_talk.h` add
+  half-duplex turn-taking and a cap on how long a busy radio can hold a send
+  back. `entity_transport` (`esphome/components/entity_transport/`) sends
+  sensor and binary sensor states over it, and `packet_transport` runs over it
+  through an adapter (`packet_interface/packet_transport/`).
+- ConnectSensors does not build on that stack. It shares entity state between
+  ESPHome nodes that are all built with one key text in their config, and names
+  the sending device in its dictionary packets, in the clear unless the XXTEA
+  layer is on. The addressing header is always in the clear. ConnectSensors
+  needs sensors that are not ESPHome API devices, proxies that forward frames
+  they hold no key for, AEAD with keys agreed at pairing (X25519 from a QR code,
+  04), rotating tags instead of fixed addresses (02), a network server that
+  dedupes across proxies (07) and federation between homes (09). None of those
+  fit as a layer of the stack.
+- Other look-alikes, and why they differ:
+  - `udp` (and `packet_transport` over it) syncs states between ESPHome nodes on
+    one LAN; the proxy's link to the server is UDP, but with its own envelope
+    (05).
+  - `preferences` stores flash state; `cs_sensor` uses it for its counters and
+    keys, but it has nothing to do with the air protocol.
+  - `sntp` and `homeassistant` time set a node's clock; sensors take theirs
+    from the server's `KEY_EXCHANGE` and downlinks instead (08 section 3).
+  - `mdns` only advertises the node and cannot browse, so the server discovery
+    of 05 section 2.1 is not implemented and `server.host` is required (06).
+  - There is no LoRa or LoRaWAN component; the radio drivers carry raw packets
+    only.
 - Recent releases add proxy-style components (`serial_proxy`, `bridge`,
   `uart_mux`, `ezsp_proxy_tap`), alongside the long-standing Bluetooth proxy.
   ConnectSensors follows the same pattern: cheap nodes forward raw radio traffic,

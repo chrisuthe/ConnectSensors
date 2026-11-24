@@ -4,7 +4,7 @@ CXXFLAGS ?= -std=c++17 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined
 
 all: run
 
-vectors.inc: gen_vectors.py ../../spec/vectors/frame-v1.json ../../spec/vectors/payload-v1.json ../../spec/vectors/pairing-v1.json
+vectors.inc: gen_vectors.py ../../spec/vectors/frame-v1.json ../../spec/vectors/payload-v1.json ../../spec/vectors/pairing-v1.json ../../spec/tools/csframe.py
 	python3 gen_vectors.py
 
 SOURCES := $(COMPONENT)/sensor_core.cpp $(COMPONENT)/cs_crypto.cpp $(COMPONENT)/cs_x25519.cpp $(COMPONENT)/cs_sha256.cpp \

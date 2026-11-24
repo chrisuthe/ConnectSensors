@@ -1,6 +1,7 @@
 // Host unit tests for the cs_proxy core. Build and run with:  make -C tests/proxy_core
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -412,6 +413,12 @@ static void test_airtime() {
     int64_t diff = int64_t(got) - int64_t(v.us);
     CHECK(diff >= -1 && diff <= 1);
   }
+  // 01 section 5.1, worked by hand: 23 bytes at SF12, 125 kHz is 1482.752 ms with the
+  // low data rate optimization and would be 1318.912 ms without it. SF11 at 125 kHz
+  // (16.384 ms symbols) has it on too; SF9 at 125 kHz (4.096 ms) does not.
+  CHECK(std::llabs(int64_t(lora_airtime_us(23, 12, 125000)) - 1482752) <= 1);
+  CHECK(std::llabs(int64_t(lora_airtime_us(23, 11, 125000)) - 823296) <= 1);
+  CHECK(std::llabs(int64_t(lora_airtime_us(23, 9, 125000)) - 205824) <= 1);
 }
 
 static void test_budget() {
@@ -1400,6 +1407,45 @@ static void test_engine_rx_hold() {
   CHECK(s.io.transmits.empty());
 }
 
+// A radio that reports a frame arriving, and answers BUSY, for ever costs each
+// downlink its 40 ms window and a BUSY result, and nothing more: uplinks are still
+// forwarded, and later downlinks get their own windows (06 section 8.2).
+static void test_engine_stuck_radio() {
+  auto f = frame("downlink_ack");
+  Rig r;
+  r.loop({r.status()});
+  r.take();
+  r.io.receiving_answers = 1000000;
+  r.io.radio_answers.assign(1000, TX_BUSY);
+  const uint64_t t0 = r.io.t;
+  r.loop({r.downlink(t0, 1000000, f)});
+  r.loop({r.downlink(t0, 2000000, f)});
+  r.loop({r.downlink(t0, 3000000, f)});
+  for (uint64_t at : {t0 + 1000000, t0 + 2000000, t0 + 3000000}) {
+    r.run_until(at + TX_WINDOW_US);
+    CHECK(r.take(MSG_TX_RESULT).empty());
+    r.run_until(at + TX_WINDOW_US + 1);
+    auto out = r.take(MSG_TX_RESULT);
+    CHECK(out.size() == 1 && tx_res(out[0]).result == TX_BUSY);
+  }
+  CHECK(r.io.transmits.empty());
+  CHECK(r.io.radio_answers.size() <= 1000 - 3);  // each hold ran out and the send was tried
+  CHECK(r.engine->counters().tx_failed == 3);
+  r.hear(frame("heartbeat"));
+  CHECK(r.take(MSG_UPLINK).size() == 1);
+
+  // Once the radio recovers, the next downlink goes out on time.
+  r.io.receiving_answers = 0;
+  r.io.radio_answers.clear();
+  const uint64_t at = r.io.t + 1000000;
+  r.loop({r.downlink(r.io.t, 1000000, f)});
+  r.run_until(at + TX_WINDOW_US);
+  CHECK(r.io.transmits.size() == 1 && r.io.transmits[0].at >= at && r.io.transmits[0].at <= at + TX_WINDOW_US);
+  r.engine->on_transmit_complete(true);
+  auto out = r.take(MSG_TX_RESULT);
+  CHECK(out.size() == 1 && tx_res(out[0]).result == TX_SENT);
+}
+
 static void test_engine_in_flight_and_errors() {
   auto f = frame("downlink_ack");
   const uint32_t air = lora_airtime_us(f.size(), 9, 500000);
@@ -1604,6 +1650,7 @@ int main() {
   test_engine_duty_cycle();
   test_engine_busy_retry();
   test_engine_rx_hold();
+  test_engine_stuck_radio();
   test_engine_in_flight_and_errors();
   std::printf("%d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;
