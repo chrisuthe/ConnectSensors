@@ -17,14 +17,24 @@ Early development: the spec is a draft and nothing is ready for real deployments
   ([#38](https://github.com/chrisuthe/ConnectSensors/issues/38)).
 - **Network server:** the Home Assistant integration
   ([connect-sensors-ha](https://github.com/chrisuthe/connect-sensors-ha)),
-  [0.1.0](https://github.com/chrisuthe/connect-sensors-ha/releases/tag/v0.1.0) on
+  [0.2.1](https://github.com/chrisuthe/connect-sensors-ha/releases/tag/v0.2.1) on
   HACS as a custom repository. It pairs sensors and turns their readings into
   entities. It also chooses between proxies, supervises devices, sends commands and
   raises repairs. Tested on the bench rig. `devtools/cs_testserver.py` remains for
   development.
+- **Federation:** working end to end through mailbox servers
+  ([spec 09](spec/09-federation-relay.md)). A sensor heard only by a neighbour's proxy
+  reaches its owner, with acknowledgements and queued commands going back through
+  that proxy. Pairing always stays local. The reference server is
+  [`mailbox/`](mailbox/), packaged as a Home Assistant app in
+  [HAOS-cs-mailbox](https://github.com/chrisuthe/HAOS-cs-mailbox). Tested on the
+  bench with two Home Assistant instances and the app on HA OS, and in CI with
+  simulated homes.
 - **Python package:** [`connectsensors`](https://pypi.org/project/connectsensors/)
-  on PyPI, the reference implementation packaged for network servers.
-- **Not implemented:** federation (mailbox servers), EU868, MQTT transport.
+  on PyPI (0.4.2), the reference implementation packaged for network servers,
+  including the federation helpers.
+- **Not implemented:** EU868, MQTT transport, mDNS discovery, device-profile
+  distribution (spec 10).
 - **Requires ESPHome 2026.12**, which means the `dev` branch until it's released.
 
 ## Repository
