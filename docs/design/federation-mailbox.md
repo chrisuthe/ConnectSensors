@@ -1,10 +1,12 @@
 # Design note: federation through blind mailboxes
 
-Status: proposal, revision 3.1. Review round 3 found it sound enough to rewrite
-the specs on (PR #90). If accepted, it replaces the Nostr design of
-`spec/09-federation-relay.md`, changes how frame tags are derived (02 sections 6
-and 11), shortens pairing (04), and removes most of `spec/10-control-plane.md`
-sections 5-7.
+Status: **accepted and implemented** (revision 3.1, PR #90). The normative text is
+now in the spec: frame tags and pairing in 02, 04, 05, 06 and 07 (PR #94), mailbox
+federation in `spec/09-federation-relay.md` (PR #93), and the confirmed follow-up
+heartbeat in 08 (PR #98). The reference mailbox is `mailbox/` (PR #99), and the Home
+Assistant integration implements the client (connect-sensors-ha PR #15). This
+note keeps the rationale, the review history and the threat model; where it and
+the spec differ, the spec wins.
 
 **Revision history:**
 - **1:** first-sighting ownership. Broken by round 1: a radio beats the server.
