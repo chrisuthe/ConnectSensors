@@ -9,13 +9,25 @@ import time
 
 
 class Watched:
-    def __init__(self, argv: list[str], stdin: bool = False):
+    def __init__(self, argv: list[str], stdin: bool = False, merge_stderr: bool = True):
+        """With merge_stderr False, stderr is kept apart in err_lines and lines holds stdout only."""
         self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+                                     text=True, bufsize=1)
         self.lines: list[str] = []
+        self.err_lines: list[str] = []
         self._cond = threading.Condition()
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
+        self._err_reader = None
+        if not merge_stderr:
+            self._err_reader = threading.Thread(target=self._read_err, daemon=True)
+            self._err_reader.start()
+
+    def _read_err(self) -> None:
+        for line in self.proc.stderr:
+            self.err_lines.append(line.rstrip("\n"))
 
     def _read(self) -> None:
         for line in self.proc.stdout:
@@ -66,4 +78,6 @@ class Watched:
             self.proc.kill()
             self.proc.wait()
         self._reader.join(timeout=5)
+        if self._err_reader is not None:
+            self._err_reader.join(timeout=5)
         return "\n".join(self.lines)

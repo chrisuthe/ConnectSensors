@@ -542,8 +542,171 @@ def queue_main() -> int:
     return 1 if failures else 0
 
 
+# --json: one event per stdout line, the human log on stderr; and the --fault modes
+# and stdin commands (window, fault, hello) the bench runner relies on.
+JSON_BOOT = 0x0A0B0C2F
+
+
+def json_main() -> int:
+    import json
+
+    failures = 0
+
+    def check(cond, what):
+        nonlocal failures
+        print(("ok   " if cond else "FAIL ") + what)
+        failures += not cond
+        return cond
+
+    vec = cs.frame_vectors()
+    session = cs.keys_from(bytes.fromhex(vec["derived"]["k_session"]), cs.DEV_EUI)
+    ntag = bytes.fromhex(next(f["frame"] for f in vec["frames"] if f["name"] == "data_confirmed"))[2:10]
+    fcnt = [100]
+
+    def fresh(ftype: int = cs.T_DATA_CONFIRMED) -> bytes:
+        fcnt[0] += 1
+        return cs.seal(session, ftype, ntag, fcnt[0], bytes([0]) + cs.encode_reading(0, 0x01, 1))
+
+    srv = Watched([sys.executable, "-I", os.path.join(ROOT, "devtools", "cs_testserver.py"), "--port", str(PORT),
+                   "--key", KEY.hex(), "--ack", "--json", "--fault", "stale-seq"], stdin=True, merge_stderr=False)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(3)
+    proxy = SimProxy(s, ("127.0.0.1", PORT), PROXY_ID, JSON_BOOT)
+
+    def event(name: str, since: int, **match) -> dict | None:
+        """The first event called name, at or after since, whose fields include match."""
+        deadline = time.monotonic() + 5
+        pos = since
+        while time.monotonic() < deadline:
+            if srv.wait_for(r".", timeout=0.2, since=pos) is None:
+                continue
+            while pos < len(srv.lines):
+                ev = json.loads(srv.lines[pos])
+                pos += 1
+                if ev["event"] == name and all(ev.get(k) == v for k, v in match.items()):
+                    return ev
+        return None
+
+    def uplink(frame: bytes, rx_time: int) -> None:
+        proxy.send(cs.M_UPLINK, cs.uplink_body(rx_time, -80.0, 9.0, 0, frame))
+
+    def downlink_raw() -> bytes | None:
+        try:
+            return s.recv(2048)
+        except socket.timeout:
+            return None
+
+    out = ""
+    try:
+        check(event("LISTENING", 0, port=PORT, ack=True, window="rx1", fault="stale-seq") is not None,
+              "json: LISTENING event with the options")
+        mark = srv.mark()
+        proxy.send(cs.M_HELLO, hello())
+        m, _ = proxy.recv()
+        check(event("HELLO_REQUEST", mark, proxy=PROXY_ID.hex(), boot_id=JSON_BOOT) is not None,
+              "json: HELLO_REQUEST event for an unknown boot")
+        proxy.send(cs.M_HELLO, hello(nonce_of(m)))
+        proxy.recv()
+        check(event("SESSION", mark, proxy=PROXY_ID.hex(), boot_id=JSON_BOOT) is not None, "json: SESSION event")
+        ev = event("HELLO", mark, proxy=PROXY_ID.hex())
+        check(ev is not None and ev["counters"]["heard"] == 1 and ev["fw"] == "cs_proxy test"
+              and ev["downlink"] is True, "json: HELLO event with named counters")
+
+        # Faults: stale-seq reuses the seq the proxy already holds, so it drops the downlink.
+        mark = srv.mark()
+        uplink(fresh(), 10_000_000)
+        m, res = proxy.recv()
+        dl = event("DOWNLINK", mark, fault="stale-seq")
+        check(res == "ignored" and dl is not None and dl["seq"] == m["seq"], "json: fault stale-seq is stale")
+
+        def set_fault(name: str) -> None:
+            mark = srv.mark()
+            srv.send(f"fault {name}")
+            check(event("MODE", mark, fault=None if name == "none" else name) is not None,
+                  f"json: stdin `fault {name}` reported as MODE")
+
+        set_fault("wrong-boot")
+        uplink(fresh(), 11_000_000)
+        m, res = proxy.recv()
+        check(m["boot_id"] != JSON_BOOT and res == "ignored", "json: fault wrong-boot carries another boot_id")
+        set_fault("bad-mac")
+        uplink(fresh(), 12_000_000)
+        raw = downlink_raw()
+        bad = False
+        try:
+            cs.open_envelope(KEY, raw or b"")
+        except ValueError as ex:
+            bad = "MAC" in str(ex)
+        check(bad, "json: fault bad-mac fails the MAC check")
+        set_fault("uplink-frame")
+        up = fresh()
+        uplink(up, 13_000_000)
+        m, res = proxy.recv()
+        check(res == "accepted" and bytes.fromhex(m["body"])[13:] == up, "json: fault uplink-frame sends the uplink back")
+        set_fault("busy")
+        mark = srv.mark()
+        uplink(fresh(), 14_000_000)
+        a, _ = proxy.recv()
+        b, _ = proxy.recv()
+        check(b["seq"] == a["seq"] + 1 and a["body"] == b["body"]
+              and event("DOWNLINK", mark, copy_of=a["seq"]) is not None, "json: fault busy repeats the downlink")
+        set_fault("late")
+        mark = srv.mark()
+        t0 = time.monotonic()
+        uplink(fresh(), 15_000_000)
+        m, res = proxy.recv()
+        check(res == "accepted" and time.monotonic() - t0 > 1.04, "json: fault late holds the downlink past its window")
+        check(event("DOWNLINK", mark, seq=m["seq"], fault="late") is not None, "json: late DOWNLINK event has its seq")
+        set_fault("none")
+
+        # A clean round: UPLINK, DOWNLINK in RX2 after `window rx2`, TX_RESULT; then a copy.
+        mark = srv.mark()
+        srv.send("window rx2")
+        check(event("MODE", mark, window="rx2") is not None, "json: stdin `window rx2` reported as MODE")
+        up = fresh()
+        uplink(up, 16_000_000)
+        m, res = proxy.recv()
+        ev = event("UPLINK", mark, fcnt=fcnt[0])
+        check(ev is not None and ev["device"] == "test" and ev["result"] == "transmission" and ev["answer"] is True
+              and ev["type"] == "DATA_CONFIRMED" and ev["rx_time_us"] == 16_000_000 and ev["frame"] == up.hex(),
+              "json: UPLINK event names the device, the result and the frame")
+        dl = event("DOWNLINK", mark, seq=m["seq"])
+        check(dl is not None and dl["answering"] == fcnt[0] and dl["tx_offset_us"] == 3_000_000
+              and dl["window"] == "rx2" and dl["fault"] is None and dl["airtime_us"] > 0
+              and dl["frame"] == bytes.fromhex(m["body"])[13:].hex(), "json: DOWNLINK event for RX2 with its frame")
+        proxy.send(cs.M_TX_RESULT, cs.tx_result_body(m["seq"], 0, 1234))
+        check(event("TX_RESULT", mark, seq=m["seq"], result="SENT", offset_us=1234) is not None,
+              "json: TX_RESULT event")
+        uplink(up, 16_000_100)
+        check(event("UPLINK", mark, fcnt=fcnt[0], result="copy") is not None, "json: a copy is reported as one")
+
+        # `hello` asks the proxy for a HELLO in its current session.
+        srv.send("hello")
+        m, res = proxy.recv()
+        check(m["type"] == cs.M_HELLO_REQUEST and m["boot_id"] == JSON_BOOT and res == "hello",
+              "json: stdin `hello` sends a HELLO_REQUEST in the proxy's session")
+        mark = srv.mark()
+        s.sendto(b"\x01" + bytes(40), ("127.0.0.1", PORT))
+        check(event("REJECTED", mark, reason="bad MAC") is not None, "json: REJECTED event for a bad datagram")
+    finally:
+        out = srv.stop()
+    lines = [x for x in out.splitlines() if x]
+    parsed = 0
+    for x in lines:
+        try:
+            parsed += isinstance(json.loads(x), dict)
+        except ValueError:
+            pass
+    check(parsed == len(lines) > 0, "json: every stdout line is a JSON object")
+    check(any("UPLINK DATA_CONFIRMED" in x for x in srv.err_lines), "json: the human log is on stderr")
+    print("--- json server stderr ---\n" + "\n".join(srv.err_lines[-20:]))
+    print("json: all checks pass" if failures == 0 else f"json: {failures} failures")
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
     rc = main()
     rc = rx2_main() or rc
     rc = pairing_main() or rc
+    rc = json_main() or rc
     sys.exit(queue_main() or rc)
