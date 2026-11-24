@@ -1881,6 +1881,13 @@ static void test_sliced_bootstrap_block() {
   CHECK(type_of(s2) == T_SYNC && fcnt_of(s2) == 65 && tag_hex(s2) == bootstrap_hex(server.keys, 65));
   CHECK(rig.core->tag_computations() == computed + 1);
   CHECK(rig.core->key_work().sync_tags == 0);
+
+  // A deep-sleep wake with nothing to send computes nothing ahead: no SYNC yet this run.
+  rig.run(3 * MIN);
+  CHECK(rig.sleep_wake(MIN));
+  CHECK(!rig.core->hold());
+  rig.run(10 * S);
+  CHECK(rig.core->tag_computations() == 0 && rig.core->key_work().jobs == 0);
 }
 
 static void test_storage_failure_while_pairing() {
@@ -2076,7 +2083,6 @@ static void test_deep_sleep_unpaired_and_lost_session() {
   pair_with_vectors(r3);
   r3.run(10 * S);
   r3.clock.rtc = false;
-  r3.run(S);  // the core holds until it has computed the tag a SYNC would need
   CHECK(r3.sleep_wake(MIN));
   CHECK(!r3.core->time_sure());
   r3.core->report(true);

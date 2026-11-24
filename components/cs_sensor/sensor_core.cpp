@@ -601,8 +601,11 @@ bool SensorCore::next_key_target_(KeyTarget &out) const {
   // the next epoch's before the boundary (08 section 3.2),
   if (clock && EPOCH_SECONDS - t % EPOCH_SECONDS <= TAG_PRECOMPUTE_LEAD_S && want(false, false, epoch_of(t) + 1))
     return true;
-  // and, while frames go out as SYNC (08 sections 3.2 and 6), the block's of the next one.
-  return (!clock || this->undelivered_ >= SYNC_AFTER_UNDELIVERED) && want(false, true, tag_block(this->next_fcnt_));
+  // and, while frames go out as SYNC (08 sections 3.2 and 6), the block's of the next
+  // one. Only after a SYNC in this run: a deep-sleep wake keeps no bootstrap tags, and
+  // must not compute one on every wake that sends nothing.
+  return this->cur_.type == T_SYNC && (!clock || this->undelivered_ >= SYNC_AFTER_UNDELIVERED) &&
+         want(false, true, tag_block(this->next_fcnt_));
 }
 
 void SensorCore::cancel_key_job_() {
