@@ -70,6 +70,18 @@ async def expect(lk: ts.MailboxLink, mtype: int, timeout: float = 2.0) -> list |
         return None
 
 
+async def collect(lk: ts.MailboxLink, mtype: int, n: int, timeout: float = 5.0) -> list[list]:
+    """Up to n messages of mtype, waiting as long as a slow machine needs, then any
+    surplus that turns up shortly after."""
+    got = []
+    deadline = time.monotonic() + timeout
+    while len(got) < n and (m := await expect(lk, mtype, max(0.0, deadline - time.monotonic()))) is not None:
+        got.append(m)
+    while (m := await expect(lk, mtype, 0.3)) is not None:
+        got.append(m)
+    return got
+
+
 async def raw_fatal(lk: ts.MailboxLink, data: bytes | str) -> tuple[list | None, int | None]:
     """Send raw data on an authenticated link; the error it draws and the close code."""
     await lk.ws.send(data)
@@ -267,7 +279,7 @@ async def routing(url: str) -> None:
 
     # Expiry: a registration lasts until its expires.
     short = await link(url)
-    exp = int(time.time()) + 2
+    exp = int(time.time()) + 3  # at least 2 s to register, publish and deliver on a slow machine
     await short.send([cs.MB_REGISTER, [entry(short, exp, epoch=e + 5)]])
     await expect(short, cs.MB_REGISTERED)
     await pub.send([cs.MB_PUBLISH, frame(1, epoch=e + 5), [rx()]])
@@ -290,6 +302,8 @@ async def routing(url: str) -> None:
 
 
 async def rate_limits(url: str) -> None:
+    """Against a server whose buckets refill at 0.01 a second, so nothing refills
+    during the run however slow the machine: exactly the burst gets through."""
     owner, pub = await link(url), await link(url)
     e = EPOCH
     await owner.send([cs.MB_REGISTER, [entry(owner, epoch=e + x) for x in range(5)]])
@@ -302,32 +316,20 @@ async def rate_limits(url: str) -> None:
     check(reg is not None and reg[2] == [0] * 8 + [E["RATE_LIMITED"]], "registrations over --reg-burst 8: "
           f"RATE_LIMITED ({reg[2] if reg else None})")
 
-    # Bursts a little past the limits, since the buckets refill while they are sent.
     for n in range(25):
         await pub.send([cs.MB_PUBLISH, frame(100 + n), [rx()]])
-    errs = []
-    while (m := await expect(pub, cs.MB_ERROR, 0.3)) is not None:
-        errs.append(m)
-    check(errs and all(m[2] == E["RATE_LIMITED"] for m in errs) and min(m[1] for m in errs) > 20,
+    errs = await collect(pub, cs.MB_ERROR, 5)
+    check(len(errs) == 5 and all(m[2] == E["RATE_LIMITED"] for m in errs) and min(m[1] for m in errs) > 20,
           f"publishes past the burst of 20: RATE_LIMITED (seqs {[m[1] for m in errs]})")
-    delivered = []
-    while (d := await expect(owner, cs.MB_DELIVER, 0.3)) is not None:
-        delivered.append(d[2][0][0])
-    check(len(delivered) == 25 - len(errs), f"the others are delivered ({len(delivered)})")
+    delivered = [d[2][0][0] for d in await collect(owner, cs.MB_DELIVER, 20)]
+    check(len(delivered) == 20, f"the others are delivered ({len(delivered)})")
     dl = cs.seal(K_DEV, cs.T_DOWNLINK, frame(1)[2:10], 1, b"\x00" * 9)
-    sent = delivered[:20]
-    for ref in sent:
+    for ref in delivered:
         await owner.send([cs.MB_REQUEST, ref, dl])
-    errs = []
-    while (m := await expect(owner, cs.MB_ERROR, 0.3)) is not None:
-        errs.append(m)
-    forwards = 0
-    while await expect(pub, cs.MB_FORWARD, 0.3) is not None:
-        forwards += 1
-    # The burst is 10; a slow machine refills a few more while the server verifies.
-    check(errs and all(m[2] == E["RATE_LIMITED"] for m in errs) and 10 <= forwards < len(sent)
-          and forwards + len(errs) == len(sent),
-          f"requests past 10 a second: RATE_LIMITED ({forwards} forwarded, {len(errs)} refused)")
+    errs = await collect(owner, cs.MB_ERROR, 10)
+    forwards = len(await collect(pub, cs.MB_FORWARD, 10))
+    check(len(errs) == 10 and all(m[2] == E["RATE_LIMITED"] for m in errs) and forwards == 10,
+          f"requests past the burst of 10: RATE_LIMITED ({forwards} forwarded, {len(errs)} refused)")
 
 
 async def message_rate(url: str) -> None:
@@ -430,8 +432,7 @@ def main() -> int:
     work = tempfile.mkdtemp()
     procs: list[Watched] = []
     try:
-        p, port = start("--host", "127.0.0.1", "--host", "localhost", "--insecure-dev", "--reg-burst", "8",
-                        "--reg-max-live", "4", "--admit-per-hour", "1000")
+        p, port = start("--host", "127.0.0.1", "--host", "localhost", "--insecure-dev", "--admit-per-hour", "1000")
         procs.append(p)
         url = f"ws://127.0.0.1:{port}/"
         asyncio.run(handshake_errors(url))
@@ -439,7 +440,11 @@ def main() -> int:
         p2, port2 = start("--host", "127.0.0.1", "--insecure-dev", "--admit-per-hour", "6")
         procs.append(p2)
         asyncio.run(hosts(port, port2))
-        asyncio.run(rate_limits(url))
+        p_rate, port_rate = start("--host", "127.0.0.1", "--insecure-dev", "--reg-burst", "8", "--reg-per-hour", "36",
+                                  "--reg-max-live", "4", "--publish-rate", "0.01", "--publish-burst", "20",
+                                  "--request-rate", "0.01", "--request-burst", "10")
+        procs.append(p_rate)
+        asyncio.run(rate_limits(f"ws://127.0.0.1:{port_rate}/"))
         asyncio.run(client_skips_unknown())
         asyncio.run(routing(f"ws://127.0.0.1:{port2}/"))
 

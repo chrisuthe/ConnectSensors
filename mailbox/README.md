@@ -53,7 +53,7 @@ Homes connect with `devtools/cs_testserver.py --mailbox wss://mailbox.example:84
 | `--reg-burst`, `--reg-per-hour` | 2048, 512 | Registration entries per owner key: an initial burst, then a steady rate. |
 | `--reg-max-live` | 4096 | Live registrations per owner key. |
 | `--publish-rate`, `--publish-burst` | 5, 20 | Publishes per second per client key. |
-| `--request-rate` | 10 | Requests per second per client key. |
+| `--request-rate`, `--request-burst` | 10, the rate | Requests per second per client key. |
 | `--message-rate` | 50 | Signed messages of any kind per second per client key, burst twice that. |
 
 The limit defaults are mode 4's (09 section 11). An entry or message over a limit
