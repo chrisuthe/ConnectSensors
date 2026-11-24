@@ -12,6 +12,7 @@
 #include <functional>
 
 #include "cs_ed25519.h"
+#include "cs_x25519.h"
 
 namespace esphome::cs_sensor {
 
@@ -64,6 +65,9 @@ struct KeySet {
 };
 void derive_keys(const uint8_t base[16], const uint8_t dev_eui[8], KeySet &out);
 // k_session from an X25519 exchange (02 section 5.3). False on an all-zero shared value.
+// session_from_shared() is its second half, for a shared value computed in slices.
+bool session_from_shared(const uint8_t k_root[16], const uint8_t dev_eui[8], const uint8_t shared[32],
+                         const uint8_t sensor_pub[32], const uint8_t server_pub[32], uint8_t out[16]);
 bool derive_session(const uint8_t k_root[16], const uint8_t dev_eui[8], const uint8_t own_private[32],
                     const uint8_t peer_public[32], const uint8_t sensor_pub[32], const uint8_t server_pub[32],
                     uint8_t out[16]);
@@ -302,8 +306,8 @@ constexpr uint64_t LOST_CONTACT_BACKOFF_US[4] = {60000000ULL, 300000000ULL, 9000
 constexpr uint8_t MAX_PENDING_HEARTBEATS = 4;
 // Compute the next epoch's tag this long before the boundary (08 section 3.2).
 constexpr uint32_t TAG_PRECOMPUTE_LEAD_S = 300;
-// Tags and the JOIN key pair are computed a slice at a time, at most this long per
-// loop() pass, so key generation never blocks the loop.
+// Tags, the JOIN key pair and the KEY_EXCHANGE shared secret are computed a slice at
+// a time, at most this long per loop() pass, so key work never blocks the loop.
 constexpr uint64_t KEY_SLICE_US = 4000;
 constexpr uint64_t MAX_CONFIRMED_GAP_US = 24ULL * 3600 * 1000000;
 constexpr uint32_t COUNTER_BLOCK = 64;
@@ -397,6 +401,9 @@ class SensorCore {
   uint64_t next_wake_us(bool precompute = true) const;
 
   PairingState state() const { return this->state_; }
+  // A KEY_EXCHANGE was accepted and loop() is still computing its shared secret; the
+  // state is JOINING until k_session exists (04 section 4.4 step 4).
+  bool exchanging() const { return this->exchange_pending_; }
   uint32_t root_floor() const { return this->root_floor_; }
   uint32_t session_floor() const { return this->session_floor_; }
   uint32_t next_fcnt() const { return this->next_fcnt_; }
@@ -408,21 +415,19 @@ class SensorCore {
   bool current_tag(uint8_t type, uint8_t out[TAG_LEN]);
   // For tests: Ed25519 key generations so far, cache misses only.
   uint32_t tag_computations() const { return this->tag_computations_; }
-  // Key work, for the platform's debug log. Key generations done in slices: how
-  // many so far, and the last one's time spent computing, slices (one or two per
-  // loop pass) and longest slice.
+  // Key work, for the platform's debug log. Key jobs done in slices: how many so
+  // far, and the last one's kind, time spent computing, slices (one or two per loop
+  // pass) and longest slice.
+  enum class KeyJob : uint8_t { JOIN_KEY_PAIR, TAG, SHARED_SECRET };
   struct KeyWork {
     uint32_t jobs{0};
-    bool last_was_tag{false};
+    KeyJob last_job{KeyJob::TAG};
     uint32_t last_us{0};
     uint32_t last_slices{0};
     uint32_t last_max_slice_us{0};
     // Frames whose tag was not ready and had to be computed at once. build_() waits
     // for a tag instead, so this stays 0 unless something is wrong.
     uint32_t sync_tags{0};
-    // The X25519 shared secret for a KEY_EXCHANGE, computed at once when it arrives.
-    uint32_t exchanges{0};
-    uint32_t last_exchange_us{0};
   };
   const KeyWork &key_work() const { return this->key_work_stats_; }
   // For tests: the session key, or nullptr without one.
@@ -482,7 +487,7 @@ class SensorCore {
 
   // Key work: what loop() computes next, a slice at a time.
   struct KeyTarget {
-    enum class Kind : uint8_t { NONE, EPHEMERAL, TAG } kind{Kind::NONE};
+    enum class Kind : uint8_t { NONE, EPHEMERAL, EXCHANGE, TAG } kind{Kind::NONE};
     bool root{false};
     bool bootstrap{false};
     uint32_t n{0};  // epoch, or block
@@ -491,6 +496,7 @@ class SensorCore {
   bool key_target_valid_(const KeyTarget &t) const;
   void key_work_(uint64_t deadline);
   void cancel_key_job_();
+  void finish_exchange_(const uint8_t shared[32]);
   bool key_work_pending_() const;
   // True if the tag is ready; otherwise asks loop() for it, and the frame waits.
   bool tag_ready_(bool root, bool bootstrap, uint32_t n);
@@ -539,6 +545,9 @@ class SensorCore {
   uint8_t ephemeral_public_[32]{};
   bool has_ephemeral_{false};
   bool ephemeral_pending_{false};  // private key drawn, public key being computed
+  // KEY_EXCHANGE accepted, its shared secret not yet computed (04 section 4.4 step 4).
+  bool exchange_pending_{false};
+  uint8_t server_pub_[32]{};
 
   // Transmission cycle.
   Phase phase_{Phase::IDLE};
@@ -592,6 +601,7 @@ class SensorCore {
 
   // Key work in progress, and the tag a frame is waiting for.
   BaseMulJob keygen_{};
+  X25519Job exchange_{};
   KeyTarget key_job_{};
   KeyTarget wanted_tag_{};
   KeyWork key_work_stats_{};

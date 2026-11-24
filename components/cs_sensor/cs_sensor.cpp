@@ -593,13 +593,14 @@ void CSSensor::log_key_work_() {
   const SensorCore::KeyWork &k = this->core_->key_work();
   SensorCore::KeyWork &seen = this->key_work_logged_;
   if (k.jobs != seen.jobs) {
-    ESP_LOGD(TAG, "%s computed: %" PRIu32 " us in %" PRIu32 " slices, longest %" PRIu32 " us",
-             k.last_was_tag ? "Tag" : "JOIN key pair", k.last_us, k.last_slices, k.last_max_slice_us);
+    const char *what = k.last_job == SensorCore::KeyJob::TAG             ? "Tag"
+                       : k.last_job == SensorCore::KeyJob::SHARED_SECRET ? "Key exchange shared secret"
+                                                                        : "JOIN key pair";
+    ESP_LOGD(TAG, "%s computed: %" PRIu32 " us in %" PRIu32 " slices, longest %" PRIu32 " us", what, k.last_us,
+             k.last_slices, k.last_max_slice_us);
   }
   if (k.sync_tags != seen.sync_tags)
     ESP_LOGW(TAG, "A frame's tag was not ready and was computed at once");
-  if (k.exchanges != seen.exchanges)
-    ESP_LOGD(TAG, "Key exchange: shared secret in %" PRIu32 " us", k.last_exchange_us);
   seen = k;
 }
 
