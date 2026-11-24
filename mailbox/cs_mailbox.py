@@ -90,7 +90,7 @@ class KeyState:
     def __init__(self, args: argparse.Namespace):
         self.messages = Bucket(args.message_rate, 2 * args.message_rate)
         self.publish = Bucket(args.publish_rate, args.publish_burst)
-        self.request = Bucket(args.request_rate, args.request_rate)
+        self.request = Bucket(args.request_rate, args.request_burst or args.request_rate)
         self.register = Bucket(args.reg_per_hour / 3600, args.reg_burst)
         self.seen = time.monotonic()
 
@@ -526,6 +526,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     lim.add_argument("--publish-rate", type=float, default=5, help="publishes per second per client key")
     lim.add_argument("--publish-burst", type=int, default=20, help="publish burst per client key")
     lim.add_argument("--request-rate", type=float, default=10, help="requests per second per client key")
+    lim.add_argument("--request-burst", type=int, help="request burst per client key (default: the rate)")
     lim.add_argument("--message-rate", type=float, default=50,
                      help="signed messages of any kind per second per client key (burst twice that)")
     lim.add_argument("--admit-per-hour", type=int, default=20,
