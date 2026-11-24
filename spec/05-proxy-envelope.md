@@ -103,9 +103,11 @@ short handshake instead.
   - `too_old`: `seq <= last_seq - 16`. Discard it.
 - It MUST switch to another `boot_id` only on a `HELLO` from that boot whose
   `request_nonce` equals the nonce of a `HELLO_REQUEST` it sent for that boot
-  within the last 30 seconds. The `HELLO`'s `seq` becomes `last_seq`, with
-  nothing recorded below it, and the server's own `seq` for the proxy starts
-  again, at 1 or at any higher value (section 7).
+  within the last 30 seconds. The `HELLO`'s `seq` becomes `last_seq`, and
+  every value in the window below it counts as accepted: those messages were sent
+  before the switch, and an earlier server instance may have accepted them. The
+  server's own `seq` for the proxy starts again, at 1 or at any higher value
+  (section 7).
 - Any other message from a `boot_id` that is not current (the proxy rebooted, the
   server restarted, or the message is a replay) changes no state, not even the
   proxy's address. The server answers it with a `HELLO_REQUEST` for that
@@ -394,8 +396,9 @@ replayed `HELLO` from an earlier boot, a server restart recovered by
 and two `DOWNLINK`s arriving out of order, the late one held to the proxy's
 floor. The server steps take the reorder window: a gap, the oldest value accepted
 late (`last_seq - 15`), the first one refused (`last_seq - 16`), a duplicate
-inside the window, and a large jump forward. Each step gives the time, the
-message, which side receives it and that side's result; a server step in the
-current session also gives the section 3.2 result as `seq_check`. A server that
+inside the window, a large jump forward, and a message sent before a switch
+arriving after it. Each step gives the time, the message, which side receives it
+and that side's result; a server step in the current session also gives the
+section 3.2 result as `seq_check`. A server that
 does not take the window discards the two `accept_late` steps. Its nonces are
 fixed so the sequence is reproducible; real nonces are random.

@@ -705,7 +705,10 @@ class ServerLink:
             req = None
         if m["type"] == M_HELLO and req is not None:
             if parse_hello(bytes.fromhex(m["body"]))["request_nonce"] == req[0]:
-                self.boot_id, self.proxy_seq, self.seq = boot, UplinkCounter(m["seq"]), 0
+                # Below the HELLO nothing is late: those were sent before the switch,
+                # perhaps accepted by an earlier server instance, so count them as received.
+                q = m["seq"]
+                self.boot_id, self.proxy_seq, self.seq = boot, UplinkCounter(q, range(q - REORDER_WINDOW + 1, q)), 0
                 self.requests.clear()
                 return {"result": "switched"}
         if req is None:
@@ -1814,7 +1817,9 @@ def session_vectors() -> dict:
     server = ServerLink(lambda: next(nonces))
     n2 = up(12000, env(M_UPLINK, boot, nxt(), b"\x00"), "UPLINK to the restarted server: unknown boot")["nonce"]
     down(12020, req(boot, n2), "HELLO_REQUEST; its seq is not checked")
+    late = env(M_UPLINK, boot, nxt(), b"\x00")
     up(12020, hello(nxt(), n2), "HELLO echoing the nonce: the restarted server switches")
+    up(12030, late, "UPLINK sent just before that HELLO, arriving after it: below the switch, a duplicate")
     st = status(pseq)
     down(12040, st, "SERVER_STATUS seq 1, at or below the proxy's floor, echoing that HELLO: resync")
     down(12045, st, "the same SERVER_STATUS replayed: its echo is used up")

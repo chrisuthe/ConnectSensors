@@ -393,21 +393,30 @@
         "to": "server",
         "from": "proxy",
         "note": "HELLO echoing the nonce: the restarted server switches",
-        "message": "0102348518fffe0000011a2b3c4d000003ea0105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e30603b528384fbae2d992aeca784aad070",
+        "message": "0102348518fffe0000011a2b3c4d000003eb0105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e30ab561d5650dd909f803774de5805cd49",
         "result": "switched"
+      },
+      {
+        "t_ms": 12030,
+        "to": "server",
+        "from": "proxy",
+        "note": "UPLINK sent just before that HELLO, arriving after it: below the switch, a duplicate",
+        "message": "0101348518fffe0000011a2b3c4d000003ea003266b1a9f90a3294d1b27146ee1bbda2",
+        "result": "ignored",
+        "seq_check": "duplicate"
       },
       {
         "t_ms": 12040,
         "to": "proxy",
         "note": "SERVER_STATUS seq 1, at or below the proxy's floor, echoing that HELLO: resync",
-        "message": "0181348518fffe0000011a2b3c4d000000016b00fb20000003ea5c2f5b5acc2ad04b2d892bfedf5ea3a9",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb20000003ebf2e7e4191e69df926b469f46ac8f115f",
         "result": "resync"
       },
       {
         "t_ms": 12045,
         "to": "proxy",
         "note": "the same SERVER_STATUS replayed: its echo is used up",
-        "message": "0181348518fffe0000011a2b3c4d000000016b00fb20000003ea5c2f5b5acc2ad04b2d892bfedf5ea3a9",
+        "message": "0181348518fffe0000011a2b3c4d000000016b00fb20000003ebf2e7e4191e69df926b469f46ac8f115f",
         "result": "ignored"
       },
       {
@@ -430,7 +439,7 @@
         "to": "server",
         "from": "proxy",
         "note": "that HELLO: the boot is current, so it is a normal HELLO",
-        "message": "0102348518fffe0000011a2b3c4d000003eb0105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e30ab561d5650dd909f803774de5805cd49",
+        "message": "0102348518fffe0000011a2b3c4d000003ec0105555339313536bf32a00901f4000000000000000000000000000000000000000000000000000000000000000000005eed00030e63735f70726f787920302e312e306e38b325a21e1ee52699d2c9dbfcdd41",
         "result": "accepted",
         "seq_check": "accept"
       },
@@ -438,7 +447,7 @@
         "t_ms": 17040,
         "to": "proxy",
         "note": "SERVER_STATUS answering it",
-        "message": "0181348518fffe0000011a2b3c4d000000036b00fb20000003ebf6800bb43ab1b291054535089a4716da",
+        "message": "0181348518fffe0000011a2b3c4d000000036b00fb20000003ec6b875f84fa83b1f3155437e46c6d4624",
         "result": "accepted"
       },
       {
