@@ -102,7 +102,20 @@ normally covers it.
 
 The radio profiles have no listen-before-talk requirement. A sensor SHOULD use
 channel activity detection before transmitting: if the channel is busy, wait a
-random 20 to 200 ms and try again, up to 3 times, then transmit anyway.
+random 20 to 200 ms and try again, up to 3 times, then transmit anyway. A
+channel that always reads busy therefore delays a frame by at most 600 ms. (The
+reference sensor does not use channel activity detection and transmits at
+once.)
+
+A radio can also refuse to start a transmission: it is still handing over a
+received packet, or it is wedged. The sensor asks again every 100 ms. Once a
+transmission has been refused for 2 seconds the attempt counts as made and
+unanswered: it spends no airtime, and the receive windows, retries (section 5)
+and newer state proceed as for a frame that was sent. A radio that refuses
+everything thus costs each attempt at most 2 seconds and cannot hold the sensor
+on one frame, or awake, for ever. A radio that keeps reporting a packet
+arriving holds a receive window open past its end (01 section 4) by at most
+600 ms, longer than the largest frame in any profile.
 
 ### 4.4 Airtime budget
 
@@ -317,3 +330,9 @@ A sensor implementation MUST pass at least:
     `HEARTBEAT_CONFIRMED` followed by RX1 and RX2 if it came in RX2. An
     unanswered follow-up is not retried and leaves the count of section 6
     unchanged, and at most 4 follow-ups go out in a row.
+14. With a radio that refuses every transmission, a confirmed uplink is
+    offered to it every 100 ms for 2 s per attempt, then goes undelivered after
+    its retries without spending airtime, and the sensor can sleep; once the
+    radio accepts again, the next uplink goes out at once. With a radio that
+    always reports a packet arriving, uplinks still go out and every receive
+    window closes within 600 ms of its end.

@@ -385,11 +385,14 @@ struct FakeRadio : Radio {
   uint64_t end_us{0};
   bool rx{false};
   bool refuse{false};
+  int refusals{0};
   bool preamble{false};
   int tx_while_rx{0};
   bool transmit(const uint8_t *f, size_t len) override {
-    if (this->refuse)
+    if (this->refuse) {
+      this->refusals++;
       return false;
+    }
     if (this->rx)
       this->tx_while_rx++;
     this->sent.push_back({Bytes(f, f + len), this->clock->now, 0});
@@ -871,6 +874,47 @@ static void test_unanswered_retries() {
   CHECK(rig.core->undelivered() == 1);
   CHECK(!rig.core->hold());
   CHECK(rig.radio.tx_while_rx == 0);
+}
+
+// 08 section 4.3: a radio that refuses every transmission, or reports a packet
+// arriving for ever, does not stop the sensor.
+static void test_stuck_radio() {
+  Rig rig;
+  pair_with_vectors(rig);
+  size_t n = rig.radio.sent.size();
+  rig.radio.refuse = true;
+  rig.core->report(true);
+  // Each attempt is asked again every 100 ms for 2 s, then counts as made.
+  rig.run(2 * S + 50 * MS);
+  CHECK(rig.radio.refusals == 21);
+  CHECK(!rig.saw(SensorEvent::UPLINK_UNDELIVERED));
+  // The confirmed uplink follows its retry schedule, as unanswered, and gives up.
+  rig.run(70 * S);
+  CHECK(rig.radio.refusals == 4 * 21);
+  CHECK(rig.saw(SensorEvent::UPLINK_UNDELIVERED));
+  CHECK(rig.core->undelivered() == 1);
+  CHECK(!rig.core->hold());
+  CHECK(rig.radio.sent.size() == n);
+  // Once the radio recovers, the next uplink goes out at once.
+  rig.radio.refuse = false;
+  rig.core->report(true);
+  rig.run(10 * MS);
+  CHECK(rig.radio.sent.size() == n + 1);
+
+  // A radio that never stops reporting a packet arriving: uplinks still go out,
+  // without waiting, and each receive window closes within its bound.
+  Rig busy;
+  pair_with_vectors(busy);
+  n = busy.radio.sent.size();
+  busy.radio.preamble = true;
+  const uint64_t t0 = busy.clock.now;
+  busy.core->report(true);
+  const Tx first = busy.wait_tx(n + 1);
+  CHECK(first.start_us <= t0 + 10 * MS);
+  busy.run(70 * S);
+  CHECK(busy.radio.sent.size() == n + 4);
+  CHECK(busy.saw(SensorEvent::UPLINK_UNDELIVERED));
+  CHECK(!busy.core->hold() && !busy.radio.rx);
 }
 
 static void test_retry_window_answer() {
@@ -1955,6 +1999,7 @@ int main() {
   test_rx_windows_and_answer_in_rx1();
   test_answer_in_rx2();
   test_unanswered_retries();
+  test_stuck_radio();
   test_retry_window_answer();
   test_downlink_checks();
   test_counter_reservation();

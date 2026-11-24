@@ -256,6 +256,14 @@ Rejections are reported immediately with `TX_RESULT`.
   cut off. Holding favours the arriving uplink over downlink timing only within
   the window; a confirmed uplink that is cut off is retried by its sensor
   (08 section 5), an unconfirmed one is lost.
+- Neither a hold nor `BUSY` retries outlast `tx_at + 40 ms`. A radio that keeps
+  reporting a frame arriving, from a wedged flag or constant interference, is
+  transmitted over once the hold runs out; one that also keeps answering `BUSY`
+  has the downlink reported as `BUSY` when the window closes. Either way a stuck
+  radio costs each downlink at most its window, frames it hears are still
+  forwarded, and the next downlink gets a window of its own. (ESPHome's
+  `packet_interface` caps a busy radio's hold at the airtime of its largest
+  packet; this window is the tighter bound a downlink needs.)
 - If the window has passed, it reports `TOO_LATE` and does not transmit.
 - It samples `offset_us` as soon as `start_transmit_async` accepts the frame: the
   frame is in the radio's FIFO and the transmit command has been issued.
@@ -493,7 +501,10 @@ be run against a test server built from the reference tool:
 16. A `DOWNLINK` due while the radio reports a frame arriving is transmitted
     after the frame has been received, and the frame is forwarded. While the
     radio keeps reporting one, the downlink is transmitted anyway with
-    `offset_us` at most 40 000 when the main loop is healthy.
+    `offset_us` at most 40 000 when the main loop is healthy. A radio that
+    reports a frame arriving and answers `BUSY` for ever has each downlink
+    reported as `BUSY` by the end of its window, still forwards the frames it
+    hears, and sends the next downlink on time once it recovers.
 17. Frames with the same 8-byte `tag` share one per-device bucket, and frames
     whose tags differ in any byte, including only the last four, do not. `JOIN`
     and `SYNC` frames take from the bootstrap bucket whatever their tag,

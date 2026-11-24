@@ -289,6 +289,9 @@ constexpr uint64_t RX_LATE_US = 150000;  // W for US915, the only profile built;
 constexpr uint64_t RX_EXTEND_MAX_US = 600000;  // longest frame at the slowest profile, with margin
 constexpr uint64_t TX_TIMEOUT_US = 2000000;
 constexpr uint64_t TX_REFUSED_BACKOFF_US = 100000;
+// A radio refusing every transmission for this long has the attempt counted as made
+// (08 section 4.3), so a wedged radio cannot hold the sensor on one frame.
+constexpr uint64_t TX_REFUSED_MAX_US = 2000000;
 constexpr uint8_t MAX_RETRIES = 3;
 constexpr uint64_t RETRY_BASE_US[MAX_RETRIES] = {4000000, 12000000, 30000000};
 constexpr uint64_t RETRY_JITTER_US[MAX_RETRIES] = {2000000, 4000000, 10000000};
@@ -427,6 +430,7 @@ class SensorCore {
     bool has_firmware{false};
     uint32_t fcnt{0};
     uint8_t attempts{0};  // transmissions so far
+    uint64_t refused_since_us{0};  // first refusal of the current attempt, 0 if none
     uint64_t first_done_us{0};
     uint64_t last_done_us{0};
     uint8_t len{0};

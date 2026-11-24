@@ -1049,12 +1049,25 @@ bool SensorCore::build_(Purpose purpose, bool confirmed, uint64_t now) {
 }
 
 void SensorCore::transmit_(uint64_t now) {
-  if (!this->radio_.transmit(this->cur_.frame, this->cur_.len)) {
-    this->phase_ = Phase::WAIT_RETRY;
-    this->retry_at_us_ = now + TX_REFUSED_BACKOFF_US;
+  Uplink &u = this->cur_;
+  if (!this->radio_.transmit(u.frame, u.len)) {
+    if (u.refused_since_us == 0)
+      u.refused_since_us = now;
+    if (now - u.refused_since_us < TX_REFUSED_MAX_US) {
+      this->phase_ = Phase::WAIT_RETRY;
+      this->retry_at_us_ = now + TX_REFUSED_BACKOFF_US;
+      return;
+    }
+    // Nothing went on air, so no airtime is spent; the attempt goes unanswered as
+    // a sent one would, and the retry schedule and newer state take over.
+    u.refused_since_us = 0;
+    this->phase_ = Phase::TX;
+    this->tx_started_us_ = now;
+    this->on_tx_done(now);
     return;
   }
-  this->budget_spend_(this->radio_.airtime_us(this->cur_.len), now);
+  u.refused_since_us = 0;
+  this->budget_spend_(this->radio_.airtime_us(u.len), now);
   this->phase_ = Phase::TX;
   this->tx_started_us_ = now;
 }
