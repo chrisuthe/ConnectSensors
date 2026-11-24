@@ -66,22 +66,25 @@ void derive_keys(const uint8_t base[16], const uint8_t dev_eui[8], KeySet &out) 
   hkdf_sha256(base, 16, dev_eui, 8, reinterpret_cast<const uint8_t *>("cs1 tag"), 7, out.k_dev_tag, 16);
 }
 
-bool derive_session(const uint8_t k_root[16], const uint8_t dev_eui[8], const uint8_t own_private[32],
-                    const uint8_t peer_public[32], const uint8_t sensor_pub[32], const uint8_t server_pub[32],
-                    uint8_t out[16]) {
-  uint8_t shared[32];
-  x25519(shared, own_private, peer_public);
+bool session_from_shared(const uint8_t k_root[16], const uint8_t dev_eui[8], const uint8_t shared[32],
+                         const uint8_t sensor_pub[32], const uint8_t server_pub[32], uint8_t out[16]) {
   static const uint8_t ZERO[32] = {0};
-  if (ct_equal(shared, ZERO, 32)) {
-    secure_zero(shared, sizeof(shared));
+  if (ct_equal(shared, ZERO, 32))
     return false;
-  }
   uint8_t info[11 + 8 + 32 + 32];
   std::memcpy(info, "cs1 session", 11);
   std::memcpy(info + 11, dev_eui, 8);
   std::memcpy(info + 19, sensor_pub, 32);
   std::memcpy(info + 51, server_pub, 32);
-  bool ok = hkdf_sha256(shared, 32, k_root, 16, info, sizeof(info), out, 16);
+  return hkdf_sha256(shared, 32, k_root, 16, info, sizeof(info), out, 16);
+}
+
+bool derive_session(const uint8_t k_root[16], const uint8_t dev_eui[8], const uint8_t own_private[32],
+                    const uint8_t peer_public[32], const uint8_t sensor_pub[32], const uint8_t server_pub[32],
+                    uint8_t out[16]) {
+  uint8_t shared[32];
+  x25519(shared, own_private, peer_public);
+  bool ok = session_from_shared(k_root, dev_eui, shared, sensor_pub, server_pub, out);
   secure_zero(shared, sizeof(shared));
   return ok;
 }
@@ -427,13 +430,16 @@ void SensorCore::load_stored_() {
   secure_zero(b, sizeof(b));
 }
 
+// Ends the pairing's key work too: the key pair being computed, or the shared secret.
 void SensorCore::wipe_ephemeral_() {
-  if (this->key_job_.kind == KeyTarget::Kind::EPHEMERAL)
+  if (this->key_job_.kind == KeyTarget::Kind::EPHEMERAL || this->key_job_.kind == KeyTarget::Kind::EXCHANGE)
     this->cancel_key_job_();
   secure_zero(this->ephemeral_private_, sizeof(this->ephemeral_private_));
   secure_zero(this->ephemeral_public_, sizeof(this->ephemeral_public_));
+  secure_zero(this->server_pub_, sizeof(this->server_pub_));
   this->has_ephemeral_ = false;
   this->ephemeral_pending_ = false;
+  this->exchange_pending_ = false;
 }
 
 // Zeros load as "absent" for every blob, so they stand in for an erase that failed.
@@ -444,6 +450,7 @@ void SensorCore::erase_blob_(Blob id, size_t len) {
 }
 
 void SensorCore::erase_session_() {
+  this->wipe_ephemeral_();
   secure_zero(this->k_session_, sizeof(this->k_session_));
   secure_zero(&this->session_keys_, sizeof(this->session_keys_));
   this->forget_session_tags_();
@@ -555,6 +562,8 @@ bool SensorCore::key_target_valid_(const KeyTarget &t) const {
   switch (t.kind) {
     case KeyTarget::Kind::EPHEMERAL:
       return this->ephemeral_pending_;
+    case KeyTarget::Kind::EXCHANGE:
+      return this->exchange_pending_ && this->state_ == PairingState::JOINING;
     case KeyTarget::Kind::TAG:
       return t.root || this->has_session_;
     default:
@@ -583,9 +592,14 @@ bool SensorCore::next_key_target_(KeyTarget &out) const {
     out = KeyTarget{Kind::TAG, root, bootstrap, n};
     return true;
   };
-  // The JOIN key pair first, then the tag a frame is waiting for.
+  // The pairing's X25519 work first (the JOIN key pair or the KEY_EXCHANGE shared
+  // secret), then the tag a frame is waiting for.
   if (this->ephemeral_pending_) {
     out = KeyTarget{Kind::EPHEMERAL};
+    return true;
+  }
+  if (this->exchange_pending_ && this->state_ == PairingState::JOINING) {
+    out = KeyTarget{Kind::EXCHANGE};
     return true;
   }
   const KeyTarget &w = this->wanted_tag_;
@@ -632,6 +646,7 @@ uint64_t SensorCore::precompute_wake_us_() const {
 
 void SensorCore::cancel_key_job_() {
   this->keygen_.clear();
+  this->exchange_.clear();
   this->key_job_ = KeyTarget{};
 }
 
@@ -652,6 +667,11 @@ void SensorCore::key_work_(uint64_t deadline) {
       this->job_us_ = this->job_slices_ = this->job_max_slice_us_ = 0;
       if (t.kind == Kind::EPHEMERAL) {
         this->keygen_.start_x25519(this->ephemeral_private_);
+      } else if (t.kind == Kind::EXCHANGE) {
+        // The job holds the only copy of the private key from here, and wipes it
+        // when the ladder ends (02 section 5.3).
+        this->exchange_.start(this->ephemeral_private_, this->server_pub_);
+        secure_zero(this->ephemeral_private_, sizeof(this->ephemeral_private_));
       } else {
         uint8_t seed[32];
         tag_seed(t.root ? this->root_keys_.k_dev_tag : this->session_keys_.k_dev_tag, t.bootstrap, t.n, seed);
@@ -661,8 +681,9 @@ void SensorCore::key_work_(uint64_t deadline) {
     }
     bool finished;
     uint64_t now;
+    const bool exchange = this->key_job_.kind == Kind::EXCHANGE;
     do {
-      finished = this->keygen_.step();
+      finished = exchange ? this->exchange_.step() : this->keygen_.step();
       now = this->clock_.now_us();
     } while (!finished && now < deadline);
     const uint32_t slice = uint32_t(now - start);
@@ -673,25 +694,57 @@ void SensorCore::key_work_(uint64_t deadline) {
     if (!finished)
       return;
 
-    const KeyTarget &j = this->key_job_;
+    const KeyTarget j = this->key_job_;
+    KeyWork &k = this->key_work_stats_;
+    k.jobs++;
+    k.last_job = j.kind == Kind::TAG ? KeyJob::TAG : exchange ? KeyJob::SHARED_SECRET : KeyJob::JOIN_KEY_PAIR;
+    k.last_us = this->job_us_;
+    k.last_slices = this->job_slices_;
+    k.last_max_slice_us = this->job_max_slice_us_;
     if (j.kind == Kind::EPHEMERAL) {
       std::memcpy(this->ephemeral_public_, this->keygen_.result(), 32);
       this->has_ephemeral_ = true;
       this->ephemeral_pending_ = false;
+    } else if (exchange) {
+      uint8_t shared[32];
+      std::memcpy(shared, this->exchange_.result(), 32);
+      this->cancel_key_job_();
+      this->finish_exchange_(shared);
+      secure_zero(shared, sizeof(shared));
     } else {
       uint8_t tag[TAG_LEN];
       tag_fingerprint(this->keygen_.result(), tag);
       this->store_tag_(j.root, j.bootstrap, j.n, tag);
       this->tag_computations_++;
     }
-    KeyWork &k = this->key_work_stats_;
-    k.jobs++;
-    k.last_was_tag = j.kind == Kind::TAG;
-    k.last_us = this->job_us_;
-    k.last_slices = this->job_slices_;
-    k.last_max_slice_us = this->job_max_slice_us_;
     this->cancel_key_job_();
   }
+}
+
+// 04 section 4.4 step 4, after the KEY_EXCHANGE was accepted and its root floor
+// stored: k_session, then the ephemeral key pair is erased and the sensor is in SESSION.
+void SensorCore::finish_exchange_(const uint8_t shared[32]) {
+  uint8_t k[16];
+  bool ok = session_from_shared(this->config_.k_root, this->config_.dev_eui, shared, this->ephemeral_public_,
+                                this->server_pub_, k);
+  this->wipe_ephemeral_();
+  if (!ok) {
+    // 02 section 5.3: abandon the exchange. The root floor stays raised.
+    secure_zero(k, sizeof(k));
+    this->state_ = PairingState::UNPAIRED;
+    this->emit_(SensorEvent::PAIRING_FAILED);
+    return;
+  }
+  std::memcpy(this->k_session_, k, 16);
+  secure_zero(k, sizeof(k));
+  derive_keys(this->k_session_, this->config_.dev_eui, this->session_keys_);
+  this->forget_session_tags_();
+  this->has_session_ = true;
+  this->session_floor_ = 0;
+  // Provisional until a session downlink is accepted.
+  this->state_ = PairingState::SESSION;
+  this->want_session_first_ = true;
+  this->dl_ack_ = true;
 }
 
 // ---- public API
@@ -1469,35 +1522,19 @@ DownlinkResult SensorCore::process_downlink_(const uint8_t *data, size_t len, ui
     }
     if (server_pub == nullptr)
       return DownlinkResult::NO_KEY_EXCHANGE;
-    uint8_t k[16];
-    const uint64_t t0 = this->clock_.now_us();
-    bool ok = derive_session(this->config_.k_root, this->config_.dev_eui, this->ephemeral_private_, server_pub,
-                             this->ephemeral_public_, server_pub, k);
-    this->key_work_stats_.exchanges++;
-    this->key_work_stats_.last_exchange_us = uint32_t(this->clock_.now_us() - t0);
-    this->wipe_ephemeral_();
-    // 04 section 4.6: the new root floor is durable before SYNC goes out.
-    if (ok && !this->save_u32_(Blob::ROOT_FLOOR, h.fcnt)) {
+    // 04 section 4.6: the new root floor is durable before any work on the exchange.
+    if (!this->save_u32_(Blob::ROOT_FLOOR, h.fcnt)) {
       this->emit_(SensorEvent::STORAGE_FAILED);
-      ok = false;
-    }
-    if (!ok) {
-      secure_zero(k, sizeof(k));
+      this->wipe_ephemeral_();
       this->state_ = PairingState::UNPAIRED;
       this->emit_(SensorEvent::PAIRING_FAILED);
       return DownlinkResult::EXCHANGE_FAILED;
     }
     this->root_floor_ = h.fcnt;
-    std::memcpy(this->k_session_, k, 16);
-    secure_zero(k, sizeof(k));
-    derive_keys(this->k_session_, this->config_.dev_eui, this->session_keys_);
-    this->forget_session_tags_();
-    this->has_session_ = true;
-    this->session_floor_ = 0;
-    // 04 section 4.4 step 4: provisional until a session downlink is accepted.
-    this->state_ = PairingState::SESSION;
-    this->want_session_first_ = true;
-    this->dl_ack_ = true;
+    // The shared secret is computed in slices by loop() (finish_exchange_). The JOIN
+    // is answered, so no window opens and no other downlink is taken meanwhile.
+    std::memcpy(this->server_pub_, server_pub, 32);
+    this->exchange_pending_ = true;
   } else {
     this->session_floor_ = h.fcnt;
     if (this->state_ == PairingState::SESSION) {

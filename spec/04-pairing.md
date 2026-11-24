@@ -148,7 +148,7 @@ section 8), and the user pairs it again (4.4, step 1).
 | State | Behavior | Leaves when |
 |---|---|---|
 | `UNPAIRED` | No session. Sends `JOIN` when the user presses the pairing button (section 4.5). | The button is pressed (`JOINING`) |
-| `JOINING` | Has sent `JOIN` and holds its ephemeral private key. | It accepts `KEY_EXCHANGE` (`SESSION`), or the `JOIN` goes unanswered (`UNPAIRED`, section 4.4) |
+| `JOINING` | Has sent `JOIN` and holds its ephemeral private key. After accepting `KEY_EXCHANGE`, derives `k_session` from it (4.4, step 4). | It has derived `k_session` (`SESSION`), the shared value is all zeros (`UNPAIRED`, 02 section 5.3), or the `JOIN` goes unanswered (`UNPAIRED`, section 4.4) |
 | `SESSION` | Provisional. Has `k_session` and a clock set by `KEY_EXCHANGE`. Sends one confirmed uplink with normal tags (4.4, step 5). | It accepts a downlink under the session key set (`PAIRED`), or that uplink goes unanswered (`UNPAIRED`, below) |
 | `PAIRED` | Has `k_session`. Normal operation (08). | It accepts `LEAVE` (`UNPAIRED`, section 6.1) |
 
@@ -167,6 +167,21 @@ An uplink and its retries take under a minute (08 section 5), so a sensor leaves
 `k_session` when its `EXCHANGED` state times out after 2 minutes (section 4.2,
 07 section 3), so a sensor still in `SESSION` by then gets no answer and fails as
 above; a sensor never becomes `PAIRED` to a server that has given up.
+
+**Deriving `k_session`.** The X25519 computation is the slowest thing a sensor
+does, so it MAY spread it over time after accepting `KEY_EXCHANGE`, for example a
+few milliseconds per pass of its main loop. Until `k_session` exists the sensor
+stays in `JOINING`, and:
+
+- the `JOIN` counts as answered, so it is not retransmitted and no further
+  receive window opens for it. Any other downlink that arrives, including a
+  retransmitted or different `KEY_EXCHANGE` or a `LEAVE`, is outside a window of
+  its most recent uplink and is discarded (02 section 10.2);
+- it sends nothing: the first session uplink needs `k_session`;
+- a short press changes nothing (section 4.5), and a factory reset (section 6.2)
+  abandons the computation and erases what it held;
+- a restart returns it to `UNPAIRED` with the root floor kept, like any restart
+  in `JOINING` (below).
 
 **A downlink accepted in `SESSION`** makes the sensor `PAIRED` before it executes
 the downlink's commands. A `LEAVE` in it is therefore executed as in `PAIRED`
@@ -202,10 +217,14 @@ replaces the server's pending exchange (section 4.2).
    session downlink counter for the new `k_session` starts at 1. A retransmitted
    `JOIN` is answered as in 4.2.
 4. **Provisional session.** The sensor accepts the downlink (02 section 10.2),
-   which requires its counter to be above the root floor, and stores that counter
-   as the new root floor. It derives `k_session`, erases its ephemeral private
-   key, sets its session floor to 0, sets its clock to the downlink's
-   `server_time`, switches to the session key set, and enters `SESSION`.
+   which requires its counter to be above the root floor, stores that counter
+   as the new root floor (4.6), and sets its clock to the downlink's
+   `server_time`. Only then does it derive `k_session`, which may take several
+   passes of its main loop (4.3). Once `k_session` exists it erases its
+   ephemeral private key, sets its session floor to 0, switches to the session
+   key set, and enters `SESSION`. An all-zero shared value instead abandons the
+   exchange (02 section 5.3): the sensor erases the ephemeral key pair and
+   returns to `UNPAIRED`, keeping the new root floor.
 5. **First session uplink.** The sensor sends a `HEARTBEAT_CONFIRMED` with its
    full state (03 section 5) under the session key set, with the normal tag of
    its current epoch and `DL_ACK` set, because `KEY_EXCHANGE` was a command.
@@ -255,8 +274,10 @@ MUST need physical access: no command or frame can trigger it.
 
 The sensor:
 
-- MUST write its new root floor to non-volatile storage before sending the first
-  session uplink (step 5);
+- MUST write its new root floor to non-volatile storage when it accepts
+  `KEY_EXCHANGE`, before it derives `k_session` from it and so before the first
+  session uplink (step 5). A `KEY_EXCHANGE` whose floor cannot be written is not
+  acted on: pairing fails and the sensor returns to `UNPAIRED`;
 - MUST write `k_session`, the `PAIRED` state and its session floor to
   non-volatile storage when it accepts the answer in step 7, before it sends
   another uplink. It does not store `k_session` before then: a provisional

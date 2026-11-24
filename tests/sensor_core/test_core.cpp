@@ -186,6 +186,78 @@ static void test_keygen_equivalence() {
   CHECK(same_steps && steps_ed == steps_x && steps_ed > 64);
 }
 
+// The sliced X25519 ladder (#117) against TweetNaCl's one-shot crypto_scalarmult and
+// RFC 7748, a step at a time, with the same number of steps for every input.
+static void test_shared_secret_job() {
+  uint64_t x = 0x9E3779B97F4A7C15ULL;
+  auto fill = [&](uint8_t *p, int n) {
+    for (int i = 0; i < n; i++) {
+      x ^= x << 13;
+      x ^= x >> 7;
+      x ^= x << 17;
+      p[i] = uint8_t(x);
+    }
+  };
+  auto run = [](X25519Job &job, const uint8_t *s, const uint8_t *u, uint8_t *out) {
+    job.start(s, u);
+    int steps = 0;
+    while (job.busy()) {
+      job.step();
+      steps++;
+    }
+    CHECK(job.done() && job.step());
+    std::memcpy(out, job.result(), 32);
+    return steps;
+  };
+  int want_steps = -1;
+  bool same_steps = true;
+  X25519Job job;
+  CHECK(!job.busy() && !job.done() && !job.step());
+  for (int n = 0; n < 64; n++) {
+    uint8_t s[32], u[32], a[32], b[32];
+    fill(s, 32);
+    fill(u, 32);
+    // Edge scalars, and points 0, 1 and the base point among the random ones.
+    if (n < 3)
+      std::memset(s, n == 0 ? 0x00 : n == 1 ? 0xFF : 0x80, 32);
+    if (n >= 3 && n < 6) {
+      std::memset(u, 0, 32);
+      u[0] = n == 3 ? 0 : n == 4 ? 1 : 9;
+    }
+    int steps = run(job, s, u, a);
+    ref_tweetnacl::x25519(b, s, u);
+    CHECK(std::memcmp(a, b, 32) == 0);
+    x25519(b, s, u);
+    CHECK(std::memcmp(a, b, 32) == 0);
+    if (want_steps < 0)
+      want_steps = steps;
+    same_steps = same_steps && steps == want_steps;
+  }
+  CHECK(same_steps && want_steps > 255);
+  job.clear();
+  CHECK(!job.busy() && !job.done());
+
+  // RFC 7748 section 5.2, both single vectors.
+  Bytes out(32);
+  run(job, unhex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4").data(),
+      unhex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c").data(), out.data());
+  CHECK(hex(out) == "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552");
+  run(job, unhex("4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d").data(),
+      unhex("e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493").data(), out.data());
+  CHECK(hex(out) == "95cbde9476e8907d7aade45cb4b873f88b595a68799fa152e6f8f7647aac7957");
+  // And its iteration: k, u = X25519(k, u), k, from k = u = 9, 1000 times.
+  Bytes k(32, 0), u(32, 0), next(32);
+  k[0] = u[0] = 9;
+  for (int i = 1; i <= 1000; i++) {
+    run(job, k.data(), u.data(), next.data());
+    u = k;
+    k = next;
+    if (i == 1)
+      CHECK(hex(k) == "422c8e7a6227d7bca1350b3e2bb7279f7897b87bb6854b783c60e80311ae3079");
+  }
+  CHECK(hex(k) == "684cf59ba83309552800ef566f2f4d3c1c3887c49360e3875f2eb94d99532c51");
+}
+
 // ---------------------------------------------------------------- crypto
 
 static void test_crypto() {
@@ -602,6 +674,12 @@ struct Rig {
     }
   }
   void run(uint64_t us) { this->tick_to(this->clock.now + us); }
+  // Loop passes until an accepted KEY_EXCHANGE has its k_session (or failed).
+  void settle() {
+    for (int i = 0; i < 10000 && this->core->exchanging(); i++)
+      this->tick_to(this->clock.now + MS);
+    CHECK(!this->core->exchanging());
+  }
 
   // Runs until transmission n (1-based) has finished.
   Tx wait_tx(size_t n, uint64_t limit = 2 * 3600 * S) {
@@ -708,6 +786,11 @@ static Server pair_with_vectors(Rig &rig) {
   CHECK(hex(join.frame) == fv("join").frame);
 
   CHECK(rig.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
+  // Accepted and its root floor stored at once; k_session follows in loop() (#117).
+  CHECK(rig.core->state() == PairingState::JOINING && rig.core->exchanging());
+  CHECK(rig.core->session_key() == nullptr);
+  CHECK(rig.storage.u32(Blob::ROOT_FLOOR) == 1);
+  rig.settle();
   CHECK(rig.core->state() == PairingState::SESSION);
   CHECK(rig.core->root_floor() == 1);
   CHECK(rig.core->session_key() && hex(rig.core->session_key(), 16) == V_K_SESSION);
@@ -784,6 +867,7 @@ static void test_root_floor_vectors() {
       Bytes f = unhex(st.frame);
       rig.core->on_receive(f.data(), f.size());
       CHECK(std::string(downlink_result_str(rig.core->last_downlink_result())) == st.result);
+      rig.settle();
       CHECK(rig.core->root_floor() == st.root_floor);
       CHECK(rig.storage.u32(Blob::ROOT_FLOOR) == st.root_floor);
       if (st.k_session) {
@@ -839,6 +923,7 @@ static void test_provisional_vectors() {
       Bytes f = unhex(st.frame);
       rig.core->on_receive(f.data(), f.size());
       CHECK(std::string(downlink_result_str(rig.core->last_downlink_result())) == st.result);
+      rig.settle();
     } else if (ev == "uplink") {
       // The vector's frame carries the uplink's time; put the sensor's clock there.
       rig.clock.set_unix_time(st.unix_time);
@@ -1093,8 +1178,8 @@ static void test_storage_failure() {
 }
 
 static void test_factory_reset() {
-  for (int where = 0; where < 3; where++) {
-    // 08 section 13 item 9: in every pairing state.
+  for (int where = 0; where < 4; where++) {
+    // 08 section 13 item 9: in every pairing state, and with a shared secret half computed.
     Rig rig;
     pair_with_vectors(rig);
     rig.storage.save(Blob::SETTINGS, Bytes{0, 5}.data(), 2);
@@ -1103,7 +1188,7 @@ static void test_factory_reset() {
       rig.random.keys.push_back(Bytes(32, 0x33));
       rig.core->short_press();
       CHECK(rig.core->state() == PairingState::JOINING);
-    } else if (where == 2) {
+    } else if (where >= 2) {
       rig.core->factory_reset();
       rig.random.keys.push_back(Bytes(32, 0x33));
       rig.core->short_press();
@@ -1119,7 +1204,14 @@ static void test_factory_reset() {
       Bytes cmd = {CMD_KEY_EXCHANGE, 32};
       cmd.insert(cmd.end(), v_pub.begin(), v_pub.end());
       CHECK(rig.in_rx1(join, rs.downlink(fcnt_of(join), V_TIME, 0, cmd, 9)) == DownlinkResult::ACCEPT);
-      CHECK(rig.core->state() == PairingState::SESSION);
+      if (where == 2) {
+        rig.settle();
+        CHECK(rig.core->state() == PairingState::SESSION);
+      } else {
+        rig.clock.step_us = 250;
+        rig.core->loop();
+        CHECK(rig.core->exchanging() && rig.core->hold());
+      }
     }
     uint32_t counter = rig.storage.u32(Blob::COUNTER);
     rig.core->factory_reset();
@@ -1133,7 +1225,8 @@ static void test_factory_reset() {
     CHECK(!rig.storage.has(Blob::SESSION_FLOOR));
     CHECK(!rig.storage.has(Blob::SETTINGS));
     CHECK(rig.storage.u32(Blob::COUNTER) == counter);
-    CHECK(!rig.core->hold());
+    CHECK(!rig.core->hold() && !rig.core->exchanging());
+    rig.clock.step_us = 0;
 
     // Nothing is sent until the button, and then a KEY_EXCHANGE with root counter 1 is accepted.
     size_t n = rig.radio.sent.size();
@@ -1158,6 +1251,7 @@ static void test_factory_reset() {
     cmd.insert(cmd.end(), v_pub.begin(), v_pub.end());
     CHECK(rig.in_rx1(join, rs.downlink(fcnt_of(join), V_TIME, 0, cmd, 1)) == DownlinkResult::ACCEPT);
     CHECK(rig.core->root_floor() == 1);
+    rig.settle();
     Bytes k(16);
     CHECK(derive_session(unhex(V_K_ROOT).data(), unhex(V_DEV_EUI).data(), v_priv.data(), s_pub.data(),
                          s_pub.data(), v_pub.data(), k.data()));
@@ -1211,6 +1305,8 @@ static void test_session_first_unanswered() {
   r2.core->short_press();
   const Tx &j2 = r2.wait_tx(1);
   CHECK(r2.in_rx1(j2, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
+  r2.settle();
+  CHECK(r2.core->state() == PairingState::SESSION);
   r2.boot();
   CHECK(r2.core->state() == PairingState::UNPAIRED);
   CHECK(r2.core->root_floor() == 1);
@@ -1226,6 +1322,7 @@ static void test_pairing_button_and_leave_mid_pairing() {
   rig.core->short_press();
   CHECK(rig.core->state() == PairingState::JOINING);
   CHECK(rig.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
+  rig.settle();
   CHECK(rig.core->state() == PairingState::SESSION);
   rig.core->short_press();
   CHECK(rig.core->state() == PairingState::SESSION);
@@ -1697,6 +1794,7 @@ static void test_provisional_exit() {
   rig.core->short_press();
   Tx join = rig.wait_tx(1);
   CHECK(rig.in_rx1(join, unhex(fv("downlink_key_exchange").frame)) == DownlinkResult::ACCEPT);
+  rig.settle();
   Server server;
   server.keys = session_keys(rig.core->session_key());
   Tx first = rig.wait_tx(2);
@@ -1797,7 +1895,7 @@ static void test_sliced_join() {
   CHECK(rig.radio.sent.size() == 1 && hex(rig.radio.sent[0].frame) == fv("join").frame);
   // The key pair, then the JOIN's tag, each over several passes.
   const SensorCore::KeyWork &k = rig.core->key_work();
-  CHECK(k.jobs == 2 && k.last_was_tag && k.last_slices > 1);
+  CHECK(k.jobs == 2 && k.last_job == SensorCore::KeyJob::TAG && k.last_slices > 1);
   CHECK(passes > 2 && 2 * passes >= int(k.last_slices));
   CHECK(k.last_max_slice_us <= KEY_SLICE_US + SLICE_SLACK_US);
   CHECK(k.sync_tags == 0);
@@ -1814,6 +1912,165 @@ static void test_sliced_join() {
   CHECK(!r2.core->hold());
   r2.run(10 * S);
   CHECK(r2.radio.sent.empty() && r2.core->key_work().jobs == 0);
+}
+
+// #117: the KEY_EXCHANGE shared secret is computed in slices after the frame is
+// accepted and its root floor stored; SESSION, and anything under k_session, waits.
+static Bytes root_key_exchange(const Tx &join, uint32_t root_fcnt, const Bytes &server_pub) {
+  Server rs;
+  derive_keys(unhex(V_K_ROOT).data(), unhex(V_DEV_EUI).data(), rs.keys);
+  Bytes cmd = {CMD_KEY_EXCHANGE, 32};
+  cmd.insert(cmd.end(), server_pub.begin(), server_pub.end());
+  return rs.downlink(fcnt_of(join), V_TIME, 0, cmd, root_fcnt);
+}
+
+// Up to the accepted KEY_EXCHANGE of frame-v1.json, then one loop pass into the secret.
+static Tx accept_exchange_sliced(Rig &rig) {
+  rig.boot({contact(0)});
+  rig.clock.step_us = 250;
+  rig.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
+  rig.core->short_press();
+  Tx join = rig.wait_tx(1);
+  int saves = rig.storage.saves;
+  rig.tick_to(join.done_us + RX1_DELAY_US);
+  CHECK(rig.radio.rx);
+  Bytes kx = unhex(fv("downlink_key_exchange").frame);
+  rig.core->on_receive(kx.data(), kx.size());
+  CHECK(rig.core->last_downlink_result() == DownlinkResult::ACCEPT);
+  // 04 section 4.6: the root floor is durable before any work on the secret.
+  CHECK(rig.storage.saves == saves + 1 && rig.storage.u32(Blob::ROOT_FLOOR) == 1);
+  CHECK(rig.core->root_floor() == 1 && rig.core->time_sure());
+  CHECK(!rig.radio.rx);  // the JOIN is answered: no RX2, no retries
+  CHECK(rig.core->state() == PairingState::JOINING && rig.core->exchanging());
+  CHECK(rig.core->session_key() == nullptr);
+  CHECK(rig.core->hold() && rig.core->next_wake_us() == 0);
+  rig.core->loop();
+  CHECK(rig.core->exchanging());
+  return join;
+}
+
+static void test_sliced_exchange() {
+  {
+    Rig rig;
+    Tx join = accept_exchange_sliced(rig);
+    uint32_t jobs = rig.core->key_work().jobs;
+    int passes = 1;
+    while (rig.core->exchanging() && passes < 1000) {
+      CHECK(rig.core->state() == PairingState::JOINING && rig.core->session_key() == nullptr);
+      rig.clock.now += MS;
+      rig.core->loop();
+      passes++;
+    }
+    CHECK(rig.radio.sent.size() == 1);
+    const SensorCore::KeyWork &k = rig.core->key_work();
+    CHECK(k.jobs > jobs && passes > 2);
+    CHECK(rig.core->state() == PairingState::SESSION);
+    CHECK(hex(rig.core->session_key(), 16) == V_K_SESSION);
+    CHECK(!rig.storage.has(Blob::SESSION));
+    CHECK(k.last_max_slice_us <= KEY_SLICE_US + SLICE_SLACK_US);
+    // The rest of frame-v1.json, byte for byte, with every key job in slices.
+    const Tx &first = rig.wait_tx(2);
+    CHECK(hex(first.frame) == fv("heartbeat_first").frame);
+    CHECK(rig.core->set_state(contact(1)));
+    rig.core->report(true);
+    CHECK(rig.in_rx1(first, unhex(fv("downlink_paired").frame)) == DownlinkResult::ACCEPT);
+    CHECK(rig.core->state() == PairingState::PAIRED && rig.saw(SensorEvent::PAIRED));
+    const Tx &data = rig.wait_tx(3);
+    CHECK(hex(data.frame) == fv("data_confirmed").frame);
+    CHECK(rig.core->key_work().last_max_slice_us <= KEY_SLICE_US + SLICE_SLACK_US);
+    CHECK(rig.core->key_work().sync_tags == 0);
+  }
+  {
+    // The secret's own slices: its stats are the last job's when it finishes.
+    Rig rig;
+    accept_exchange_sliced(rig);
+    while (rig.core->exchanging()) {
+      rig.clock.now += MS;
+      rig.core->loop();
+      if (!rig.core->exchanging()) {
+        const SensorCore::KeyWork &k = rig.core->key_work();
+        CHECK(k.last_job == SensorCore::KeyJob::SHARED_SECRET);
+        CHECK(k.last_slices > 4);
+        CHECK(k.last_max_slice_us <= KEY_SLICE_US + SLICE_SLACK_US);
+      }
+    }
+  }
+  {
+    // Downlinks while computing: the window is closed, so a retransmitted identical
+    // KEY_EXCHANGE, a different one, and a session LEAVE are all ignored, and the
+    // exchange carries on to the same k_session.
+    Rig rig;
+    Tx join = accept_exchange_sliced(rig);
+    Bytes kx = unhex(fv("downlink_key_exchange").frame);
+    Bytes other_pub(32), other_priv(32, 0x55);
+    x25519_base(other_pub.data(), other_priv.data());
+    Bytes other = root_key_exchange(join, 2, other_pub);
+    Server ss;
+    ss.keys = session_keys(unhex(V_K_SESSION).data());
+    Bytes leave = ss.downlink(2, V_TIME, 0, {CMD_LEAVE, 0});
+    for (const Bytes *f : {&kx, &other, &leave}) {
+      rig.core->on_receive(f->data(), f->size());
+      CHECK(rig.core->last_downlink_result() == DownlinkResult::NO_WINDOW);
+      CHECK(rig.core->exchanging() && rig.core->root_floor() == 1);
+    }
+    // A short press changes nothing (04 section 4.5).
+    rig.core->short_press();
+    CHECK(rig.core->state() == PairingState::JOINING && rig.core->exchanging());
+    rig.settle();
+    CHECK(rig.core->state() == PairingState::SESSION);
+    CHECK(hex(rig.core->session_key(), 16) == V_K_SESSION);
+    CHECK(rig.radio.sent.size() == 1);
+    const Tx &first = rig.wait_tx(2);
+    CHECK(hex(first.frame) == fv("heartbeat_first").frame);
+  }
+  {
+    // A restart mid-computation: UNPAIRED, root floor kept, nothing of the pairing
+    // left (04 section 4.3). No deep sleep either: suspend() refuses.
+    Rig rig;
+    accept_exchange_sliced(rig);
+    WarmState w;
+    CHECK(!rig.core->suspend(w));
+    rig.boot();
+    CHECK(rig.core->state() == PairingState::UNPAIRED && !rig.core->exchanging());
+    CHECK(rig.core->root_floor() == 1 && rig.core->session_key() == nullptr);
+    CHECK(!rig.storage.has(Blob::SESSION) && !rig.core->hold());
+    rig.run(10 * MIN);
+    CHECK(rig.radio.sent.size() == 1);
+    // The next press pairs again with a new key pair; the old KEY_EXCHANGE is spent.
+    rig.random.keys.push_back(Bytes(32, 0x44));
+    rig.core->short_press();
+    const Tx &again = rig.wait_tx(2);
+    CHECK(type_of(again) == T_JOIN);
+    Bytes v_priv(32, 0x55), v_pub(32), s_pub(32), k(16);
+    x25519_base(v_pub.data(), v_priv.data());
+    x25519_base(s_pub.data(), Bytes(32, 0x44).data());
+    CHECK(rig.in_rx1(again, root_key_exchange(again, 1, v_pub)) == DownlinkResult::AT_OR_BELOW_FLOOR);
+    rig.tick_to(again.done_us + RX2_DELAY_US + 10 * MS);
+    Bytes kx2 = root_key_exchange(again, 2, v_pub);
+    rig.core->on_receive(kx2.data(), kx2.size());
+    CHECK(rig.core->last_downlink_result() == DownlinkResult::ACCEPT);
+    rig.settle();
+    CHECK(derive_session(unhex(V_K_ROOT).data(), unhex(V_DEV_EUI).data(), v_priv.data(), s_pub.data(),
+                         s_pub.data(), v_pub.data(), k.data()));
+    CHECK(rig.core->state() == PairingState::SESSION && hex(rig.core->session_key(), 16) == hex(k));
+  }
+  {
+    // 02 section 5.3: an all-zero shared value abandons the exchange once computed.
+    // The frame was authentic, so its root floor stays.
+    Rig rig;
+    rig.boot();
+    rig.random.keys.push_back(unhex(V_SENSOR_EPHEMERAL_PRIVATE));
+    rig.core->short_press();
+    const Tx &join = rig.wait_tx(1);
+    CHECK(rig.in_rx1(join, root_key_exchange(join, 3, Bytes(32, 0))) == DownlinkResult::ACCEPT);
+    CHECK(rig.core->exchanging());
+    rig.settle();
+    CHECK(rig.core->state() == PairingState::UNPAIRED && rig.saw(SensorEvent::PAIRING_FAILED));
+    CHECK(rig.core->session_key() == nullptr && rig.core->root_floor() == 3);
+    CHECK(rig.storage.u32(Blob::ROOT_FLOOR) == 3 && !rig.core->hold());
+    rig.run(10 * MIN);
+    CHECK(rig.radio.sent.size() == 1);
+  }
 }
 
 static void test_sliced_epoch_boundary() {
@@ -2256,6 +2513,7 @@ int main() {
   test_airtime();
   test_sha512_ed25519();
   test_keygen_equivalence();
+  test_shared_secret_job();
   test_frame_vectors();
   test_payload_vectors();
   test_pairing_code();
@@ -2290,6 +2548,7 @@ int main() {
   test_provisional_exit();
   test_tag_cache_and_precompute();
   test_sliced_join();
+  test_sliced_exchange();
   test_sliced_epoch_boundary();
   test_sliced_bootstrap_block();
   test_precompute_wakes_mains();

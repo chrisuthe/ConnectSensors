@@ -58,5 +58,18 @@ int main() {
     steps++;
   }
   std::printf("  sliced Ed25519 job: %d steps, longest %.1f us\n", steps, longest);
+
+  X25519Job kx;
+  kx.start(s, p);
+  steps = 0;
+  longest = 0;
+  while (kx.busy()) {
+    auto t0 = Clock::now();
+    kx.step();
+    double d = std::chrono::duration<double, std::micro>(Clock::now() - t0).count();
+    longest = d > longest ? d : longest;
+    steps++;
+  }
+  std::printf("  sliced X25519 shared secret: %d steps, longest %.1f us\n", steps, longest);
   return 0;
 }
