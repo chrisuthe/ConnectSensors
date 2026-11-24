@@ -1,0 +1,981 @@
+{
+ "format": 1,
+ "date": "2026-11-24T19:48:27+00:00",
+ "commit": "d3422c7a203c75afd67a40385b8b2a651f22ed00",
+ "dirty": false,
+ "mode": "rig",
+ "region": "US915",
+ "server": {
+  "port": 47801
+ },
+ "transmitter": {
+  "kind": "test-transmitter",
+  "name": "lora-test-tx",
+  "esphome_version": "2026.12.0-dev",
+  "compilation_time": "2026-11-24 13:47:47 -0600",
+  "project_name": "",
+  "project_version": "",
+  "model": "heltec_wifi_lora_32_V3",
+  "mac_address": "34:CD:B0:3B:D6:40"
+ },
+ "proxy": {
+  "proxy_id": "48ca43fffe3ed190",
+  "fw": "cs_proxy 0.2.0",
+  "max_loop_gap_ms": 53,
+  "api": {
+   "name": "lora-proxy",
+   "esphome_version": "2026.12.0-dev",
+   "compilation_time": "2026-11-24 13:47:08 -0600",
+   "project_name": "",
+   "project_version": "",
+   "model": "heltec_wifi_lora_32_V3",
+   "mac_address": "48:CA:43:3E:D1:90"
+  }
+ },
+ "sensor": null,
+ "esphome_version": "2026.12.0-dev",
+ "counters": {
+  "start": {
+   "heard": 1,
+   "forwarded": 1,
+   "duplicates": 0,
+   "invalid": 0,
+   "rate_limited": 0,
+   "tx_ok": 0,
+   "tx_failed": 0
+  },
+  "end": {
+   "heard": 34,
+   "forwarded": 29,
+   "duplicates": 1,
+   "invalid": 0,
+   "rate_limited": 4,
+   "tx_ok": 14,
+   "tx_failed": 3
+  }
+ },
+ "scenarios": [
+  {
+   "name": "setup",
+   "passed": true,
+   "duration_s": 8.2,
+   "checks": [
+    {
+     "what": "the proxy opens a session with the server",
+     "ok": true
+    },
+    {
+     "what": "the proxy's latest HELLO offers downlinks",
+     "ok": true
+    },
+    {
+     "what": "proxy answers a HELLO_REQUEST with its counters",
+     "ok": true
+    }
+   ],
+   "measurements": []
+  },
+  {
+   "name": "rx1",
+   "passed": true,
+   "duration_s": 5.5,
+   "checks": [
+    {
+     "what": "transmitter sent 26 bytes (fcnt 102)",
+     "ok": true
+    },
+    {
+     "what": "UPLINK DATA_CONFIRMED from the test device",
+     "ok": true
+    },
+    {
+     "what": "fcnt 102: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "fcnt 102: TX_RESULT SENT within 40 ms of the target (SENT, 1.92 ms)",
+     "ok": true
+    },
+    {
+     "what": "fcnt 102: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "fcnt 102: on air +8.58 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 120.7 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 103)",
+     "ok": true
+    },
+    {
+     "what": "UPLINK DATA_CONFIRMED from the test device",
+     "ok": true
+    },
+    {
+     "what": "fcnt 103: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "fcnt 103: TX_RESULT SENT within 40 ms of the target (SENT, 1.90 ms)",
+     "ok": true
+    },
+    {
+     "what": "fcnt 103: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "fcnt 103: on air +6.72 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 122.6 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 104)",
+     "ok": true
+    },
+    {
+     "what": "UPLINK DATA_CONFIRMED from the test device",
+     "ok": true
+    },
+    {
+     "what": "fcnt 104: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "fcnt 104: TX_RESULT SENT within 40 ms of the target (SENT, 1.93 ms)",
+     "ok": true
+    },
+    {
+     "what": "fcnt 104: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "fcnt 104: on air +6.58 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 122.7 ms left in W)",
+     "ok": true
+    }
+   ],
+   "measurements": [
+    {
+     "window": "rx1",
+     "fcnt": 102,
+     "seq": 1795549713,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1008580,
+     "late_ms": 8.58,
+     "margin_ms": 120.72,
+     "tx_result_offset_us": 1916,
+     "rssi": -49.0,
+     "snr": 9.8
+    },
+    {
+     "window": "rx1",
+     "fcnt": 103,
+     "seq": 1795549714,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1006723,
+     "late_ms": 6.723,
+     "margin_ms": 122.577,
+     "tx_result_offset_us": 1898,
+     "rssi": -50.0,
+     "snr": 9.8
+    },
+    {
+     "window": "rx1",
+     "fcnt": 104,
+     "seq": 1795549715,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1006576,
+     "late_ms": 6.576,
+     "margin_ms": 122.724,
+     "tx_result_offset_us": 1926,
+     "rssi": -50.0,
+     "snr": 10.2
+    }
+   ]
+  },
+  {
+   "name": "rx2",
+   "passed": true,
+   "duration_s": 11.4,
+   "checks": [
+    {
+     "what": "server switched to RX2",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 105)",
+     "ok": true
+    },
+    {
+     "what": "UPLINK reaches the server",
+     "ok": true
+    },
+    {
+     "what": "fcnt 105: server sends a DOWNLINK for rx2",
+     "ok": true
+    },
+    {
+     "what": "fcnt 105: TX_RESULT SENT within 40 ms of the target (SENT, 1.90 ms)",
+     "ok": true
+    },
+    {
+     "what": "fcnt 105: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "fcnt 105: on air +6.53 ms after rx2 (01 section 4.1 allows 0 to 81 ms; 122.8 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 106)",
+     "ok": true
+    },
+    {
+     "what": "UPLINK reaches the server",
+     "ok": true
+    },
+    {
+     "what": "fcnt 106: server sends a DOWNLINK for rx2",
+     "ok": true
+    },
+    {
+     "what": "fcnt 106: TX_RESULT SENT within 40 ms of the target (SENT, 1.90 ms)",
+     "ok": true
+    },
+    {
+     "what": "fcnt 106: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "fcnt 106: on air +6.57 ms after rx2 (01 section 4.1 allows 0 to 81 ms; 122.7 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 107)",
+     "ok": true
+    },
+    {
+     "what": "UPLINK reaches the server",
+     "ok": true
+    },
+    {
+     "what": "fcnt 107: server sends a DOWNLINK for rx2",
+     "ok": true
+    },
+    {
+     "what": "fcnt 107: TX_RESULT SENT within 40 ms of the target (SENT, 1.91 ms)",
+     "ok": true
+    },
+    {
+     "what": "fcnt 107: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "fcnt 107: on air +6.59 ms after rx2 (01 section 4.1 allows 0 to 81 ms; 122.7 ms left in W)",
+     "ok": true
+    }
+   ],
+   "measurements": [
+    {
+     "window": "rx2",
+     "fcnt": 105,
+     "seq": 1795549716,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 3006532,
+     "late_ms": 6.532,
+     "margin_ms": 122.768,
+     "tx_result_offset_us": 1903,
+     "rssi": -50.0,
+     "snr": 9.8
+    },
+    {
+     "window": "rx2",
+     "fcnt": 106,
+     "seq": 1795549717,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 3006570,
+     "late_ms": 6.57,
+     "margin_ms": 122.73,
+     "tx_result_offset_us": 1895,
+     "rssi": -50.0,
+     "snr": 10.2
+    },
+    {
+     "window": "rx2",
+     "fcnt": 107,
+     "seq": 1795549718,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 3006591,
+     "late_ms": 6.591,
+     "margin_ms": 122.709,
+     "tx_result_offset_us": 1914,
+     "rssi": -50.0,
+     "snr": 10.0
+    }
+   ]
+  },
+  {
+   "name": "retry",
+   "passed": true,
+   "duration_s": 4.0,
+   "checks": [
+    {
+     "what": "transmitter sent 26 bytes (fcnt 108)",
+     "ok": true
+    },
+    {
+     "what": "first transmission: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "first transmission: TX_RESULT SENT within 40 ms of the target (SENT, 1.92 ms)",
+     "ok": true
+    },
+    {
+     "what": "first transmission: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "first transmission: on air +6.59 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 122.7 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 108)",
+     "ok": true
+    },
+    {
+     "what": "the retry reaches the server as a duplicate counter that is answered again",
+     "ok": true
+    },
+    {
+     "what": "retry: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "retry: TX_RESULT SENT within 40 ms of the target (SENT, 1.91 ms)",
+     "ok": true
+    },
+    {
+     "what": "retry: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "retry: on air +6.58 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 122.7 ms left in W)",
+     "ok": true
+    }
+   ],
+   "measurements": [
+    {
+     "window": "rx1",
+     "fcnt": 108,
+     "seq": 1795549719,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1006592,
+     "late_ms": 6.592,
+     "margin_ms": 122.708,
+     "tx_result_offset_us": 1924,
+     "rssi": -50.0,
+     "snr": 10.0
+    },
+    {
+     "window": "rx1",
+     "fcnt": 108,
+     "seq": 1795549720,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1006579,
+     "late_ms": 6.579,
+     "margin_ms": 122.721,
+     "tx_result_offset_us": 1906,
+     "rssi": -50.0,
+     "snr": 9.5
+    }
+   ]
+  },
+  {
+   "name": "dedupe",
+   "passed": true,
+   "duration_s": 5.1,
+   "checks": [
+    {
+     "what": "proxy answers a HELLO_REQUEST with its counters",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 109)",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 109)",
+     "ok": true
+    },
+    {
+     "what": "the first copy is forwarded",
+     "ok": true
+    },
+    {
+     "what": "the repeat within the dedupe window is not forwarded",
+     "ok": true
+    },
+    {
+     "what": "proxy answers a HELLO_REQUEST with its counters",
+     "ok": true
+    },
+    {
+     "what": "proxy counts 1 duplicate",
+     "ok": true
+    },
+    {
+     "what": "proxy counts 1 forwarded",
+     "ok": true
+    }
+   ],
+   "measurements": []
+  },
+  {
+   "name": "rate-limit",
+   "passed": true,
+   "duration_s": 9.7,
+   "checks": [
+    {
+     "what": "proxy answers a HELLO_REQUEST with its counters",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent a burst of 10",
+     "ok": true
+    },
+    {
+     "what": "a burst of 10 is cut to the per-device burst: 6 forwarded",
+     "ok": true
+    },
+    {
+     "what": "proxy answers a HELLO_REQUEST with its counters",
+     "ok": true
+    },
+    {
+     "what": "proxy counts 4 rate limited of the 10 it heard",
+     "ok": true
+    }
+   ],
+   "measurements": []
+  },
+  {
+   "name": "fault-bad-mac",
+   "passed": true,
+   "duration_s": 2.8,
+   "checks": [
+    {
+     "what": "server fault bad-mac on",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 120)",
+     "ok": true
+    },
+    {
+     "what": "server sends a bad-mac DOWNLINK",
+     "ok": true
+    },
+    {
+     "what": "bad-mac: the proxy drops it without a TX_RESULT",
+     "ok": true
+    },
+    {
+     "what": "bad-mac: nothing transmitted",
+     "ok": true
+    }
+   ],
+   "measurements": []
+  },
+  {
+   "name": "fault-stale-seq",
+   "passed": true,
+   "duration_s": 2.8,
+   "checks": [
+    {
+     "what": "server fault stale-seq on",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 121)",
+     "ok": true
+    },
+    {
+     "what": "server sends a stale-seq DOWNLINK",
+     "ok": true
+    },
+    {
+     "what": "stale-seq: the proxy drops it without a TX_RESULT",
+     "ok": true
+    },
+    {
+     "what": "stale-seq: nothing transmitted",
+     "ok": true
+    }
+   ],
+   "measurements": []
+  },
+  {
+   "name": "fault-wrong-boot",
+   "passed": true,
+   "duration_s": 2.8,
+   "checks": [
+    {
+     "what": "server fault wrong-boot on",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 122)",
+     "ok": true
+    },
+    {
+     "what": "server sends a wrong-boot DOWNLINK",
+     "ok": true
+    },
+    {
+     "what": "wrong-boot: the proxy drops it without a TX_RESULT",
+     "ok": true
+    },
+    {
+     "what": "wrong-boot: nothing transmitted",
+     "ok": true
+    }
+   ],
+   "measurements": []
+  },
+  {
+   "name": "fault-uplink-frame",
+   "passed": true,
+   "duration_s": 0.7,
+   "checks": [
+    {
+     "what": "server fault uplink-frame on",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 123)",
+     "ok": true
+    },
+    {
+     "what": "server sends a uplink-frame DOWNLINK",
+     "ok": true
+    },
+    {
+     "what": "uplink-frame: TX_RESULT INVALID (got INVALID)",
+     "ok": true
+    },
+    {
+     "what": "uplink-frame: nothing transmitted",
+     "ok": true
+    }
+   ],
+   "measurements": []
+  },
+  {
+   "name": "fault-late",
+   "passed": true,
+   "duration_s": 1.9,
+   "checks": [
+    {
+     "what": "server fault late on",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 124)",
+     "ok": true
+    },
+    {
+     "what": "server sends a late DOWNLINK",
+     "ok": true
+    },
+    {
+     "what": "late: TX_RESULT TOO_LATE (got TOO_LATE)",
+     "ok": true
+    },
+    {
+     "what": "late: nothing transmitted",
+     "ok": true
+    }
+   ],
+   "measurements": []
+  },
+  {
+   "name": "fault-busy",
+   "passed": true,
+   "duration_s": 1.3,
+   "checks": [
+    {
+     "what": "server fault busy on",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 125)",
+     "ok": true
+    },
+    {
+     "what": "server sends a busy DOWNLINK",
+     "ok": true
+    },
+    {
+     "what": "busy: the first: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "busy: the first: TX_RESULT SENT within 40 ms of the target (SENT, 1.91 ms)",
+     "ok": true
+    },
+    {
+     "what": "busy: the first: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "busy: the first: on air +6.53 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 122.8 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "busy: the server repeats the downlink",
+     "ok": true
+    },
+    {
+     "what": "busy: the repeat draws TX_RESULT BUSY (got BUSY)",
+     "ok": true
+    }
+   ],
+   "measurements": [
+    {
+     "window": "rx1",
+     "fcnt": 125,
+     "seq": 1795549729,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1006526,
+     "late_ms": 6.526,
+     "margin_ms": 122.774,
+     "tx_result_offset_us": 1908,
+     "rssi": -49.0,
+     "snr": 9.8
+    }
+   ]
+  },
+  {
+   "name": "nop-drain",
+   "passed": true,
+   "duration_s": 6.8,
+   "checks": [
+    {
+     "what": "transmitter sent 55 bytes (fcnt 1)",
+     "ok": true
+    },
+    {
+     "what": "JOIN, KEY_EXCHANGE: UPLINK from the bench sensor",
+     "ok": true
+    },
+    {
+     "what": "JOIN, KEY_EXCHANGE: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "JOIN, KEY_EXCHANGE: TX_RESULT SENT within 40 ms of the target (SENT, 2.60 ms)",
+     "ok": true
+    },
+    {
+     "what": "JOIN, KEY_EXCHANGE: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "JOIN, KEY_EXCHANGE: on air +10.53 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 118.8 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "JOIN, KEY_EXCHANGE: the sensor accepts the downlink (accept)",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 23 bytes (fcnt 2)",
+     "ok": true
+    },
+    {
+     "what": "first session uplink: UPLINK from the bench sensor",
+     "ok": true
+    },
+    {
+     "what": "first session uplink: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "first session uplink: TX_RESULT SENT within 40 ms of the target (SENT, 1.90 ms)",
+     "ok": true
+    },
+    {
+     "what": "first session uplink: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "first session uplink: on air +6.39 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 122.9 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "first session uplink: the sensor accepts the downlink (accept)",
+     "ok": true
+    },
+    {
+     "what": "server and sensor PAIRED",
+     "ok": true
+    },
+    {
+     "what": "2 NOPs queued",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 23 bytes (fcnt 3)",
+     "ok": true
+    },
+    {
+     "what": "confirmed uplink: UPLINK from the bench sensor",
+     "ok": true
+    },
+    {
+     "what": "confirmed uplink: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "confirmed uplink: TX_RESULT SENT within 40 ms of the target (SENT, 1.95 ms)",
+     "ok": true
+    },
+    {
+     "what": "confirmed uplink: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "confirmed uplink: on air +6.50 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 122.8 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "confirmed uplink: the sensor accepts the downlink (accept)",
+     "ok": true
+    },
+    {
+     "what": "first NOP, with PENDING",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 23 bytes (fcnt 4)",
+     "ok": true
+    },
+    {
+     "what": "unconfirmed follow-up with DL_ACK: UPLINK from the bench sensor",
+     "ok": true
+    },
+    {
+     "what": "unconfirmed follow-up with DL_ACK: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "unconfirmed follow-up with DL_ACK: TX_RESULT SENT within 40 ms of the target (SENT, 1.95 ms)",
+     "ok": true
+    },
+    {
+     "what": "unconfirmed follow-up with DL_ACK: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "unconfirmed follow-up with DL_ACK: on air +6.49 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 122.8 ms left in W)",
+     "ok": true
+    },
+    {
+     "what": "unconfirmed follow-up with DL_ACK: the sensor accepts the downlink (accept)",
+     "ok": true
+    },
+    {
+     "what": "last NOP, without PENDING",
+     "ok": true
+    },
+    {
+     "what": "DL_ACK settles the first NOP",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 23 bytes (fcnt 5)",
+     "ok": true
+    },
+    {
+     "what": "DL_ACK for the last: UPLINK from the bench sensor",
+     "ok": true
+    },
+    {
+     "what": "DL_ACK for the last: not answered",
+     "ok": true
+    },
+    {
+     "what": "queue drained",
+     "ok": true
+    }
+   ],
+   "measurements": [
+    {
+     "window": "rx1",
+     "fcnt": 1,
+     "seq": 1795549731,
+     "what": "KEY_EXCHANGE",
+     "dl_len": 65,
+     "airtime_us": 97536,
+     "on_air_offset_us": 1010526,
+     "late_ms": 10.526,
+     "margin_ms": 118.774,
+     "tx_result_offset_us": 2597,
+     "rssi": -50.0,
+     "snr": 9.5
+    },
+    {
+     "window": "rx1",
+     "fcnt": 2,
+     "seq": 1795549732,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1006390,
+     "late_ms": 6.39,
+     "margin_ms": 122.91,
+     "tx_result_offset_us": 1895,
+     "rssi": -50.0,
+     "snr": 9.8
+    },
+    {
+     "window": "rx1",
+     "fcnt": 3,
+     "seq": 1795549733,
+     "what": "NOP PENDING (2 queued)",
+     "dl_len": 33,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1006503,
+     "late_ms": 6.503,
+     "margin_ms": 122.797,
+     "tx_result_offset_us": 1946,
+     "rssi": -50.0,
+     "snr": 10.0
+    },
+    {
+     "window": "rx1",
+     "fcnt": 4,
+     "seq": 1795549734,
+     "what": "NOP (1 queued)",
+     "dl_len": 33,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1006493,
+     "late_ms": 6.493,
+     "margin_ms": 122.807,
+     "tx_result_offset_us": 1945,
+     "rssi": -50.0,
+     "snr": 10.2
+    }
+   ]
+  },
+  {
+   "name": "restart",
+   "passed": true,
+   "duration_s": 1.6,
+   "checks": [
+    {
+     "what": "transmitter sent 26 bytes (fcnt 126)",
+     "ok": true
+    },
+    {
+     "what": "restarted server answers the first uplink with HELLO_REQUEST",
+     "ok": true
+    },
+    {
+     "what": "session with the running proxy, server seq from 1",
+     "ok": true
+    },
+    {
+     "what": "transmitter sent 26 bytes (fcnt 127)",
+     "ok": true
+    },
+    {
+     "what": "after the restart: server sends a DOWNLINK for rx1",
+     "ok": true
+    },
+    {
+     "what": "after the restart: TX_RESULT SENT within 40 ms of the target (SENT, 1.90 ms)",
+     "ok": true
+    },
+    {
+     "what": "after the restart: the downlink is received on air",
+     "ok": true
+    },
+    {
+     "what": "after the restart: on air +7.09 ms after rx1 (01 section 4.1 allows 0 to 81 ms; 122.2 ms left in W)",
+     "ok": true
+    }
+   ],
+   "measurements": [
+    {
+     "window": "rx1",
+     "fcnt": 127,
+     "seq": 2,
+     "what": "ack",
+     "dl_len": 31,
+     "airtime_us": 61696,
+     "on_air_offset_us": 1007095,
+     "late_ms": 7.095,
+     "margin_ms": 122.205,
+     "tx_result_offset_us": 1896,
+     "rssi": -50.0,
+     "snr": 10.5
+    }
+   ]
+  },
+  {
+   "name": "counters",
+   "passed": true,
+   "duration_s": 3.4,
+   "checks": [
+    {
+     "what": "proxy answers a HELLO_REQUEST with its counters",
+     "ok": true
+    },
+    {
+     "what": "proxy tx_ok rose by 14, the 14 TX_RESULT SENT",
+     "ok": true
+    },
+    {
+     "what": "proxy tx_failed rose by 3, the 3 other TX_RESULTs",
+     "ok": true
+    }
+   ],
+   "measurements": []
+  }
+ ],
+ "summary": {
+  "passed": 15,
+  "failed": 0,
+  "rx1_late_ms": {
+   "n": 11,
+   "min": 6.39,
+   "median": 6.579,
+   "max": 10.526
+  },
+  "rx2_late_ms": {
+   "n": 3,
+   "min": 6.532,
+   "median": 6.57,
+   "max": 6.591
+  }
+ }
+}

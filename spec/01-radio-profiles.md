@@ -190,8 +190,12 @@ Notes (informative):
   is never early and it does not transmit before `tx_at` (06 section 8.2). The
   sensor's 20 ms lead covers its own TX-done and receiver-start latency.
 - Crystal drift over 3 s (at most 40 ppm, 0.12 ms) is negligible.
-- `US915` keeps the 150 ms that sensors already use; the margin covers on-air
-  offsets that have not been measured yet. `EU868` needs a longer window because
+- `US915` keeps the 150 ms that sensors already use. Measured on air on the bench
+  (Heltec V3 proxy and test transmitter, ESPHome `dev`, 2026-11-24,
+  `bench/records/2026-11-24-d3422c7a20.json`): a downlink starts a median 6.6 ms
+  after `delay` in RX1 (6.4 to 10.5 ms, n = 11) and 6.6 ms in RX2 (n = 3). That
+  includes the transmitter's own receive-to-loop latency. It is above the 5 ms
+  radio start allowance but well inside the margin. `EU868` needs a longer window because
   its 4.096 ms symbols make detection four times slower; tightening the proxy
   further could not cover that without leaving no room for a retry after a
   `BUSY` radio (06 section 8.2). At 6 mA, the extra 50 ms costs about 0.3 mAs per
