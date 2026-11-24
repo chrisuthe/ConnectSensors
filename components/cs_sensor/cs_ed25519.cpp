@@ -1,7 +1,9 @@
 #include "cs_ed25519.h"
 
+#include <cstring>
+
 #include "cs_crypto.h"
-#include "cs_fe25519.h"
+#include "cs_ed25519_table.h"
 #include "cs_sha512.h"
 
 namespace esphome::cs_sensor {
@@ -9,101 +11,250 @@ namespace esphome::cs_sensor {
 namespace {
 
 using namespace fe25519;
+using P3 = BaseMulJob::P3;
+using ed25519_table::COMB;
+using ed25519_table::STRIDE;
+using ed25519_table::TABLES;
 
-// Extended twisted Edwards coordinates (X, Y, Z, T).
-using point = gf[4];
+// A sum or a doubling before its last four multiplications: x = X/Z, y = Y/T.
+struct P1P1 {
+  fe X, Y, Z, T;
+};
 
-const gf GF0 = {0};
-const gf GF1 = {1};
-const gf D2 = {0xf159, 0x26b2, 0x9b94, 0xebd6, 0xb156, 0x8283, 0x149a, 0x00e0,
-               0xd130, 0xeef3, 0x80f2, 0x198e, 0xfce7, 0x56df, 0xd9dc, 0x2406};
-const gf BX = {0xd51a, 0x8f25, 0x2d60, 0xc956, 0xa7b2, 0x9525, 0xc760, 0x692c,
-               0xdc5c, 0xfdd6, 0xe231, 0xc0a4, 0x53fe, 0xcd6e, 0x36d3, 0x2169};
-const gf BY = {0x6658, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666,
-               0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666, 0x6666};
+// An affine point ready for mixed addition.
+struct Precomp {
+  fe yplusx, yminusx, xy2d;
+};
 
-void set25519(gf r, const gf a) {
-  for (int i = 0; i < 16; i++)
-    r[i] = a[i];
+// Squarings per inversion step: about as costly as a comb step.
+constexpr int INVERT_SQUARINGS = 8;
+
+void p1p1_to_p3(P3 &r, const P1P1 &p) {
+  mul(r.X, p.X, p.T);
+  mul(r.Y, p.Y, p.Z);
+  mul(r.Z, p.Z, p.T);
+  mul(r.T, p.X, p.Y);
 }
 
-int par25519(const gf a) {
-  uint8_t d[32];
-  pack25519(d, a);
-  return d[0] & 1;
+// r = 2p, from X, Y, Z alone (ref10 ge_p2_dbl).
+void dbl(P1P1 &r, const P3 &p) {
+  fe t0;
+  sq(r.X, p.X);
+  sq(r.Z, p.Y);
+  sq2(r.T, p.Z);
+  add(r.Y, p.X, p.Y);
+  sq(t0, r.Y);
+  add(r.Y, r.Z, r.X);
+  sub(r.Z, r.Z, r.X);
+  sub(r.X, t0, r.Y);
+  sub(r.T, r.T, r.Z);
 }
 
-// p += q
-void point_add(point p, point q) {
-  gf a, b, c, d, t, e, f, g, h;
-  sub(a, p[1], p[0]);
-  sub(t, q[1], q[0]);
-  mul(a, a, t);
-  add(b, p[0], p[1]);
-  add(t, q[0], q[1]);
-  mul(b, b, t);
-  mul(c, p[3], q[3]);
-  mul(c, c, D2);
-  mul(d, p[2], q[2]);
-  add(d, d, d);
-  sub(e, b, a);
-  sub(f, d, c);
-  add(g, d, c);
-  add(h, b, a);
-  mul(p[0], e, f);
-  mul(p[1], h, g);
-  mul(p[2], g, f);
-  mul(p[3], e, h);
+// r = p + q (ref10 ge_madd).
+void madd(P1P1 &r, const P3 &p, const Precomp &q) {
+  fe t0;
+  add(r.X, p.Y, p.X);
+  sub(r.Y, p.Y, p.X);
+  mul(r.Z, r.X, q.yplusx);
+  mul(r.Y, r.Y, q.yminusx);
+  mul(r.T, q.xy2d, p.T);
+  add(t0, p.Z, p.Z);
+  sub(r.X, r.Z, r.Y);
+  add(r.Y, r.Z, r.Y);
+  add(r.Z, t0, r.T);
+  sub(r.T, t0, r.T);
 }
 
-void cswap(point p, point q, int64_t b) {
-  for (int i = 0; i < 4; i++)
-    sel25519(p[i], q[i], b);
-}
+// 1 if b == c, else 0, for b and c in [0, 15], without branching.
+uint32_t equal(uint32_t b, uint32_t c) { return ((b ^ c) - 1) >> 31; }
 
-void pack_point(uint8_t r[32], point p) {
-  gf tx, ty, zi;
-  inv25519(zi, p[2]);
-  mul(tx, p[0], zi);
-  mul(ty, p[1], zi);
-  pack25519(r, ty);
-  r[31] ^= uint8_t(par25519(tx) << 7);
-}
+// 1 if b < 0, without branching.
+uint32_t negative(int8_t b) { return uint32_t(uint64_t(int64_t(b)) >> 63); }
 
-// p = s * B, by a constant-time double-and-add ladder over all 256 bits.
-void scalarbase(point p, const uint8_t s[32]) {
-  point q;
-  set25519(q[0], BX);
-  set25519(q[1], BY);
-  set25519(q[2], GF1);
-  mul(q[3], BX, BY);
-  set25519(p[0], GF0);
-  set25519(p[1], GF1);
-  set25519(p[2], GF1);
-  set25519(p[3], GF0);
-  for (int i = 255; i >= 0; --i) {
-    int64_t b = (s[i / 8] >> (i & 7)) & 1;
-    cswap(p, q, b);
-    point_add(q, p);
-    point_add(p, p);
-    cswap(p, q, b);
+void words_to_fe(fe h, const uint32_t w[8]) {
+  uint8_t s[32];
+  for (int i = 0; i < 8; i++) {
+    s[4 * i] = uint8_t(w[i]);
+    s[4 * i + 1] = uint8_t(w[i] >> 8);
+    s[4 * i + 2] = uint8_t(w[i] >> 16);
+    s[4 * i + 3] = uint8_t(w[i] >> 24);
   }
-  secure_zero(q, sizeof(q));
+  frombytes(h, s);
+}
+
+// t = b * (table k's point), for a secret digit b in [-8, 8]: every entry is read,
+// and the one wanted is kept by masks, not by its index.
+void select(Precomp &t, int k, int8_t b) {
+  uint32_t bneg = negative(b);
+  uint32_t babs = uint32_t(b) - ((uint32_t(0) - bneg) & uint32_t(b)) * 2;
+  uint32_t w[24] = {1, 0, 0, 0, 0, 0, 0, 0, 1};  // the neutral point: (1, 1, 0)
+  for (uint32_t j = 0; j < 8; j++) {
+    uint32_t mask = uint32_t(0) - equal(babs & 0xFF, j + 1);
+    for (int i = 0; i < 24; i++)
+      w[i] ^= mask & (w[i] ^ COMB[k][j][i]);
+  }
+  words_to_fe(t.yplusx, w);
+  words_to_fe(t.yminusx, w + 8);
+  words_to_fe(t.xy2d, w + 16);
+  // -(x, y) = (-x, y): swap y + x with y - x and negate 2dxy.
+  Precomp minus;
+  copy(minus.yplusx, t.yminusx);
+  copy(minus.yminusx, t.yplusx);
+  neg(minus.xy2d, t.xy2d);
+  cmov(t.yplusx, minus.yplusx, bneg);
+  cmov(t.yminusx, minus.yminusx, bneg);
+  cmov(t.xy2d, minus.xy2d, bneg);
+  secure_zero(w, sizeof(w));
+  secure_zero(&minus, sizeof(minus));
 }
 
 }  // namespace
 
+void BaseMulJob::start_ed25519(const uint8_t seed[32]) {
+  this->clear();
+  std::memcpy(this->scalar_, seed, 32);
+  this->x25519_ = false;
+  this->stage_ = Stage::PREPARE;
+}
+
+void BaseMulJob::start_x25519(const uint8_t scalar[32]) {
+  this->clear();
+  std::memcpy(this->scalar_, scalar, 32);
+  this->x25519_ = true;
+  this->stage_ = Stage::PREPARE;
+}
+
+void BaseMulJob::clear() {
+  secure_zero(this->scalar_, sizeof(this->scalar_));
+  secure_zero(this->e_, sizeof(this->e_));
+  secure_zero(&this->h_, sizeof(this->h_));
+  secure_zero(this->out_, sizeof(this->out_));
+  this->inv_.wipe();
+  this->stage_ = Stage::IDLE;
+}
+
+void BaseMulJob::prepare_() {
+  if (!this->x25519_) {
+    // RFC 8032 section 5.1.5: the scalar is the clamped first half of SHA-512(seed).
+    uint8_t h[64];
+    sha512(this->scalar_, 32, h);
+    std::memcpy(this->scalar_, h, 32);
+    secure_zero(h, sizeof(h));
+  }
+  // The same clamp for both (RFC 8032 section 5.1.5, RFC 7748 section 5). Bit 255
+  // clear keeps the top digit in range below.
+  this->scalar_[0] &= 248;
+  this->scalar_[31] &= 127;
+  this->scalar_[31] |= 64;
+  // Signed radix 16: scalar = sum of e[i] 16^i with e[i] in [-8, 8).
+  for (int i = 0; i < 32; i++) {
+    this->e_[2 * i] = int8_t(this->scalar_[i] & 15);
+    this->e_[2 * i + 1] = int8_t(this->scalar_[i] >> 4);
+  }
+  int8_t carry = 0;
+  for (int i = 0; i < 63; i++) {
+    this->e_[i] = int8_t(this->e_[i] + carry);
+    carry = int8_t((this->e_[i] + 8) >> 4);
+    this->e_[i] = int8_t(this->e_[i] - carry * 16);
+  }
+  this->e_[63] = int8_t(this->e_[63] + carry);
+  secure_zero(this->scalar_, sizeof(this->scalar_));
+  // h = 0, the neutral point.
+  zero(this->h_.X);
+  one(this->h_.Y);
+  one(this->h_.Z);
+  zero(this->h_.T);
+  this->sweep_ = STRIDE - 1;
+  this->table_ = 0;
+  this->doublings_ = 0;
+}
+
+// scalar * B = sum over passes r of 16^r * sum over tables k of e[STRIDE k + r] * T_k,
+// with T_k = 16^(STRIDE k) * B: Horner's rule in r, four doublings between passes.
+bool BaseMulJob::step() {
+  switch (this->stage_) {
+    case Stage::IDLE:
+      return false;
+    case Stage::DONE:
+      return true;
+    case Stage::PREPARE:
+      this->prepare_();
+      this->stage_ = Stage::COMB;
+      return false;
+    case Stage::COMB: {
+      P1P1 r;
+      if (this->doublings_ > 0) {
+        dbl(r, this->h_);
+        this->doublings_--;
+      } else {
+        Precomp t;
+        select(t, this->table_, this->e_[STRIDE * this->table_ + this->sweep_]);
+        madd(r, this->h_, t);
+        secure_zero(&t, sizeof(t));
+        if (++this->table_ == TABLES) {
+          this->table_ = 0;
+          if (this->sweep_ == 0) {
+            this->stage_ = Stage::INVERT;
+          } else {
+            this->sweep_--;
+            this->doublings_ = 4;
+          }
+        }
+      }
+      p1p1_to_p3(this->h_, r);
+      secure_zero(&r, sizeof(r));
+      if (this->stage_ == Stage::INVERT) {
+        secure_zero(this->e_, sizeof(this->e_));
+        if (this->x25519_) {
+          fe d;
+          sub(d, this->h_.Z, this->h_.Y);
+          this->inv_.start(d);
+          secure_zero(d, sizeof(d));
+        } else {
+          this->inv_.start(this->h_.Z);
+        }
+      }
+      return false;
+    }
+    case Stage::INVERT:
+      if (this->inv_.step(INVERT_SQUARINGS))
+        this->stage_ = Stage::FINISH;
+      return false;
+    case Stage::FINISH: {
+      const int32_t *zi = this->inv_.result();
+      if (this->x25519_) {
+        // u = (Z + Y) / (Z - Y). Never 0/0: a clamped scalar is not a multiple of
+        // the group order, so the point is not the neutral one (Y = Z).
+        fe n, u;
+        add(n, this->h_.Z, this->h_.Y);
+        mul(u, n, zi);
+        tobytes(this->out_, u);
+        secure_zero(n, sizeof(n));
+        secure_zero(u, sizeof(u));
+      } else {
+        fe x, y;
+        mul(x, this->h_.X, zi);
+        mul(y, this->h_.Y, zi);
+        tobytes(this->out_, y);
+        this->out_[31] ^= uint8_t(isnegative(x) << 7);
+        secure_zero(x, sizeof(x));
+        secure_zero(y, sizeof(y));
+      }
+      secure_zero(&this->h_, sizeof(this->h_));
+      this->inv_.wipe();
+      this->stage_ = Stage::DONE;
+      return true;
+    }
+  }
+  return false;
+}
+
 void cs_ed25519_public_key(const uint8_t seed[32], uint8_t pub[32]) {
-  uint8_t h[64];
-  sha512(seed, 32, h);
-  h[0] &= 248;
-  h[31] &= 127;
-  h[31] |= 64;
-  point p;
-  scalarbase(p, h);
-  pack_point(pub, p);
-  secure_zero(h, sizeof(h));
-  secure_zero(p, sizeof(p));
+  BaseMulJob job;
+  job.start_ed25519(seed);
+  while (!job.step()) {
+  }
+  std::memcpy(pub, job.result(), 32);
 }
 
 }  // namespace esphome::cs_sensor

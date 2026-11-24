@@ -16,6 +16,7 @@
 #include "cs_sha256.h"
 #include "cs_sha512.h"
 #include "cs_x25519.h"
+#include "ref_tweetnacl.h"
 #include "sensor_core.h"
 #include "vectors.inc"
 
@@ -120,6 +121,69 @@ static void test_sha512_ed25519() {
     cs_ed25519_public_key(seed.data(), pub);
     CHECK(hex(pub, 32) == v.pub);
   }
+}
+
+// The fixed-base comb (#95) against the TweetNaCl code it replaced, on edge and
+// random scalars, all at once and a step at a time.
+static void test_keygen_equivalence() {
+  uint64_t x = 0x2545F4914F6CDD1DULL;
+  auto fill = [&](uint8_t *p, int n) {
+    for (int i = 0; i < n; i++) {
+      x ^= x << 13;
+      x ^= x >> 7;
+      x ^= x << 17;
+      p[i] = uint8_t(x);
+    }
+  };
+  const uint8_t nine[32] = {9};
+  int steps_ed = -1, steps_x = -1;
+  bool same_steps = true;
+  for (int n = 0; n < 64; n++) {
+    uint8_t s[32], u[32], a[32], b[32];
+    fill(s, 32);
+    fill(u, 32);
+    if (n < 3)
+      std::memset(s, n == 0 ? 0x00 : n == 1 ? 0xFF : 0x80, 32);
+    cs_ed25519_public_key(s, a);
+    ref_tweetnacl::ed25519_public_key(s, b);
+    CHECK(std::memcmp(a, b, 32) == 0);
+    x25519_base(a, s);
+    ref_tweetnacl::x25519(b, s, nine);
+    CHECK(std::memcmp(a, b, 32) == 0);
+    x25519(a, s, u);
+    ref_tweetnacl::x25519(b, s, u);
+    CHECK(std::memcmp(a, b, 32) == 0);
+
+    // In steps: the same result, and the same number of steps for every scalar.
+    for (bool ed : {true, false}) {
+      BaseMulJob job;
+      CHECK(!job.busy() && !job.step());
+      if (ed) {
+        job.start_ed25519(s);
+      } else {
+        job.start_x25519(s);
+      }
+      int steps = 0;
+      while (job.busy()) {
+        job.step();
+        steps++;
+      }
+      CHECK(job.done() && job.step());
+      if (ed) {
+        cs_ed25519_public_key(s, a);
+      } else {
+        x25519_base(a, s);
+      }
+      CHECK(std::memcmp(job.result(), a, 32) == 0);
+      int &want = ed ? steps_ed : steps_x;
+      if (want < 0)
+        want = steps;
+      same_steps = same_steps && steps == want;
+      job.clear();
+      CHECK(!job.busy() && !job.done());
+    }
+  }
+  CHECK(same_steps && steps_ed == steps_x && steps_ed > 64);
 }
 
 // ---------------------------------------------------------------- crypto
@@ -1990,6 +2054,7 @@ int main() {
   test_crypto();
   test_airtime();
   test_sha512_ed25519();
+  test_keygen_equivalence();
   test_frame_vectors();
   test_payload_vectors();
   test_pairing_code();
