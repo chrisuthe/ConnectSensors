@@ -737,7 +737,9 @@ void CSSensor::maybe_sleep_(uint64_t now) {
   if (this->core_->hold() || this->tx_busy_ || this->button_down_ || this->button_event_ ||
       now < this->awake_until_us_)
     return;
-  uint64_t wake = std::min(this->core_->next_wake_us(), this->glue_wake_us_());
+  // No wake just to compute the next epoch's tag ahead (08 section 3.2): it is
+  // computed if a wake falls in the window, and otherwise when a frame needs it.
+  uint64_t wake = std::min(this->core_->next_wake_us(false), this->glue_wake_us_());
   if (this->max_sleep_ms_ != 0)
     wake = std::min(wake, now + uint64_t(this->max_sleep_ms_) * 1000);
   if (wake == UINT64_MAX)

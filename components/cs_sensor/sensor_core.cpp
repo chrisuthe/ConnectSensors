@@ -608,6 +608,28 @@ bool SensorCore::next_key_target_(KeyTarget &out) const {
          want(false, true, tag_block(this->next_fcnt_));
 }
 
+// When the next precompute window opens: TAG_PRECOMPUTE_LEAD_S before the boundary
+// whose tag is not cached yet. A platform whose loop sleeps until next_wake_us()
+// would otherwise only precompute if something else woke it inside the window.
+uint64_t SensorCore::precompute_wake_us_() const {
+  uint32_t t;
+  if (!this->has_session_ || (this->state_ != PairingState::PAIRED && this->state_ != PairingState::SESSION) ||
+      !this->clock_.unix_time(t))
+    return UINT64_MAX;
+  const uint32_t into = t % EPOCH_SECONDS, open = EPOCH_SECONDS - TAG_PRECOMPUTE_LEAD_S;
+  uint32_t wait_s;
+  if (into < open) {
+    wait_s = open - into;
+    if (this->tag_index_(false, false, epoch_of(t) + 1) >= 0)
+      wait_s += EPOCH_SECONDS;  // already computed, say kept through a deep sleep
+  } else if (this->tag_index_(false, false, epoch_of(t) + 1) < 0) {
+    wait_s = 0;  // inside the window, not computed yet
+  } else {
+    wait_s = EPOCH_SECONDS - into + open;
+  }
+  return this->clock_.now_us() + uint64_t(wait_s) * 1000000;
+}
+
 void SensorCore::cancel_key_job_() {
   this->keygen_.clear();
   this->key_job_ = KeyTarget{};
@@ -923,7 +945,7 @@ bool SensorCore::hold() const {
          (this->state_ == PairingState::PAIRED && this->want_pending_hb_ && !this->stopped_);
 }
 
-uint64_t SensorCore::next_wake_us() const {
+uint64_t SensorCore::next_wake_us(bool precompute) const {
   switch (this->phase_) {
     case Phase::TX:
       return this->tx_started_us_ + TX_TIMEOUT_US;
@@ -949,6 +971,8 @@ uint64_t SensorCore::next_wake_us() const {
   }
   if (t != UINT64_MAX && this->tx_blocked_until_us_ > t)
     t = this->tx_blocked_until_us_;
+  if (precompute)
+    t = std::min(t, this->precompute_wake_us_());
   return t;
 }
 

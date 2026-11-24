@@ -1858,6 +1858,81 @@ static void test_sliced_epoch_boundary() {
   CHECK(rig.core->key_work().sync_tags == 0);
 }
 
+// Paired and idle, 20 minutes before a boundary, with a day's heartbeat so nothing
+// else wakes the loop. Returns the monotonic time of the boundary.
+static uint64_t idle_before_boundary(Rig &rig, Server &server) {
+  rig.cfg.heartbeat_minutes = 1440;
+  server = pair_with_vectors(rig);
+  rig.run(3 * S);
+  uint32_t now_unix = 0;
+  rig.clock.unix_time(now_unix);
+  uint32_t boundary = (epoch_of(now_unix) + 2) * EPOCH_SECONDS;
+  rig.clock.set_unix_time(boundary - 20 * 60);
+  return rig.clock.now + 20 * MIN;
+}
+
+// A mains sensor's loop sleeps until next_wake_us() (tick_to does the same while
+// idle), so the precompute window has to be one of its wakes (08 section 3.2).
+static void test_precompute_wakes_mains() {
+  Rig rig;
+  Server server;
+  uint64_t boundary = idle_before_boundary(rig, server);
+  uint64_t open = boundary - TAG_PRECOMPUTE_LEAD_S * S;
+  CHECK(!rig.core->hold());
+  CHECK(rig.core->next_wake_us() == open);
+  CHECK(rig.core->next_wake_us(false) > boundary);
+  uint32_t computed = rig.core->tag_computations();
+  rig.clock.step_us = 250;
+  rig.tick_to(boundary - S);
+  CHECK(rig.core->tag_computations() == computed + 1);
+  CHECK(!rig.core->hold());
+  // Computed, so the next wake asked for is the window before the following boundary.
+  CHECK(rig.core->next_wake_us() >= boundary + (EPOCH_SECONDS - TAG_PRECOMPUTE_LEAD_S - 2) * S);
+  rig.tick_to(boundary + S);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(false);
+  CHECK(passes_to_tx(rig, n + 1) == 1);
+  uint32_t unix = 0;
+  rig.clock.unix_time(unix);
+  CHECK(tag_hex(rig.radio.sent.back()) == normal_hex(server.keys, epoch_of(unix)));
+  CHECK(rig.core->tag_computations() == computed + 1);
+  CHECK(rig.core->key_work().sync_tags == 0);
+}
+
+// Deep sleep: no wake just for the window. A wake that falls in it computes the tag
+// before sleeping again; otherwise the first frame after the boundary waits for it.
+static void test_precompute_deep_sleep() {
+  Rig rig;
+  Server server;
+  uint64_t boundary = idle_before_boundary(rig, server);
+  CHECK(rig.core->next_wake_us(false) > boundary);
+  // Slept through the window: the frame after the boundary computes it, sliced.
+  rig.clock.step_us = 250;
+  CHECK(rig.sleep_wake(boundary + S - rig.clock.now));
+  CHECK(rig.core->tag_computations() == 0);
+  size_t n = rig.radio.sent.size();
+  rig.core->report(false);
+  CHECK(passes_to_tx(rig, n + 1) > 1);
+  uint32_t unix = 0;
+  rig.clock.unix_time(unix);
+  CHECK(tag_hex(rig.radio.sent.back()) == normal_hex(server.keys, epoch_of(unix)));
+  CHECK(rig.core->tag_computations() == 1 && rig.core->key_work().sync_tags == 0);
+
+  // A wake inside the next window, say for a reading: the core holds until the tag
+  // is computed, and it survives the following sleep.
+  rig.run(3 * S);
+  uint64_t next = boundary + EPOCH_SECONDS * S;
+  CHECK(rig.sleep_wake(next - 60 * S - rig.clock.now));
+  CHECK(rig.core->hold());
+  rig.run(S);
+  CHECK(!rig.core->hold() && rig.core->tag_computations() == 1);
+  CHECK(rig.sleep_wake(next + S - rig.clock.now));
+  n = rig.radio.sent.size();
+  rig.core->report(false);
+  CHECK(passes_to_tx(rig, n + 1) == 1);
+  CHECK(rig.core->tag_computations() == 0);
+}
+
 static void test_sliced_bootstrap_block() {
   Rig rig;
   Server server = pair_with_vectors(rig);
@@ -2217,6 +2292,8 @@ int main() {
   test_sliced_join();
   test_sliced_epoch_boundary();
   test_sliced_bootstrap_block();
+  test_precompute_wakes_mains();
+  test_precompute_deep_sleep();
   test_storage_failure_while_pairing();
   test_firmware_until_delivered();
   test_factory_reset_without_erase();

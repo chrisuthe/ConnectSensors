@@ -387,11 +387,14 @@ class SensorCore {
   void factory_reset();
 
   // Sleep hint: true while the core is transmitting, inside or waiting for an RX
-  // window, holding retries, or about to send. The platform must not deep-sleep
-  // through any of that.
+  // window, holding retries, about to send, or computing a key. The platform must
+  // not deep-sleep through any of that.
   bool hold() const;
-  // When loop() next has work: the next window edge, retry, or heartbeat.
-  uint64_t next_wake_us() const;
+  // When loop() next has work: the next window edge, retry or heartbeat, and with
+  // precompute, also when the window opens for computing the next epoch's tag ahead
+  // (08 section 3.2). A deep-sleep platform leaves that out: a wake just for it
+  // costs more than the frame that may later wait a few passes for its tag.
+  uint64_t next_wake_us(bool precompute = true) const;
 
   PairingState state() const { return this->state_; }
   uint32_t root_floor() const { return this->root_floor_; }
@@ -491,6 +494,7 @@ class SensorCore {
   bool key_work_pending_() const;
   // True if the tag is ready; otherwise asks loop() for it, and the frame waits.
   bool tag_ready_(bool root, bool bootstrap, uint32_t n);
+  uint64_t precompute_wake_us_() const;
 
   void start_next_(uint64_t now);
   bool build_(Purpose purpose, bool confirmed, uint64_t now);

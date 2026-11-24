@@ -49,7 +49,9 @@ from a stolen device.
 - With a valid clock, or an RTC that survived the reboot, the sensor computes
   normal tags (02 section 6.1). It SHOULD compute the next epoch's tag before the
   epoch boundary, so a frame sent just after it is not delayed by the key
-  generation.
+  generation. A sensor that sleeps through that time need not wake just for it:
+  it computes the tag if a wake falls shortly before the boundary, and otherwise
+  when a frame needs it, delaying that frame by one key generation.
 - Without either (for example after the batteries were removed and the RTC has no
   backup), the sensor cannot compute normal tags and MUST use `SYNC`, with its
   bootstrap tag (02 section 11.2), until a downlink sets its clock. This applies to every uplink except the

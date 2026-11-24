@@ -201,7 +201,9 @@ Tests: [`tests/sensor_core`](../../tests/sensor_core), run with
   A frame whose tag is not ready waits for it. Tags are computed ahead where a
   frame is likely to need them: the `JOIN`'s key pair and tag right after the
   press, the next epoch's in the 5 minutes before the boundary, and the next
-  bootstrap block's while uplinks go out as `SYNC`.
+  bootstrap block's while uplinks go out as `SYNC`. `next_wake_us()` asks for a
+  wake when that 5-minute window opens; with deep sleep the component does not
+  wake for it, and a frame after the boundary waits for its tag instead.
 - **Counters:** uplink counter reservation in blocks of 64 (02 section 8.2),
   and the session and root downlink floors (02 section 8.4). The root floor
   survives `JOIN`, pairing and `LEAVE`; only a factory reset clears it.
