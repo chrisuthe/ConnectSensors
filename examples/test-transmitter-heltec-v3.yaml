@@ -13,10 +13,11 @@
 # bytes, and two text sensors time each transmission and reception in micros():
 #   TX timing: "<n> <tx_done_us> <len> ok|fail"
 #   RX timing: "<n> <rx_us> <rssi> <snr> <hex>"
-# tx_done_us is taken when the radio reports TX done (send_packet blocks until
-# then); rx_us when on_packet runs, which is the loop pass after RX done. The
-# host's on-air offset of a downlink is rx_us - tx_done_us - downlink airtime;
-# devtools/bench/README.md has the method and its uncertainty.
+# tx_done_us is taken at the DIO1 edge that signals TX done; rx_us when
+# on_packet runs, which is the loop pass after RX done. The host's on-air offset
+# of a downlink is rx_us - tx_done_us - downlink airtime; devtools/bench/README.md
+# has the method and its uncertainty. Both are also logged ("TX ... done_us" and
+# "RX ... at_us").
 
 substitutions:
   name: lora-test-tx
@@ -68,7 +69,7 @@ sx126x:
   cs_pin: GPIO8
   rst_pin: GPIO12
   busy_pin: GPIO13
-  dio1_pin: GPIO14
+  dio1_pin: GPIO14  # also read directly by the transmit script
   rf_switch: true
   tcxo_voltage: 1_8V
   tcxo_delay: 5ms
@@ -98,6 +99,7 @@ sx126x:
           id(rx_rssi) = rssi;
           id(rx_snr) = snr;
           id(rx_timing).publish_state(str_sprintf("%d %" PRIu32 " %.1f %.1f %s", id(rx_count), at, rssi, snr, hex));
+          ESP_LOGI("test_tx", "RX %d at_us %" PRIu32, id(rx_count), at);
       - script.execute: screen_wake
 
 button:
@@ -220,14 +222,45 @@ script:
             ESP_LOGW("test_tx", "%s: expected 2 to 510 hex digits", what.c_str());
             return;
           }
-          const bool ok = id(lora).transmit_packet(frame, len) == sx126x::SX126xError::SX126X_ERROR_NONE;
-          const uint32_t done = micros();  // transmit_packet returns at TX done
-          id(tx_count) += 1;
-          id(tx_done_us) = done;
-          id(tx_last) = what;
-          id(tx_timing).publish_state(
-              str_sprintf("%d %" PRIu32 " %u %s", id(tx_count), done, (unsigned) len, ok ? "ok" : "fail"));
-          ESP_LOGI("test_tx", "sent %s, %u bytes: %s", what.c_str(), (unsigned) len, ok ? "ok" : "failed");
+          // The blocking send returns only after the radio is put back into RX, which
+          // waits for the TCXO: over a millisecond after TX done. So send without
+          // blocking, time the DIO1 edge here, and report from the completion.
+          struct Done : sx126x::SX126xTransmitListener {
+            uint32_t at{0};
+            size_t len{0};
+            bool finished{false};
+            std::string what;
+            void on_transmit_complete(sx126x::SX126xError result) override {
+              this->finished = true;
+              const bool ok = result == sx126x::SX126xError::SX126X_ERROR_NONE;
+              id(tx_count) += 1;
+              id(tx_done_us) = this->at;
+              id(tx_last) = this->what;
+              id(tx_timing).publish_state(
+                  str_sprintf("%d %" PRIu32 " %u %s", id(tx_count), this->at, (unsigned) this->len, ok ? "ok" : "fail"));
+              ESP_LOGI("test_tx", "TX %d %s, %u bytes, done_us %" PRIu32 ": %s", id(tx_count), this->what.c_str(),
+                       (unsigned) this->len, this->at, ok ? "ok" : "failed");
+            }
+          };
+          static Done done;
+          const auto err = id(lora).start_transmit_async(&done, frame, len, 4000);
+          if (err != sx126x::SX126xError::SX126X_ERROR_NONE) {
+            ESP_LOGW("test_tx", "%s: radio refused the send (%d)", what.c_str(), (int) err);
+            id(tx_count) += 1;
+            id(tx_timing).publish_state(str_sprintf("%d 0 %u fail", id(tx_count), (unsigned) len));
+            return;
+          }
+          done.len = len;
+          done.what = what;
+          done.finished = false;
+          // DIO1 carries only TX_DONE and the timeout while sending.
+          const uint32_t start = millis();
+          while (gpio_get_level(GPIO_NUM_14) == 0 && millis() - start < 4000)
+            App.feed_wdt();
+          done.at = micros();
+          // Finish now rather than in a later pass, so the next send finds the radio free.
+          while (!done.finished && millis() - start < 4100)
+            id(lora).loop();
       - script.execute: screen_wake
   # Sleeps after 10 minutes so a forgotten bench board does not burn in; any
   # send, any packet heard, or PRG wakes it.

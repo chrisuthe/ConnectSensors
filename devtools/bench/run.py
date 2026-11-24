@@ -89,8 +89,9 @@ class Server:
             [sys.executable, "-I", SERVER, "--port", str(self.port), "--key", self.key.hex(), "--ack", "--json",
              *self.extra, *more], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, bufsize=1)
         log.close()
+        since = self.mark()
         threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
-        if self.wait("LISTENING", self.mark(), 10) is None:
+        if self.wait("LISTENING", since, 10) is None:
             raise RuntimeError(f"test server did not start; see {self.log_path}")
 
     def _read(self, proc) -> None:
@@ -171,6 +172,10 @@ class Radio:
 
     def transmit(self, frame: bytes) -> Tx:
         raise NotImplementedError
+
+    def burst(self, frames: list[bytes]) -> Tx:
+        """Send frames back to back, as fast as the radio allows; the last one's Tx."""
+        return [self.transmit(f) for f in frames][-1]
 
     def info(self) -> dict:
         return {}
@@ -359,6 +364,28 @@ class RigRadio(Radio):
                 self.cond.wait(left)
             return self.txs[before]
 
+    def burst(self, frames: list[bytes]) -> Tx:
+        # Waiting for each TX report would pace the burst at the API's round trip.
+        # The device batches state updates and may keep only the newest, so wait for
+        # the last one's count.
+        with self.cond:
+            n0 = self.tx_seen
+        calls = [self.dev.press.call_service(self.dev.client, self.dev.services, "send_hex", {"data": f.hex()})
+                 for f in frames]
+
+        async def all_calls():
+            for c in calls:
+                await c
+        self.dev.call(all_calls())
+        deadline = time.monotonic() + 10
+        with self.cond:
+            while not self.txs or self.txs[-1].n < n0 + len(frames):
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise RuntimeError("the transmitter did not report the whole burst")
+                self.cond.wait(left)
+            return self.txs[-1]
+
     def info(self) -> dict:
         return {"kind": "test-transmitter", **self.dev.info()}
 
@@ -395,6 +422,7 @@ class Bench:
         self.hello: dict | None = None
         self.tx_results: list[dict] = []
         self.counters_start = self.counters_end = None
+        self.started_at = datetime.datetime.now(datetime.UTC)
 
     # ---------------------------------------------------------- plumbing
 
@@ -529,10 +557,11 @@ class Bench:
         mark, rx0 = self.srv.mark(), self.radio.rx_mark()
         frame = self.fresh()
         tx = self.send(frame)
+        sent = time.monotonic()  # after TX done, so the gap below is never short
         self.answered(tx, frame, mark, rx0, "rx1", "first transmission")
         # Past the proxy's 2 s dedupe and the server's 2 s copy window (07 section 4),
         # as a sensor's retry is (08 section 5).
-        time.sleep(max(0.0, 2.3 - (time.monotonic() - self.sc.started)))
+        time.sleep(max(0.0, 2.5 - (time.monotonic() - sent)))
         mark, rx0 = self.srv.mark(), self.radio.rx_mark()
         tx = self.send(frame)
         ev = self.uplink(frame, mark)
@@ -557,9 +586,9 @@ class Bench:
     def s_rate_limit(self) -> None:
         before = self.counters()
         mark = self.srv.mark()
-        frames = [self.fresh(cs.T_DATA) for _ in range(8)]
-        for f in frames:
-            self.send(f)
+        frames = [self.fresh(cs.T_DATA) for _ in range(10)]
+        tx = self.radio.burst(frames)
+        self.check(tx.ok, f"transmitter sent a burst of {len(frames)}", fatal=True)
         time.sleep(1.5)
         got = sum(1 for f in frames if self.srv.find("UPLINK", mark, frame=f.hex()))
         self.check(5 <= got < len(frames), f"a burst of {len(frames)} is cut to the per-device burst: {got} forwarded")
@@ -684,7 +713,7 @@ class Bench:
         undelivered = self.sensor.state_of("undelivered") if self.sensor else None
         mark = self.srv.mark()
         print(f"  ... waiting up to {self.args.sensor_wait:.0f} s for an uplink from {eui}: "
-              "open or close the door now", flush=True)
+              "open or close the door, or short-press PRG, now", flush=True)
         ev = self.srv.wait("UPLINK", mark, self.args.sensor_wait, device=eui, result="transmission")
         if not self.check(ev is not None, f"UPLINK {ev['type'] if ev else ''} from the cs_sensor"):
             return
@@ -761,16 +790,18 @@ def summary(values: list[float]) -> dict | None:
 def record(args, bench: Bench, radio: Radio, proxy_dev: ApiDevice | None, sensor: ApiDevice | None) -> dict:
     ms = [m for s in bench.scenarios for m in s.measurements]
     hello = bench.hello or {}
+    # Each HELLO carries the longest gap since the one before, so take the worst.
+    gaps = [e["max_loop_gap_ms"] for e in bench.srv.find("HELLO", 0, proxy=bench.proxy)]
     return {
         "format": RECORD_FORMAT,
-        "date": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+        "date": bench.started_at.isoformat(timespec="seconds"),
         "commit": git("rev-parse", "HEAD"),
         "dirty": bool(git("status", "--porcelain")),
         "mode": "simulated" if args.simulate else "rig",
         "region": hello.get("region"),
         "server": {"port": args.port},
         "transmitter": radio.info(),
-        "proxy": {"proxy_id": bench.proxy, "fw": hello.get("fw"), "max_loop_gap_ms": hello.get("max_loop_gap_ms"),
+        "proxy": {"proxy_id": bench.proxy, "fw": hello.get("fw"), "max_loop_gap_ms": max(gaps, default=None),
                   "api": proxy_dev.info() if proxy_dev else None},
         "sensor": ({"code_dev_eui": cs.qr_parse(args.sensor_code)["dev_eui"] if args.sensor_code else None,
                     "api": sensor.info() if sensor else None} if args.sensor_code or sensor else None),
@@ -817,6 +848,8 @@ def main() -> int:
     ap.add_argument("--sensor-api-key")
     ap.add_argument("--sensor-code", metavar="CS:1:...", help="the cs_sensor's pairing code: adds the sensor scenario")
     ap.add_argument("--sensor-wait", type=float, default=120, help="seconds to wait for the cs_sensor's uplink")
+    ap.add_argument("--state", metavar="FILE", help="the test server's --state file, kept across runs, so a "
+                                                    "cs_sensor paired with the bench server stays paired")
     ap.add_argument("--port", type=int, help="UDP port for the test server, as in the proxy's server: config "
                                              "(default 47800; free one with --simulate)")
     ap.add_argument("--key", help="the proxy's key, 32 hex digits (default with --simulate: a fresh one)")
@@ -849,7 +882,8 @@ def main() -> int:
 
     tmp = tempfile.mkdtemp(prefix="cs-bench-")
     log_path = os.path.join(tmp, "server.log")
-    extra = ["--device", f"{BENCH_EUI.hex()}:{args.bench_root.hex()}", "--state", os.path.join(tmp, "state.json")]
+    extra = ["--device", f"{BENCH_EUI.hex()}:{args.bench_root.hex()}",
+             "--state", args.state or os.path.join(tmp, "state.json")]
     if args.sensor_code:
         extra += ["--device", args.sensor_code]
     print(f"bench: test server on UDP {args.port}, log {log_path}", flush=True)

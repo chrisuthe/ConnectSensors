@@ -64,9 +64,17 @@ The rig has three Heltec WiFi LoRa 32 V3 boards and a laptop:
    ```
 
    `--proxy` is optional and only records the proxy's ESPHome version. To include a
-   real sensor, add `--sensor-code CS:1:...` (its pairing code) and optionally
-   `--sensor lora-door.local`. The run then waits for one uplink from the sensor, so
-   open or close the door when it asks. A pass takes about two minutes.
+   real sensor, add `--sensor-code CS:1:...` (its pairing code), `--state
+   bench-pairings.json`, and optionally `--sensor lora-door.local`. The run then waits
+   for one uplink from the sensor, so open or close the door, or short-press PRG,
+   when it asks. The sensor must be paired with the bench server, because a sensor
+   paired with another server sends frames this one cannot open. Pairing it with the
+   bench server takes it away from the rig's server. Factory-reset it (hold PRG for
+   10 s), then short-press PRG while the run waits. Do this only with a sensor no
+   other work needs, and pair it back with the rig's server afterwards. Don't give
+   `--state` a copy of the rig server's file instead: the two servers' downlink
+   counters would diverge, and the sensor would refuse the rig server's downlinks.
+   `--state` keeps the bench pairing across runs. A pass takes about two minutes.
    `--scenarios rx1,rx2` runs a subset, and `--repeat N` (default 3) sets how many
    downlinks are measured in each window.
 
@@ -105,7 +113,7 @@ The rig has three Heltec WiFi LoRa 32 V3 boards and a laptop:
 | `rx2` | The same with the server in RX2 (`window rx2`) |
 | `retry` | The same frame again after 2.3 s, past the proxy's dedupe and the server's copy window, is answered again (07 section 4) |
 | `dedupe` | The same frame twice back to back is forwarded once, and the proxy's `duplicates` counter rises by one |
-| `rate-limit` | A burst of 8 frames from one tag is cut to the per-device burst of 5 (plus refill), and `rate_limited` counts the rest |
+| `rate-limit` | A burst of 10 frames from one tag, sent back to back, is cut to the per-device burst of 5 (plus refill), and `rate_limited` counts the rest |
 | `fault-bad-mac`, `fault-stale-seq`, `fault-wrong-boot` | A downlink with a bad MAC, a seq the proxy already holds, or another boot's `boot_id` is dropped silently: no `TX_RESULT` and nothing on air (05 section 3.2) |
 | `fault-uplink-frame` | A `DOWNLINK` carrying an uplink-type frame draws `INVALID` and nothing on air |
 | `fault-late` | A `DOWNLINK` that arrives after its window draws `TOO_LATE` |
@@ -132,8 +140,10 @@ then run `--scenarios rx1 --repeat 70` and expect the last ones to fail with
 
 The transmitter timestamps two events with `micros()`:
 
-- **TX done:** `send_packet` blocks until the radio raises TX_DONE, and the
-  timestamp is taken as it returns.
+- **TX done:** the script starts the send without blocking, polls the DIO1 pin
+  until the radio raises TX_DONE, and takes the timestamp then. A blocking send
+  would return later: it first puts the radio back into RX, which waits for the
+  TCXO (5 ms configured) and adds over a millisecond.
 - **RX:** taken first thing in `on_packet`.
 
 For each downlink, the runner computes
@@ -158,9 +168,9 @@ How exact this is, in plain words:
   *large*, never too small. The transmitter skips its screen redraws for 3.5 s
   after each transmission so they cannot land in a window. API traffic during a
   window, such as a state push, can still add a little.
-- **TX done is a little late too.** `send_packet` polls DIO1 and then clears the
-  IRQ over SPI, a few tens of microseconds. That makes the offset slightly too
-  *small*.
+- **TX done is a few microseconds late.** That is the time between DIO1 rising
+  and the polling loop seeing it. It makes the offset slightly too *small*, by far
+  less than the tolerance.
 - **Decoding takes time.** The SX1262 raises RX_DONE a fraction of a symbol after
   the frame ends on air. On `US915` (SF9, 500 kHz) a symbol is 1.024 ms. The same
   lag applies at the proxy, whose RX-done timestamp is the reference for its
@@ -193,13 +203,13 @@ and `--no-record` skips it. With `--simulate`, a record is written only when
 | Field | Contents |
 |---|---|
 | `format` | `1` |
-| `date` | Start of the record, UTC, ISO 8601 |
+| `date` | Start of the run, UTC, ISO 8601 |
 | `commit`, `dirty` | `git rev-parse HEAD` of the checkout, and whether it had uncommitted changes |
 | `mode` | `rig` or `simulated` |
 | `region` | The proxy's region profile, from its HELLO |
 | `server` | `{"port": ...}` |
 | `transmitter` | The transmitter's ESPHome device info: `name`, `esphome_version`, `compilation_time`, `project_name`, `project_version`, `model`, `mac_address`. In simulation: `{"kind": "simulated", ...}` |
-| `proxy` | `proxy_id` and `fw` (`cs_proxy <version>`) from its HELLO, `max_loop_gap_ms`, and `api`: its device info with `--proxy`, else `null` |
+| `proxy` | `proxy_id` and `fw` (`cs_proxy <version>`) from its HELLO, `max_loop_gap_ms` (the worst any HELLO in the run reported), and `api`: its device info with `--proxy`, else `null` |
 | `sensor` | `null`, or the `--sensor-code`'s `code_dev_eui` and `api`: device info with `--sensor` |
 | `esphome_version` | The transmitter's ESPHome version, else the proxy's |
 | `counters` | The proxy's HELLO counters (`heard`, `forwarded`, `duplicates`, `invalid`, `rate_limited`, `tx_ok`, `tx_failed`) at `start` and `end` |
