@@ -59,6 +59,29 @@ class Watched:
                     return None
                 self._cond.wait(left)
 
+    def wait_latest(self, pattern: str, good: str, timeout: float = 5.0, since: int = 0,
+                    settle: float = 1.0) -> bool:
+        """Wait until the newest line matching pattern also matches good, and has for
+        settle seconds: for a state that can flip back, such as a proxy withdrawing
+        downlinks after a loop stall, which it reports on the pass after the stall."""
+        rx, ok = re.compile(pattern), re.compile(good)
+        deadline = time.monotonic() + timeout
+        good_since = None
+        with self._cond:
+            while True:
+                latest = next((x for x in reversed(self.lines[since:]) if rx.search(x)), None)
+                now = time.monotonic()
+                if latest is not None and ok.search(latest):
+                    good_since = good_since or now
+                    if now - good_since >= settle:
+                        return True
+                else:
+                    good_since = None
+                left = deadline - now
+                if left <= 0 or (self.proc.poll() is not None and not self._reader.is_alive()):
+                    return False
+                self._cond.wait(min(left, 0.1))
+
     def send(self, line: str) -> None:
         self.proc.stdin.write(line + "\n")
         self.proc.stdin.flush()

@@ -80,8 +80,11 @@ def main() -> int:
         check(proxy.wait_for(r"^ready$") is not None, "host proxy up")
 
         # Boot: HELLO, HELLO_REQUEST, HELLO echoing the nonce, SERVER_STATUS.
-        check(srv.wait_for(rf"{PROXY_ID} HELLO cs_proxy host, US915 918.5 MHz SF9 500 kHz.*downlink yes")
+        check(srv.wait_for(rf"{PROXY_ID} HELLO cs_proxy host, US915 918.5 MHz SF9 500 kHz")
               is not None, "server logs the proxy's HELLO")
+        # A loop stall on a slow machine withdraws downlinks for 10 s; the HELLO after it offers them again.
+        check(srv.wait_latest(rf"{PROXY_ID} HELLO ", r"downlink yes", timeout=20),
+              "the proxy's latest HELLO offers downlinks")
         check(proxy.wait_for(r"^connected 1$") is not None, "SERVER_STATUS connects the proxy")
 
         # Uplinks from the frame vectors, in counter order.

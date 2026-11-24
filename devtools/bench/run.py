@@ -521,8 +521,18 @@ class Bench:
             self.radio.transmit(self.fresh(cs.T_HEARTBEAT))
         self.check(ev is not None, "the proxy opens a session with the server", fatal=True)
         self.proxy = ev["proxy"]
-        hello = self.srv.wait("HELLO", since, 10, proxy=self.proxy)
-        self.check(hello is not None and hello["downlink"], "the proxy's HELLO offers downlinks", fatal=True)
+        # The newest HELLO must offer downlinks, and keep doing so for a second: a loop
+        # stall withdraws them for 10 s, reported in a HELLO on the pass after the stall.
+        deadline, hello, good_since = time.monotonic() + 20, None, None
+        while time.monotonic() < deadline:
+            hellos = self.srv.find("HELLO", since, proxy=self.proxy)
+            hello = hellos[-1] if hellos else None
+            if hello is None or not hello["downlink"]:
+                good_since = None
+            elif time.monotonic() - (good_since := good_since or time.monotonic()) >= 1.0:
+                break
+            time.sleep(0.1)
+        self.check(hello is not None and hello["downlink"], "the proxy's latest HELLO offers downlinks", fatal=True)
         self.hello = hello
 
     # ---------------------------------------------------------- the scenarios
