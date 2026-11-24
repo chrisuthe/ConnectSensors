@@ -47,9 +47,10 @@ Homes connect with `devtools/cs_testserver.py --mailbox wss://mailbox.example:84
 |---|---|---|
 | `--host NAME` | required | A host name clients use in the server's URL. Repeatable. The greeting signs it (09 section 12.3); a client that connected under any other name rejects the server. Use lowercase, with the A-label (`xn--`) form for internationalized names. |
 | `--listen`, `--port` | `0.0.0.0`, `8443` | Where to listen. |
+| `--trusted-proxy CIDR` | none | Serve plain `ws://` to a TLS-terminating reverse proxy in this range, and refuse every other peer. Repeatable. Not with `--tls-cert` or `--insecure-dev`. See [Behind a reverse proxy](#behind-a-reverse-proxy). |
 | `--key-file FILE` | none | The server key's seed, in hex. Created on first start if missing. Without it the server makes a new key on every start, and every client treats it as a new server. |
 | `--members FILE` | none | Admit only these client public keys, one hex key per line (`#` starts a comment). This gives a private (mode 2) or account-based (mode 3) server. |
-| `--admit-per-hour N` | 20 | Without `--members`: new client keys admitted per source address per hour (mode 4, 09 section 5.4). |
+| `--admit-per-hour N` | 20 | Without `--members`: new client keys admitted per source address per hour (mode 4, 09 section 5.4). Behind a proxy, the address the proxy reports. |
 | `--reg-burst`, `--reg-per-hour` | 2048, 512 | Registration entries per owner key: an initial burst, then a steady rate. |
 | `--reg-max-live` | 4096 | Live registrations per owner key. |
 | `--publish-rate`, `--publish-burst` | 5, 20 | Publishes per second per client key. |
@@ -63,12 +64,94 @@ gets `RATE_LIMITED` and is not acted on.
 
 09 section 12.1 requires TLS 1.3, and clients validate the certificate against
 the URL's host. Give the certificate chain and key with `--tls-cert` and
-`--tls-key`. The server refuses to start without them, unless you pass
-`--insecure-dev`, which serves plain `ws://`. That mode exists for tests on one
-machine (`tests/federation/`). Never use it anywhere else.
+`--tls-key`, or let a reverse proxy terminate TLS (next section). The server
+refuses to start without one of the two, unless you pass `--insecure-dev`, which
+serves plain `ws://` to anyone. That mode exists for tests on one machine
+(`tests/federation/`). Never use it anywhere else.
 
 A client that pins a certificate instead of using the public PKI passes it with
 `cs_testserver.py --mailbox-ca cert.pem`.
+
+## Behind a reverse proxy
+
+A reverse proxy you control, such as Nginx Proxy Manager or Caddy, can hold the
+certificate and terminate TLS, and pass the WebSocket to `cs-mailbox` over plain
+`ws://` (09 section 12.1). Clients still connect to `wss://mailbox.example/` and
+see nothing different.
+
+```sh
+cs-mailbox --host mailbox.example --trusted-proxy 172.30.0.0/24 --key-file server.key
+```
+
+With `--trusted-proxy`:
+
+- Only peers in the given ranges may connect. Anyone else gets HTTP 403 before
+  the WebSocket handshake, logged at most once a minute per address.
+- Admission counts each client by the address the proxy reports: the last
+  `X-Forwarded-For` entry, which the proxy appended, else `X-Real-IP`. A
+  malformed value, or none, counts against the proxy's own address. These
+  headers are never read from anyone else.
+- The `Host` header still picks which `--host` name the greeting signs, so give
+  `--host` the public name, and the proxy must pass `Host` through (both below do).
+- The startup line reads `Listening on ws://... behind trusted proxies ...`.
+
+The hop from the proxy to `cs-mailbox` carries plain WebSocket, so keep it
+private: loopback, a container network that holds only the two, or a LAN
+segment no one else uses. Do not publish the mailbox's port, and make the trusted
+range as narrow as you can: everything in it may connect without TLS.
+
+Idle connections stay open through the proxy: the server pings every client
+every 30 seconds, well inside nginx's 60-second default read timeout and Nginx
+Proxy Manager's 90 seconds.
+
+### Nginx Proxy Manager
+
+Run `cs-mailbox` on a Docker network shared with NPM and nothing else, without
+publishing its port:
+
+```sh
+docker network create --subnet 172.30.0.0/24 mailbox
+docker network connect mailbox nginx-proxy-manager      # your NPM container's name
+docker run -d --name cs-mailbox --network mailbox -v cs-mailbox:/data cs-mailbox \
+    --host mailbox.example --trusted-proxy 172.30.0.0/24
+```
+
+Then in NPM, under Hosts, Proxy Hosts, Add Proxy Host:
+
+1. **Details:** Domain Names `mailbox.example`; Scheme `http`; Forward
+   Hostname / IP `cs-mailbox`; Forward Port `8443`; turn on **Websockets
+   Support**.
+2. **SSL:** request a Let's Encrypt certificate for the name (or pick one you
+   have), and turn on **Force SSL**.
+
+Homes then use `--mailbox wss://mailbox.example/`.
+
+If NPM runs on another machine on your LAN, forward to the mailbox host's address
+instead, and trust only NPM's address: `--trusted-proxy 192.168.1.20/32`.
+
+NPM passes the public name through as `Host`, and sets `X-Forwarded-For` and
+`X-Real-IP`. It also trusts an incoming `X-Real-IP` from private addresses
+(10/8, 172.16/12, 192.168/16), so a client reaching NPM from one of those, such
+as your own LAN, can choose the address it is counted by. Clients from the
+internet cannot. If NPM's access log shows a private address for internet
+clients (some Docker port setups do that), every client can, and per-address
+admission means nothing: use `--members`, or fix the port setup so NPM sees real
+client addresses.
+
+### Caddy
+
+With Caddy on the same machine, which obtains the certificate itself and passes
+WebSockets, `Host` and `X-Forwarded-For` through by default:
+
+```caddyfile
+mailbox.example {
+	reverse_proxy 127.0.0.1:8443
+}
+```
+
+```sh
+cs-mailbox --host mailbox.example --listen 127.0.0.1 --trusted-proxy 127.0.0.1/32 --key-file server.key
+```
 
 ## Limits
 
@@ -98,7 +181,8 @@ connection. Nothing survives a restart: the server then picks a new
   second (default 50, burst 100); beyond that a message gets `RATE_LIMITED`
   before its signature is checked. A client that leaves 256 server messages
   unread is closed with code 1008.
-- New keys are counted per source address, and per /64 for IPv6.
+- New keys are counted per source address, and per /64 for IPv6. Behind a
+  trusted proxy, that is the address the proxy reports.
 - A request is checked against the request rate whether or not it passes the
   earlier checks, so failed requests count. `RATE_LIMITED` is still reported only
   for a request that passed checks 1 to 4 (09 section 7.3).
@@ -108,5 +192,5 @@ connection. Nothing survives a restart: the server then picks a new
 ## Tests
 
 ```sh
-make -C tests/federation   # conformance against 09, then two homes through one mailbox
+make -C tests/federation   # conformance against 09, trusted-proxy mode, then two homes through one mailbox
 ```
