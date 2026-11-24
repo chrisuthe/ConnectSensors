@@ -8,6 +8,16 @@
 # The buttons are API buttons (Home Assistant or the ESPHome dashboard). The
 # board's OLED shows the last frame sent and the last one heard, so a proxy's
 # downlink shows up on the board without a serial console.
+#
+# For the bench runner (devtools/bench), the API action send_hex transmits any
+# bytes, and two text sensors time each transmission and reception in micros():
+#   TX timing: "<n> <tx_done_us> <len> ok|fail"
+#   RX timing: "<n> <rx_us> <rssi> <snr> <hex>"
+# tx_done_us is taken at the DIO1 edge that signals TX done; rx_us when
+# on_packet runs, which is the loop pass after RX done. The host's on-air offset
+# of a downlink is rx_us - tx_done_us - downlink airtime; devtools/bench/README.md
+# has the method and its uncertainty. Both are also logged ("TX ... done_us" and
+# "RX ... at_us").
 
 substitutions:
   name: lora-test-tx
@@ -34,6 +44,16 @@ logger:
   hardware_uart: UART0
 
 api:
+  actions:
+    # Transmit any frame, given as hex: devtools/bench sends fresh frames with it.
+    - action: send_hex
+      variables:
+        data: string
+      then:
+        - script.execute:
+            id: transmit
+            hex: !lambda return data.str();
+            what: "send_hex"
 
 ota:
   - platform: esphome
@@ -49,7 +69,7 @@ sx126x:
   cs_pin: GPIO8
   rst_pin: GPIO12
   busy_pin: GPIO13
-  dio1_pin: GPIO14
+  dio1_pin: GPIO14  # also read directly by the transmit script
   rf_switch: true
   tcxo_voltage: 1_8V
   tcxo_delay: 5ms
@@ -66,6 +86,8 @@ sx126x:
   on_packet:
     then:
       - lambda: |-
+          // First, before anything that takes time: the loop pass after RX done.
+          const uint32_t at = micros();
           char hex[2 * 255 + 1];
           ESP_LOGI("test_tx", "heard %u bytes rssi %.1f snr %.1f: %s", (unsigned) x.size(), rssi, snr,
                    format_hex_to(hex, x));
@@ -76,48 +98,45 @@ sx126x:
           id(rx_last) = t != nullptr && t[0] != '?' ? t : "non-CS";
           id(rx_rssi) = rssi;
           id(rx_snr) = snr;
+          id(rx_timing).publish_state(str_sprintf("%d %" PRIu32 " %.1f %.1f %s", id(rx_count), at, rssi, snr, hex));
+          ESP_LOGI("test_tx", "RX %d at_us %" PRIu32, id(rx_count), at);
       - script.execute: screen_wake
 
 button:
   - platform: template
     name: "Send DATA_CONFIRMED (door open)"
     on_press:
-      - sx126x.send_packet:
-          data: [0xC5, 0x12, 0xB0, 0x8E, 0x8A, 0x43, 0x67, 0xA5, 0xB5, 0xBA, 0x00, 0x00, 0x00, 0x03, 0x78, 0x74, 0x21, 0xE7, 0x2A, 0x60, 0xF9, 0x66, 0x57, 0x3F, 0x9C, 0xDB]
       - script.execute:
-          id: note_sent
+          id: transmit
+          hex: "c512b08e8a4367a5b5ba00000003787421e72a60f966573f9cdb"
           what: "DATA_CONF"
   - platform: template
     name: "Send HEARTBEAT"
     on_press:
-      - sx126x.send_packet:
-          data: [0xC5, 0x13, 0xB0, 0x8E, 0x8A, 0x43, 0x67, 0xA5, 0xB5, 0xBA, 0x00, 0x00, 0x00, 0x04, 0xBB, 0xA7, 0x00, 0x2D, 0x94, 0xC1, 0xC3, 0x96, 0x0A, 0x5F, 0xA5, 0x18, 0x55, 0xC1, 0x9A]
       - script.execute:
-          id: note_sent
+          id: transmit
+          hex: "c513b08e8a4367a5b5ba00000004bba7002d94c1c3960a5fa51855c19a"
           what: "HEARTBEAT"
   - platform: template
     name: "Send JOIN"
     on_press:
-      - sx126x.send_packet:
-          data: [0xC5, 0x15, 0x22, 0x2B, 0x42, 0xCE, 0xC0, 0xE1, 0x4A, 0xE7, 0x00, 0x00, 0x00, 0x01, 0xFD, 0xA8, 0xF8, 0x87, 0xC8, 0x9E, 0xCA, 0xF1, 0x06, 0x86, 0xA8, 0x41, 0xD3, 0xC6, 0x06, 0xAE, 0xD6, 0x33, 0x9A, 0x16, 0x9C, 0xE0, 0x7F, 0xA7, 0x45, 0x01, 0xE9, 0xC6, 0xEA, 0xB0, 0x12, 0xCB, 0xFC, 0x7B, 0x74, 0x9C, 0x1E, 0x82, 0x38, 0x03, 0x18]
       - script.execute:
-          id: note_sent
+          id: transmit
+          hex: "c515222b42cec0e14ae700000001fda8f887c89ecaf10686a841d3c606aed6339a169ce07fa74501e9c6eab012cbfc7b749c1e82380318"
           what: "JOIN"
   - platform: template
     name: "Send a downlink frame (proxy must ignore)"
     on_press:
-      - sx126x.send_packet:
-          data: [0xC5, 0x18, 0xB0, 0x8E, 0x8A, 0x43, 0x67, 0xA5, 0xB5, 0xBA, 0x00, 0x00, 0x00, 0x02, 0x6F, 0xFD, 0x69, 0x57, 0xEE, 0xD9, 0x87, 0xAF, 0x59, 0x7D, 0x32, 0x9C, 0x7F, 0x52, 0xE5, 0xE4, 0xBE]
       - script.execute:
-          id: note_sent
+          id: transmit
+          hex: "c518b08e8a4367a5b5ba000000026ffd6957eed987af597d329c7f52e5e4be"
           what: "DOWNLINK"
   - platform: template
     name: "Send a non-ConnectSensors packet (proxy must ignore)"
     on_press:
-      - sx126x.send_packet:
-          data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18]
       - script.execute:
-          id: note_sent
+          id: transmit
+          hex: "0102030405060708090a0b0c0d0e0f101112131415161718"
           what: "non-CS"
 
 # --- Status screen: SSD1306 128x64 on the board, as on the proxy ---
@@ -138,6 +157,14 @@ text_sensor:
   - platform: wifi_info
     ip_address:
       id: ip_addr
+  - platform: template
+    id: tx_timing
+    name: "TX timing"
+    update_interval: never
+  - platform: template
+    id: rx_timing
+    name: "RX timing"
+    update_interval: never
 
 # Vext (active low) powers the OLED and its I2C pull-ups, so it must come up
 # before the I2C bus (priority 1000) or the bus scan sees SCL held low.
@@ -164,6 +191,8 @@ font:
 globals:
   - id: tx_count
     type: int
+  - id: tx_done_us
+    type: uint32_t
   - id: tx_last
     type: std::string
     initial_value: '"nothing yet"'
@@ -180,13 +209,58 @@ globals:
     type: std::vector<std::string>
 
 script:
-  - id: note_sent
+  # Every transmission goes through here, so each one is timed the same way.
+  - id: transmit
     parameters:
+      hex: string
       what: string
     then:
       - lambda: |-
-          id(tx_count) += 1;
-          id(tx_last) = what;
+          const size_t len = hex.size() / 2;
+          uint8_t frame[255];
+          if (hex.size() % 2 != 0 || len == 0 || len > sizeof(frame) || !parse_hex(hex, frame, len)) {
+            ESP_LOGW("test_tx", "%s: expected 2 to 510 hex digits", what.c_str());
+            return;
+          }
+          // The blocking send returns only after the radio is put back into RX, which
+          // waits for the TCXO: over a millisecond after TX done. So send without
+          // blocking, time the DIO1 edge here, and report from the completion.
+          struct Done : sx126x::SX126xTransmitListener {
+            uint32_t at{0};
+            size_t len{0};
+            bool finished{false};
+            std::string what;
+            void on_transmit_complete(sx126x::SX126xError result) override {
+              this->finished = true;
+              const bool ok = result == sx126x::SX126xError::SX126X_ERROR_NONE;
+              id(tx_count) += 1;
+              id(tx_done_us) = this->at;
+              id(tx_last) = this->what;
+              id(tx_timing).publish_state(
+                  str_sprintf("%d %" PRIu32 " %u %s", id(tx_count), this->at, (unsigned) this->len, ok ? "ok" : "fail"));
+              ESP_LOGI("test_tx", "TX %d %s, %u bytes, done_us %" PRIu32 ": %s", id(tx_count), this->what.c_str(),
+                       (unsigned) this->len, this->at, ok ? "ok" : "failed");
+            }
+          };
+          static Done done;
+          const auto err = id(lora).start_transmit_async(&done, frame, len, 4000);
+          if (err != sx126x::SX126xError::SX126X_ERROR_NONE) {
+            ESP_LOGW("test_tx", "%s: radio refused the send (%d)", what.c_str(), (int) err);
+            id(tx_count) += 1;
+            id(tx_timing).publish_state(str_sprintf("%d 0 %u fail", id(tx_count), (unsigned) len));
+            return;
+          }
+          done.len = len;
+          done.what = what;
+          done.finished = false;
+          // DIO1 carries only TX_DONE and the timeout while sending.
+          const uint32_t start = millis();
+          while (gpio_get_level(GPIO_NUM_14) == 0 && millis() - start < 4000)
+            App.feed_wdt();
+          done.at = micros();
+          // Finish now rather than in a later pass, so the next send finds the radio free.
+          while (!done.finished && millis() - start < 4100)
+            id(lora).loop();
       - script.execute: screen_wake
   # Sleeps after 10 minutes so a forgotten bench board does not burn in; any
   # send, any packet heard, or PRG wakes it.
@@ -204,6 +278,10 @@ interval:
     then:
       - lambda: |-
           if (!id(oled).is_on())
+            return;
+          // A redraw holds the loop for milliseconds, which would delay on_packet and
+          // skew the timing of a downlink; skip it while RX1 and RX2 may be arriving.
+          if (id(tx_count) > 0 && micros() - id(tx_done_us) < 3500000)
             return;
           std::vector<std::string> lines{
               "test tx",

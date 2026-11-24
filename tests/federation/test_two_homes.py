@@ -227,6 +227,9 @@ def main() -> int:
               "homes B and C connected")
         procs["proxy"] = proxy = Watched([HOST_PROXY, "--port", str(port_b), "--key", KEY], stdin=True)
         check(proxy.wait_for(r"^connected 1$") is not None, "B's host proxy connected")
+        # Connected is not enough: a loop stall on a slow machine withdraws downlinks for
+        # 10 s, and B publishes without DOWNLINK until a HELLO offers them again.
+        check(b.wait_latest(r" HELLO cs_proxy host", r"downlink yes", timeout=20), "B's proxy offers downlinks")
 
         # 1. A confirmed uplink heard only by B's proxy reaches A, and A answers in RX2 through it.
         fcnt = 2

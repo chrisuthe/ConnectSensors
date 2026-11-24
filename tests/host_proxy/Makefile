@@ -11,6 +11,8 @@ host_proxy: host_proxy.cpp $(SOURCES) $(HEADERS)
 
 run: host_proxy
 	python3 -I test_host_proxy.py
+	# The bench runner's scenarios, with this program standing in for the rig.
+	python3 -I ../../devtools/bench/run.py --simulate --repeat 1
 
 clean:
 	rm -f host_proxy

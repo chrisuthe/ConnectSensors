@@ -14,6 +14,14 @@ decrypted and their confirmed ones answered, with or without --ack. They are
 found through a tag table (07 section 3); a JOIN, or a SYNC past the table's
 blocks, falls back to trial decryption, at most 50 a minute (07 section 4).
 
+--json prints one JSON object per event on stdout (HELLO, UPLINK, DOWNLINK,
+TX_RESULT, PAIRED and so on; see devtools/bench/README.md) and moves the human
+log to stderr. --fault makes every downlink the server answers with faulty, so a
+proxy's checks can be tested on the bench: bad-mac, stale-seq and wrong-boot must
+be dropped silently, uplink-frame draws INVALID, late draws TOO_LATE, and busy
+sends a second copy that draws BUSY. On stdin, `window rx1|rx2`, `fault NAME|none`
+and `hello` (ask every proxy for a HELLO, to read its counters) change these at run time.
+
 --queue-nop N, or typing `nop [N]` on stdin, queues NOP commands for every paired
 --device. They go out one per downlink, so PENDING stays set while more remain
 and the sensor's follow-up heartbeats (08 section 7) drain the queue. A command
@@ -34,6 +42,7 @@ them transmit. The server logs a warning when that happens.
     python3 devtools/cs_testserver.py --device DEV_EUI:K_ROOT        # or by hex dev_eui and root key
     python3 devtools/cs_testserver.py --device ... --state pairings.json  # keep sessions across restarts
     python3 devtools/cs_testserver.py --device ... --window rx2 --queue-nop 3  # exercise PENDING
+    python3 devtools/cs_testserver.py --ack --json --fault late        # events as JSON, late downlinks
 
 Federation (spec 09) through one or more cs-mailbox servers (mailbox/), as a home
 that owns its --device sensors and, with --publish, shares its proxies' coverage:
@@ -72,10 +81,21 @@ TYPE_NAMES = {0x1: "DATA", 0x2: "DATA_CONFIRMED", 0x3: "HEARTBEAT", 0x4: "HEARTB
 CONFIRMED = {0x2, 0x4, 0x6}  # JOIN needs a key exchange; not answered here
 TX_RESULTS = {0: "SENT", 1: "TOO_LATE", 2: "BUSY", 3: "DUTY_CYCLE", 4: "NOT_CAPABLE", 5: "INVALID",
               6: "RADIO_ERROR"}
+FAULTS = ("bad-mac", "stale-seq", "wrong-boot", "uplink-frame", "late", "busy")
+TX_WINDOW_US = 40_000  # the proxy's late tolerance (01 section 4)
+
+LOG_STREAM = sys.stdout  # stderr with --json, so stdout carries only events
+JSON_EVENTS = False
 
 
 def log(msg: str) -> None:
-    print(time.strftime("%H:%M:%S ") + msg, flush=True)
+    print(time.strftime("%H:%M:%S ") + msg, file=LOG_STREAM, flush=True)
+
+
+def emit(event: str, **fields) -> None:
+    """One --json event: {"event": ..., "t": unix time, ...fields}."""
+    if JSON_EVENTS:
+        print(json.dumps({"event": event, "t": round(time.time(), 3), **fields}), flush=True)
 
 
 class TestDevice:
@@ -275,6 +295,7 @@ class Proxy:
         self.addr = None
         self.hello: dict | None = None
         self.hello_at = 0.0
+        self.status_seq = 0  # the last SERVER_STATUS seq, which the proxy holds: --fault stale-seq replays it
 
 
 def describe_payload(ftype: int, pt: bytes) -> str:
@@ -865,6 +886,10 @@ def main() -> int:
     ap.add_argument("--queue-nop", type=int, default=0, metavar="N",
                     help="queue N NOP commands for each --device, sent one per downlink with PENDING "
                          "(type `nop [N]` on stdin to queue more)")
+    ap.add_argument("--json", action="store_true",
+                    help="one JSON object per event on stdout; the human log goes to stderr")
+    ap.add_argument("--fault", choices=FAULTS,
+                    help="make every downlink answering an uplink faulty, to test a proxy's checks")
     fg = ap.add_argument_group("federation (spec 09); needs: pip install websockets")
     fg.add_argument("--mailbox", action="append", default=[], metavar="URL",
                     help="a mailbox server's wss:// URL (repeatable): register the --device sensors' tags there "
@@ -888,6 +913,9 @@ def main() -> int:
         return 2
     if (args.publish or args.federated_downlinks) and not args.mailbox:
         ap.error("--publish and --federated-downlinks need --mailbox")
+    global LOG_STREAM, JSON_EVENTS
+    if args.json:
+        LOG_STREAM, JSON_EVENTS = sys.stderr, True
 
     key = bytes.fromhex(args.key) if args.key else secrets.token_bytes(16)
     if len(key) != 16:
@@ -932,23 +960,62 @@ def main() -> int:
     downlink_proxies: set[bytes] = set()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", args.port))
-    log(f"Listening on UDP {args.port}; downlinks {'on (' + args.window + ')' if args.ack else 'off'}")
+    log(f"Listening on UDP {args.port}; downlinks {'on (' + args.window + ')' if args.ack else 'off'}"
+        + (f"; fault {args.fault}" if args.fault else ""))
+    emit("LISTENING", port=args.port, ack=args.ack, window=args.window, fault=args.fault,
+         devices=[d.dev_eui.hex() for d in real])
 
     def send(p: Proxy, msg_type: int, body: bytes) -> int:
         seq = p.link.next_seq() & 0xFFFFFFFF
         sock.sendto(cs.envelope(key, msg_type, p.proxy_id, p.link.boot_id, seq, body), p.addr)
         return seq
 
-    def send_downlink(p: Proxy, rx_time: int, tx_offset: int, frame: bytes) -> int:
-        """A downlink of our own; a federated one may not displace it (09 section 7.4)."""
+    def send_downlink(p: Proxy, rx_time: int, tx_offset: int, frame: bytes, uplink: bytes | None = None,
+                      **info) -> int | None:
+        """A downlink of our own; a federated one may not displace it (09 section 7.4).
+
+        With --fault, a downlink answering uplink is sent faulty, and a late one is
+        sent later: then the seq is None here and in the DOWNLINK event it is real."""
+        fault = args.fault if uplink is not None else None
+        if fault == "uplink-frame":
+            frame = uplink
         if fed is not None:
             fed.local_downlink(p.proxy_id, rx_time, tx_offset, len(frame),
                                p.hello["region"] if p.hello else args.region)
-        return send(p, cs.M_DOWNLINK, cs.downlink_msg_body(rx_time, tx_offset, frame))
+        region = p.hello["region"] if p.hello and p.hello["region"] in cs.REGIONS else args.region
+        event = {"proxy": p.proxy_id.hex(), "ref_rx_time_us": rx_time, "tx_offset_us": tx_offset,
+                 "frame": frame.hex(), "airtime_us": round(cs.region_airtime_ms(region, len(frame)) * 1000),
+                 "fault": fault, **info}
+        body = cs.downlink_msg_body(rx_time, tx_offset, frame)
+        if fault == "late":
+            # Past tx_at plus the proxy's window, so it must answer TOO_LATE.
+            def later() -> None:
+                emit("DOWNLINK", seq=send(p, cs.M_DOWNLINK, body), **event)
+            asyncio.get_running_loop().call_later((tx_offset + TX_WINDOW_US) / 1e6 + 0.1, later)
+            log(f"{p.proxy_id.hex()}: fault late: DOWNLINK held past its window")
+            return None
+        if fault in ("bad-mac", "stale-seq", "wrong-boot"):
+            seq = p.status_seq if fault == "stale-seq" else p.link.next_seq() & 0xFFFFFFFF
+            boot = p.link.boot_id ^ 0x5A5A5A5A if fault == "wrong-boot" else p.link.boot_id
+            msg = bytearray(cs.envelope(key, cs.M_DOWNLINK, p.proxy_id, boot, seq, body))
+            if fault == "bad-mac":
+                msg[-1] ^= 0x01
+            sock.sendto(bytes(msg), p.addr)
+            log(f"{p.proxy_id.hex()}: fault {fault}: DOWNLINK seq {seq} sent faulty; the proxy must drop it")
+        else:
+            seq = send(p, cs.M_DOWNLINK, body)
+        emit("DOWNLINK", seq=seq, **event)
+        if fault == "busy":
+            # A second downlink for the same slot: the proxy must refuse it with BUSY.
+            seq2 = send(p, cs.M_DOWNLINK, body)
+            emit("DOWNLINK", seq=seq2, **{**event, "copy_of": seq})
+            log(f"{p.proxy_id.hex()}: fault busy: DOWNLINK seq {seq2} repeats seq {seq}")
+        return seq
 
-    offset = 1_000_000 if args.window == "rx1" else 3_000_000
+    def rx_offset() -> int:
+        return 1_000_000 if args.window == "rx1" else 3_000_000
 
-    def real_uplink(p: Proxy, pid: bytes, line: str, frame: bytes, h, rx_time: int, now: int) -> bool:
+    def real_uplink(p: Proxy, pid: bytes, line: str, frame: bytes, h, rx_time: int, now: int, ev: dict) -> bool:
         """A registered sensor's uplink: pairing (04 section 4.4) or normal traffic."""
         devices.refresh(now)
         found = devices.identify(frame, h)
@@ -959,17 +1026,21 @@ def main() -> int:
         got = dev.uplinks.receive(frame, int(time.monotonic() * 1000))
         if got["result"] == "copy":
             log(line + f" {eui}: copy of the same transmission")
+            emit("UPLINK", **ev, device=eui, result="copy")
             if fed is not None and fed.is_pending(frame):
                 # Our own proxy heard it before the federated request went out: it
                 # answers instead (07 section 6.3).
                 dl = fed.owner_pending[cs.frame_key(frame)]["answer"]["downlink"]
                 fed.answered_locally(frame)
-                send_downlink(p, rx_time, offset, dl)
+                send_downlink(p, rx_time, rx_offset(), dl, answering=h.fcnt, device=eui, what="ack",
+                              window=args.window)
                 log(f"{pid.hex()} -> DOWNLINK ack to {eui} answering fcnt {h.fcnt} in {args.window}, "
                     f"instead of a federated request")
             return True
         how = "by tag" if route == "table" else "by trial decryption"
         log(line + f" {eui} ({keyset} keys, {how}, {got['counter']}): {describe_payload(h.ftype, pt)}")
+        emit("UPLINK", **ev, device=eui, keys=keyset, route=route, result="transmission", counter=got["counter"],
+             answer=got["answer"], payload=describe_payload(h.ftype, pt))
         if got["counter"] in ("accept", "accept_late"):
             dev.last_seen = now
             if devices.moved(dev):
@@ -994,7 +1065,8 @@ def main() -> int:
                 if fed is not None:  # and on the mailboxes at once (09 section 5.3, fresh keys)
                     asyncio.ensure_future(fed.refresh())
             save_state()
-            send_downlink(p, rx_time, offset, r["frame"])
+            send_downlink(p, rx_time, rx_offset(), r["frame"], frame, answering=h.fcnt, device=eui,
+                          what="KEY_EXCHANGE", window=args.window)
             stalled = " (stalled: the sensor keeps repeating JOIN)" if r["stalled"] else ""
             log(f"{pid.hex()} -> DOWNLINK KEY_EXCHANGE to {eui} ({r['action']}, root counter "
                 f"{dev.join.root_fcnt_down}){stalled}")
@@ -1005,9 +1077,11 @@ def main() -> int:
             dev.state = "PAIRED"
             dev.join.paired()
             log(f"{eui} PAIRED")
+            emit("PAIRED", device=eui)
         if h.ftype in CONFIRMED or carry:
             dl, what = answer_frame(dev, keys, h, now, carry)
-            send_downlink(p, rx_time, offset, dl)
+            send_downlink(p, rx_time, rx_offset(), dl, frame, answering=h.fcnt, device=eui, what=what,
+                          window=args.window)
             log(f"{pid.hex()} -> DOWNLINK {what} to {eui} answering fcnt {h.fcnt} in {args.window}")
         save_state()
         return True
@@ -1019,6 +1093,7 @@ def main() -> int:
             if done:
                 dev.queue = [c for c in dev.queue if c not in done]
                 log(f"{dev.dev_eui.hex()}: {len(done)} command(s) acknowledged, {len(dev.queue)} queued")
+                emit("ACKED", device=dev.dev_eui.hex(), commands=len(done), queued=len(dev.queue))
 
     def answer_frame(dev: RealDevice, keys: cs.DeviceKeys, h, now: int, carry: bool) -> tuple[bytes, str]:
         """The downlink answering h, with the next queued command if carry."""
@@ -1042,10 +1117,27 @@ def main() -> int:
             for dev in real:
                 dev.queue_nops(n)
                 log(f"{dev.dev_eui.hex()}: {len(dev.queue)} NOP queued")
+                emit("QUEUED", device=dev.dev_eui.hex(), queued=len(dev.queue))
             if not real:
                 log("nop: no --device to queue for")
+        elif words[0] == "window" and len(words) == 2 and words[1] in ("rx1", "rx2"):
+            args.window = words[1]
+            log(f"downlinks now in {args.window}")
+            emit("MODE", window=args.window, fault=args.fault)
+        elif words[0] == "fault" and len(words) == 2 and words[1] in (*FAULTS, "none"):
+            args.fault = None if words[1] == "none" else words[1]
+            log(f"fault now {args.fault or 'none'}")
+            emit("MODE", window=args.window, fault=args.fault)
+        elif words == ["hello"]:
+            # A HELLO_REQUEST in each proxy's current session draws a HELLO with fresh
+            # counters (the proxy sends at most one requested HELLO per 5 s).
+            for p in proxies.values():
+                if p.addr is not None and p.link.boot_id is not None:
+                    sock.sendto(cs.envelope(key, cs.M_HELLO_REQUEST, p.proxy_id, p.link.boot_id, 0,
+                                            cs.hello_request_body(secrets.randbits(32) | 1)), p.addr)
+                    log(f"{p.proxy_id.hex()}: sent HELLO_REQUEST for its counters")
         else:
-            log(f"unknown command {line.strip()!r}; try `nop [N]`")
+            log(f"unknown command {line.strip()!r}; try `nop [N]`, `window rx1|rx2`, `fault NAME|none` or `hello`")
 
     def federated_uplink(s, frame: bytes, h, receptions: list, publisher: bytes, rtt_pub: int,
                          arrived: float) -> dict | None:
@@ -1077,6 +1169,7 @@ def main() -> int:
             dev.state = "PAIRED"
             dev.join.paired()
             log(f"{eui} PAIRED")
+            emit("PAIRED", device=eui)
         answer = None
         if got["answer"] and h.ftype in CONFIRMED:
             # Federation answers confirmed uplinks only, in RX2, so queued commands
@@ -1092,6 +1185,7 @@ def main() -> int:
             m = cs.open_envelope(key, data)
         except ValueError as ex:
             log(f"{addr[0]}: rejected {len(data)} bytes ({ex})")
+            emit("REJECTED", addr=addr[0], len=len(data), reason=str(ex))
             return
         pid = bytes.fromhex(m["proxy_id"])
         p = proxies.setdefault(pid, Proxy(pid))
@@ -1103,14 +1197,17 @@ def main() -> int:
                                     cs.hello_request_body(got["nonce"])), addr)
             log(f"{pid.hex()}: message type 0x{m['type']:02x} from boot {m['boot_id']:08x}, "
                 f"not this session's; sent HELLO_REQUEST")
+            emit("HELLO_REQUEST", proxy=pid.hex(), boot_id=m["boot_id"], msg_type=m["type"])
             return
         if got["result"] == "ignored":
             log(f"{pid.hex()}: ignored message type 0x{m['type']:02x} boot {m['boot_id']:08x} seq {m['seq']}")
+            emit("IGNORED", proxy=pid.hex(), boot_id=m["boot_id"], seq=m["seq"], msg_type=m["type"])
             return
         if got["result"] == "switched":
             if not args.no_seq_seed:
                 p.link.seq = seq_seed()
             log(f"{pid.hex()}: session with boot {m['boot_id']:08x}, server seq from {p.link.seq + 1}")
+            emit("SESSION", proxy=pid.hex(), boot_id=m["boot_id"], seq_from=p.link.seq + 1)
         p.addr = addr
         body = bytes.fromhex(m["body"])
         now = int(time.time())
@@ -1122,7 +1219,12 @@ def main() -> int:
                 f"{h['bw_khz']} kHz, up {h['uptime_s']}s, downlink {'yes' if h['caps'] & 1 else 'no'}, "
                 f"loop gap {h['max_loop_gap_ms']} ms, "
                 f"heard/fwd/dup/invalid/rl/tx_ok/tx_fail = {'/'.join(map(str, h['counters']))}")
-            send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, m["seq"]))
+            emit("HELLO", proxy=pid.hex(), boot_id=m["boot_id"], seq=m["seq"], fw=h["fw"], region=h["region"],
+                 frequency_hz=h["frequency_hz"], sf=h["sf"], bw_khz=h["bw_khz"], uptime_s=h["uptime_s"],
+                 downlink=bool(h["caps"] & 1), max_loop_gap_ms=h["max_loop_gap_ms"],
+                 counters=dict(zip(("heard", "forwarded", "duplicates", "invalid", "rate_limited", "tx_ok",
+                                    "tx_failed"), h["counters"])))
+            p.status_seq = send(p, cs.M_SERVER_STATUS, cs.server_status_body(now, m["seq"]))
             if h["caps"] & 1 and (args.ack or real) and pid not in downlink_proxies:
                 downlink_proxies.add(pid)
                 if len(downlink_proxies) == 2:
@@ -1136,11 +1238,15 @@ def main() -> int:
             name = TYPE_NAMES.get(h.ftype, f"type {h.ftype}") if h else "invalid"
             line = (f"{pid.hex()} UPLINK {name} fcnt {h.fcnt if h else '?'} rssi {u['rssi']:.1f} "
                     f"snr {u['snr']:.1f}{' TS_UNCERTAIN' if u['flags'] & cs.UPF_TS_UNCERTAIN else ''}")
-            if h and real_uplink(p, pid, line, frame, h, rx_time, now):
+            ev = {"proxy": pid.hex(), "type": name, "fcnt": h.fcnt if h else None, "rssi": u["rssi"],
+                  "snr": u["snr"], "ts_uncertain": bool(u["flags"] & cs.UPF_TS_UNCERTAIN), "rx_time_us": rx_time,
+                  "frame": frame.hex()}
+            if h and real_uplink(p, pid, line, frame, h, rx_time, now, ev):
                 return
             opened = device.open(frame) if h else None
             if opened is None:
                 log(line + " (not the test device)")
+                emit("UPLINK", **ev, device=None, result="unknown")
                 if h and fed is not None:
                     fed.heard(p, frame, h, u)
                 return
@@ -1148,19 +1254,27 @@ def main() -> int:
             got = device.uplinks.receive(frame, int(time.monotonic() * 1000))
             if got["result"] == "copy":
                 log(line + " test device: copy of the same transmission")
+                emit("UPLINK", **ev, device="test", result="copy")
                 return
             log(line + f" test device ({keyset} keys, {got['counter']}): {describe_payload(h.ftype, pt)}")
+            emit("UPLINK", **ev, device="test", keys=keyset, result="transmission", counter=got["counter"],
+                 answer=bool(args.ack and h.ftype in CONFIRMED and got["answer"]),
+                 payload=describe_payload(h.ftype, pt))
             if args.ack and h.ftype in CONFIRMED and got["answer"]:
                 device.fcnt_down += 1
                 dl_pt = cs.downlink_payload(h.fcnt, now, 0)
                 dl = cs.seal(keys, cs.T_DOWNLINK, h.tag, device.fcnt_down, dl_pt)
-                send_downlink(p, rx_time, offset, dl)
-                log(f"{pid.hex()} -> DOWNLINK seq {p.link.seq} answering fcnt {h.fcnt} in {args.window}")
+                seq = send_downlink(p, rx_time, rx_offset(), dl, frame, answering=h.fcnt, device="test", what="ack",
+                                    window=args.window)
+                log(f"{pid.hex()} -> DOWNLINK seq {seq if seq is not None else 'later'} answering fcnt {h.fcnt} "
+                    f"in {args.window}")
 
         elif m["type"] == cs.M_TX_RESULT:
             t = cs.parse_tx_result(body)
             log(f"{pid.hex()} TX_RESULT seq {t['downlink_seq']}: {TX_RESULTS.get(t['result'], t['result'])}, "
                 f"{t['offset_us'] / 1000:.1f} ms after target")
+            emit("TX_RESULT", proxy=pid.hex(), seq=t["downlink_seq"], result=TX_RESULTS.get(t["result"], t["result"]),
+                 offset_us=t["offset_us"])
             if fed is not None:
                 asyncio.ensure_future(fed.tx_result(pid, t["downlink_seq"], t["result"], t["offset_us"]))
         else:

@@ -60,6 +60,9 @@ Not yet implemented:
    on a second board and press its buttons. Run the server with `--ack` to have
    it answer confirmed frames, which exercises the downlink path.
 
+5. To run scripted scenarios and measure how close to RX1 and RX2 the downlinks
+   land on air, use the bench runner: [devtools/bench](../../devtools/bench/README.md).
+
 ## Configuration
 
 ```yaml
