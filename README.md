@@ -17,7 +17,7 @@ Early development: the spec is a draft and nothing is ready for real deployments
   ([#38](https://github.com/chrisuthe/ConnectSensors/issues/38)).
 - **Network server:** the Home Assistant integration
   ([connect-sensors-ha](https://github.com/chrisuthe/connect-sensors-ha)),
-  [0.2.1](https://github.com/chrisuthe/connect-sensors-ha/releases/tag/v0.2.1) on
+  [0.2.3](https://github.com/chrisuthe/connect-sensors-ha/releases/tag/v0.2.3) on
   HACS as a custom repository. It pairs sensors and turns their readings into
   entities. It also chooses between proxies, supervises devices, sends commands and
   raises repairs. Tested on the bench rig. `devtools/cs_testserver.py` remains for
@@ -31,7 +31,7 @@ Early development: the spec is a draft and nothing is ready for real deployments
   bench with two Home Assistant instances and the app on HA OS, and in CI with
   simulated homes.
 - **Python package:** [`connectsensors`](https://pypi.org/project/connectsensors/)
-  on PyPI (0.4.2), the reference implementation packaged for network servers,
+  on PyPI (0.4.3), the reference implementation packaged for network servers,
   including the federation helpers.
 - **Not implemented:** EU868, MQTT transport, mDNS discovery, device-profile
   distribution (spec 10).
