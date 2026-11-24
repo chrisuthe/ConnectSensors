@@ -11,9 +11,13 @@ servers.
 Early development: the spec is a draft and nothing is ready for real deployments yet.
 
 - **Proxy (`cs_proxy`):** working on a Heltec V3 bench rig. It forwards uplinks,
-  sends downlinks on time, and recovers from server restarts.
+  sends downlinks on time, and recovers from server restarts. Measured on air with
+  the bench runner ([`devtools/bench/`](devtools/bench/)), downlinks start a median
+  6.6 ms after their receive window opens, against a 0-81 ms budget (spec 01
+  section 4.1).
 - **Sensor (`cs_sensor`):** working on ESP32 (Heltec V3). It pairs, sends confirmed
-  state changes and deep-sleeps. It builds for nRF52; hardware testing is next
+  state changes and deep-sleeps. Its key work (tags, the pairing key exchange) runs
+  in slices of about 4 ms per loop pass, so it never blocks ESPHome's loop. It builds for nRF52; hardware testing is next
   ([#38](https://github.com/chrisuthe/ConnectSensors/issues/38)).
 - **Network server:** the Home Assistant integration
   ([connect-sensors-ha](https://github.com/chrisuthe/connect-sensors-ha)),

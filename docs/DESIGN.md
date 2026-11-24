@@ -357,7 +357,8 @@ flash wear from counter reservation are still to be checked on hardware.
 3. Who runs mode 3 and mode 4 mailbox servers, and how mode 4 admits new keys
    (proof of work, slow admission, or both).
 4. Ed25519 key generation time on nRF52, which sensors need once per epoch
-   (spec 09 section 3).
+   (spec 02 section 6). On ESP32 it is about 18 ms, run in slices of at most
+   about 4 ms per loop pass (#95, #117); nRF52 remains to be measured (#38).
 5. Whether to hide `fcnt` per epoch to reduce traffic analysis.
 6. Battery life of ESPHome sensors on nRF52 against the budget in spec 08,
    measured on hardware.
@@ -368,16 +369,15 @@ flash wear from counter reservation are still to be checked on hardware.
 
 ---
 
-## 14. Repository layout (proposed)
+## 14. Repository layout
 
-```
-ConnectSensors/
-  docs/DESIGN.md                    this document
-  spec/                             protocol specification (self-contained,
-                                    may move to its own repository)
-  components/cs_proxy/              ESPHome external component
-  custom_components/connect_sensors/ Home Assistant integration
-  components/cs_sensor/             sensor firmware: sensor_core, then ESPHome glue
-  mailbox/                          cs-mailbox (federation mailbox server)
-  examples/                         proxy YAML for reference boards
-```
+This repository holds the spec, the ESPHome components, the reference
+implementation and the development tools; the [README](../README.md) lists each
+path. Two companion repositories hold the deployable pieces:
+
+- [connect-sensors-ha](https://github.com/chrisuthe/connect-sensors-ha): the
+  `connect_sensors` Home Assistant integration (the network server, spec 07),
+  installed through HACS.
+- [HAOS-cs-mailbox](https://github.com/chrisuthe/HAOS-cs-mailbox): `cs-mailbox`
+  (`mailbox/` here) packaged as a Home Assistant app for running a federation
+  mailbox (spec 09).
