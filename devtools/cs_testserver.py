@@ -336,9 +336,12 @@ class MailboxLink:
     signed messages with seq (12.4), and replies to ping_s. Messages it does not
     handle itself are returned by recv()."""
 
-    def __init__(self, url: str, seed: bytes, cafile: str | None = None, insecure: bool = False):
+    def __init__(self, url: str, seed: bytes, cafile: str | None = None, insecure: bool = False,
+                 **connect_args: object):
+        """connect_args go to websockets' connect, e.g. additional_headers or local_addr in tests."""
         from urllib.parse import urlsplit
         self.url, self.seed = url, seed
+        self.connect_args = connect_args
         self.pub = cs.ed25519_pub(seed)
         parts = urlsplit(url)
         if parts.scheme not in ("wss", "ws") or not parts.hostname:
@@ -363,7 +366,7 @@ class MailboxLink:
             tls = ssl.create_default_context(cafile=self.cafile)
             tls.minimum_version = ssl.TLSVersion.TLSv1_3
         self.ws = await connect(self.url, ssl=tls, subprotocols=[MB_SUBPROTOCOL], max_size=cs.MB_MAX_MESSAGE,
-                                compression=None, open_timeout=10)
+                                compression=None, open_timeout=10, **self.connect_args)
         nonce_c = secrets.token_bytes(16)
         await self.ws.send(cs.cbor([cs.MB_HELLO, cs.MB_VERSION, nonce_c]))
         g = cs.mb_decode(await self.ws.recv())

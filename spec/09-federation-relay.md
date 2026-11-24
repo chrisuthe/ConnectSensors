@@ -631,6 +631,22 @@ applies.
 - Messages are at most 4 096 bytes. A larger one closes the connection with
   WebSocket close code 1009.
 
+**TLS at a reverse proxy.** A server MAY have a reverse proxy that its operator
+controls terminate TLS for it. The proxy then holds the certificate for the URL's
+host, and the rules above apply between the client and the proxy. Behind it:
+
+- The hop from the proxy to the server MUST be private to the operator: loopback,
+  a container network, or a network segment no one else can reach or observe.
+  Nothing protects it but that.
+- The server MUST refuse plain connections from anyone but the proxy, before the
+  greeting, so the plain port cannot be used to bypass TLS or the proxy.
+- Where the server needs a client's address, for open admission (sections 5.4
+  and 11), it MUST use the address the proxy reports for the
+  connection, and MUST NOT take a reported address from anyone but the proxy.
+
+Clients do not change: they connect to `wss://` and validate the certificate as
+above, and cannot tell a proxy is there.
+
 ### 12.2 Encoding
 
 Messages are CBOR (RFC 8949) arrays whose first element is the message type. They
@@ -704,8 +720,8 @@ order. `registered` carries the `seq` of the `register` it answers.
    its own `nonce_c`. It closes the connection if any check fails. The
    signature shows that the holder of the server key answered this `nonce_c`
    for this host, and the validated TLS certificate (section 12.1) shows that
-   the connection reached that host, so `server_id` is safe to sign proofs
-   for.
+   the connection reached that host, or its operator's reverse proxy, so
+   `server_id` is safe to sign proofs for.
 4. The client sends `auth` with its client key's public key and
    `sig = Ed25519-Sign(client key, "cs1 mbx auth" | server_id | nonce_c | nonce_s | client_pub)`.
 5. The server verifies it strictly, applies its admission policy (section 11),
@@ -735,7 +751,10 @@ For `register` this is the owner signature of section 5.1: it covers the message
 type, `seq` and every entry, and `nonce_s` binds it to the connection.
 
 Server messages are not signed. The greeting binds the server key to the TLS
-session (section 12.3), and TLS protects everything after it.
+session (section 12.3), and TLS protects everything after it as far as the
+server, or as far as its operator's reverse proxy, whose hop to the server is
+private to the operator (section 12.1). Client messages remain signed end to end
+either way.
 
 ### 12.5 Messages
 
@@ -843,6 +862,7 @@ system.
 | A sole-path publisher or server delays frames | Frames carry no time. Receptions that came only through federation are marked, and users can ignore events from them (07 section 4.4). Documented. |
 | Replay of client messages | Every message is signed over the connection's `nonce_s` and a strictly increasing `seq` (section 12.4). |
 | A forged server greeting | The greeting signature covers the client's nonce and the TLS host name (section 12.3). |
+| A server behind a TLS-terminating proxy that leaves its plain port reachable | The server refuses plain connections from anyone but its proxy, before the greeting, and reads reported client addresses only from the proxy (section 12.1). Without that, anyone who reaches the port could connect without TLS and, if the server read their headers, choose the address that open admission counts them by. Clients are not exposed by it: they connect only through `wss://` (section 12.1), and their messages stay signed and bound to `nonce_s` (section 12.4). |
 
 ## 14. Test vectors
 

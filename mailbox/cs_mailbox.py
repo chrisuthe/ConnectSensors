@@ -8,6 +8,7 @@ Registrations live in memory, so every start picks a new `generation` (09
 section 5.3).
 
     cs_mailbox.py --host mailbox.example --tls-cert cert.pem --tls-key key.pem
+    cs_mailbox.py --host mailbox.example --trusted-proxy 172.16.0.0/12   # ws:// behind a TLS proxy
     cs_mailbox.py --host 127.0.0.1 --insecure-dev        # plain ws://, tests only
 
 The protocol rules (schemas, deterministic CBOR, strict Ed25519, proofs, the
@@ -28,6 +29,7 @@ import signal
 import ssl
 import sys
 import time
+from http import HTTPStatus
 from typing import Any
 
 sys.dont_write_bytecode = True
@@ -44,12 +46,14 @@ import connectsensors as cs  # noqa: E402
 
 from websockets.asyncio.server import ServerConnection, serve  # noqa: E402
 from websockets.exceptions import ConnectionClosed  # noqa: E402
+from websockets.http11 import Request, Response  # noqa: E402
 
 SUBPROTOCOL = "cs-mailbox.1"
 PING_INTERVAL_S = 30
 SWEEP_INTERVAL_S = 10
 OUT_QUEUE = 256           # server messages waiting for a client; a client that falls this far behind is closed
 KEY_MEMORY_S = 86400      # an admitted key is remembered this long after its last connection
+LOG_REPEAT_S = 60         # a repeated refusal from one address is logged at most this often
 CODE = {name: i for i, name in enumerate(cs.MB_ERRORS)}
 
 
@@ -141,15 +145,68 @@ class Mailbox:
         self.requested_by: dict[bytes, bytes] = {}  # rx_ref -> requesting owner pub
         self.keys: dict[bytes, KeyState] = {}  # admitted client keys
         self.admissions: dict[str, list[float]] = {}  # source network -> admission times
+        self.proxies = [ipaddress.ip_network(c) for c in args.trusted_proxy or ()]
+        self.logged: dict[str, float] = {}  # log_once key -> when last logged
+
+    def log_once(self, key: str, msg: str) -> None:
+        """Log msg unless key was logged in the last LOG_REPEAT_S, so a peer that
+        retries in a loop cannot fill the log."""
+        t = time.monotonic()
+        if t - self.logged.get(key, -LOG_REPEAT_S) >= LOG_REPEAT_S:
+            self.logged[key] = t
+            log(msg)
+
+    # ---------------------------------------------------------------- trusted proxies
+
+    def trusted(self, addr: str) -> bool:
+        ip = parse_ip(addr)
+        return ip is not None and any(ip in net for net in self.proxies)
+
+    def process_request(self, ws: ServerConnection, request: Request) -> Response | None:
+        """Behind trusted proxies the port is plain ws://, so only the proxies may
+        use it: anyone else is refused before the WebSocket handshake, and so before
+        any greeting."""
+        if not self.proxies:
+            return None
+        peer = ws.remote_address[0] if ws.remote_address else ""
+        if self.trusted(peer):
+            return None
+        self.log_once(f"untrusted {source_network(peer)}", f"{peer}: not a trusted proxy, refused")
+        return ws.respond(HTTPStatus.FORBIDDEN, "Forbidden\n")
+
+    def client_address(self, ws: ServerConnection) -> tuple[str, str]:
+        """The client's address for admission, and a label for logs. For a trusted
+        proxy, the address it reports: the last X-Forwarded-For entry, which that
+        proxy appended, else X-Real-IP. Headers are read from trusted proxies only;
+        otherwise any client could pick its own address."""
+        ip, port = ws.remote_address[:2] if ws.remote_address else ("", 0)
+        peer = f"{ip}:{port}"
+        if not self.proxies or not self.trusted(ip) or ws.request is None:
+            return ip, peer
+        headers = ws.request.headers
+        if "X-Forwarded-For" in headers:
+            name = "X-Forwarded-For"
+            value = ",".join(headers.get_all(name)).split(",")[-1].strip()
+        elif "X-Real-IP" in headers:
+            name, value = "X-Real-IP", headers.get_all("X-Real-IP")[-1].strip()
+        else:
+            return ip, peer
+        client = parse_ip(value)
+        if client is None:
+            # The proxy's own address is the safe fallback: every such client
+            # shares the proxy's admission budget rather than getting a new one.
+            self.log_once(f"malformed {ip}", f"{peer}: malformed {name} {value[:64]!r}, using the proxy's address")
+            return ip, peer
+        return str(client), f"{client} via {peer}"
 
     # ---------------------------------------------------------------- connection
 
     async def handler(self, ws: ServerConnection) -> None:
-        peer = f"{ws.remote_address[0]}:{ws.remote_address[1]}" if ws.remote_address else "?"
+        addr, peer = self.client_address(ws)
         client: Client | None = None
         tasks: list[asyncio.Task[None]] = []
         try:
-            client = await self.handshake(ws, peer)
+            client = await self.handshake(ws, addr, peer)
             if client is None:
                 return
             self.conns.setdefault(client.pub, set()).add(client)
@@ -204,7 +261,7 @@ class Mailbox:
             c.post([cs.MB_PING_S, nonce])
             await asyncio.sleep(self.args.ping_interval)
 
-    async def handshake(self, ws: ServerConnection, peer: str) -> Client | None:
+    async def handshake(self, ws: ServerConnection, addr: str, peer: str) -> Client | None:
         """09 section 12.3. Returns the client after welcome, or None if it left."""
         try:
             data = await asyncio.wait_for(ws.recv(), self.args.handshake_timeout)
@@ -240,7 +297,7 @@ class Mailbox:
         client_pub = auth[1]
         if cs.ed_verify_error(client_pub, cs.auth_msg(self.server_id, nonce_c, nonce_s, client_pub), auth[2]):
             raise Fatal("BAD_SIGNATURE")
-        key = self.admit(client_pub, ws.remote_address[0] if ws.remote_address else "")
+        key = self.admit(client_pub, addr)
         if key is None:
             raise Fatal("NOT_PERMITTED")
         pseud = cs.pseudonym(self.server_id, client_pub)
@@ -460,7 +517,19 @@ class Mailbox:
             self.sweep_refs(now_ms())
             t = time.monotonic()
             self.admissions = {n: v for n, v in self.admissions.items() if t - v[-1] < 3600}
+            self.logged = {k: v for k, v in self.logged.items() if t - v < LOG_REPEAT_S}
             self.keys = {k: v for k, v in self.keys.items() if k in self.conns or t - v.seen < KEY_MEMORY_S}
+
+
+def parse_ip(addr: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """An address, with an IPv4-mapped IPv6 one as plain IPv4; None if malformed."""
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
 
 
 def source_network(addr: str) -> str:
@@ -516,6 +585,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--tls-key", metavar="PEM", help="private key for --tls-cert")
     ap.add_argument("--insecure-dev", action="store_true",
                     help="serve plain ws:// without TLS; for tests only, never in production (09 section 12.1)")
+    ap.add_argument("--trusted-proxy", action="append", metavar="CIDR",
+                    help="serve plain ws:// to a TLS-terminating reverse proxy in this range, and refuse every "
+                         "other peer; the client address comes from its X-Forwarded-For or X-Real-IP "
+                         "(repeatable; 09 section 12.1)")
     ap.add_argument("--key-file", metavar="FILE", help="server key seed in hex, created if missing")
     ap.add_argument("--members", metavar="FILE",
                     help="admit only these client public keys, one hex key per line (modes 2 and 3)")
@@ -536,8 +609,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = ap.parse_args(argv)
     if bool(args.tls_cert) != bool(args.tls_key):
         ap.error("--tls-cert and --tls-key go together")
-    if not args.tls_cert and not args.insecure_dev:
-        ap.error("TLS is required: give --tls-cert and --tls-key (or --insecure-dev for tests)")
+    if args.trusted_proxy and (args.tls_cert or args.insecure_dev):
+        ap.error("--trusted-proxy is its own mode: not with --tls-cert or --insecure-dev")
+    if not args.tls_cert and not args.insecure_dev and not args.trusted_proxy:
+        ap.error("TLS is required: give --tls-cert and --tls-key, or --trusted-proxy behind a TLS-terminating "
+                 "proxy (or --insecure-dev for tests)")
+    for c in args.trusted_proxy or ():
+        try:
+            net = ipaddress.ip_network(c)
+        except ValueError:
+            ap.error(f"--trusted-proxy {c}: not an address range, or host bits set (give the proxy's /32)")
+        if net.prefixlen == 0:
+            ap.error(f"--trusted-proxy {c}: trusts every address; that is --insecure-dev")
+        if isinstance(net, ipaddress.IPv6Network) and net.subnet_of(ipaddress.ip_network("::ffff:0:0/96")):
+            ap.error(f"--trusted-proxy {c}: give IPv4-mapped ranges in their IPv4 form")
     for h in args.host:
         try:
             h.encode("ascii")
@@ -556,11 +641,14 @@ async def run(args: argparse.Namespace) -> None:
         tls.minimum_version = ssl.TLSVersion.TLSv1_3
         tls.load_cert_chain(args.tls_cert, args.tls_key)
     async with serve(mailbox.handler, args.listen, args.port, ssl=tls, subprotocols=[SUBPROTOCOL],
-                     max_size=cs.MB_MAX_MESSAGE, compression=None) as server:
+                     process_request=mailbox.process_request, max_size=cs.MB_MAX_MESSAGE,
+                     compression=None) as server:
         port = server.sockets[0].getsockname()[1] if server.sockets else args.port
         log(f"cs-mailbox server_id {mailbox.server_id.hex()} generation {mailbox.generation:016x}")
-        log(f"Listening on {'wss' if tls else 'ws'}://{args.listen}:{port} for {', '.join(mailbox.hosts)}"
-            + ("" if tls else " (INSECURE, development only)"))
+        mode = ("" if tls else
+                f" behind trusted proxies {', '.join(map(str, mailbox.proxies))}" if mailbox.proxies else
+                " (INSECURE, development only)")
+        log(f"Listening on {'wss' if tls else 'ws'}://{args.listen}:{port} for {', '.join(mailbox.hosts)}{mode}")
         # As PID 1 in a container nothing else turns SIGTERM into an exit.
         stop = asyncio.Event()
         for sig in (signal.SIGTERM, signal.SIGINT):

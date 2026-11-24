@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cs-mailbox"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reference mailbox server for ConnectSensors federation (spec 09)"
 readme = "README.md"
 license = "MIT"
