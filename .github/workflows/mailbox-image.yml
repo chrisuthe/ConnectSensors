@@ -1,0 +1,67 @@
+name: Mailbox image
+
+# Builds the cs-mailbox image (amd64) and smoke tests it in both modes whenever
+# something it is built from, or tested with, changes. mailbox-release.yml
+# publishes it.
+on:
+  push:
+    # Branches only: path filters do not apply to tag pushes.
+    branches: ["**"]
+    paths:
+      - "mailbox/**"
+      - "python/connectsensors/**"
+      - "spec/tools/csframe.py"
+      - ".dockerignore"
+      - "tests/mailbox-image/**"
+      # The smoke test's client
+      - "tests/federation/test_mailbox.py"
+      - "devtools/cs_testserver.py"
+      - ".github/workflows/mailbox-image.yml"
+      - ".github/workflows/mailbox-release.yml"
+  pull_request:
+    paths:
+      - "mailbox/**"
+      - "python/connectsensors/**"
+      - "spec/tools/csframe.py"
+      - ".dockerignore"
+      - "tests/mailbox-image/**"
+      # The smoke test's client
+      - "tests/federation/test_mailbox.py"
+      - "devtools/cs_testserver.py"
+      - ".github/workflows/mailbox-image.yml"
+      - ".github/workflows/mailbox-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint the image workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Actions are pinned to a commit, since a tag can be repointed; the comment
+      # is the version that commit was.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # actionlint 1.7.12, by digest
+      - run: |
+          docker run --rm --volume "$PWD:/repo" --workdir /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color .github/workflows/mailbox-image.yml .github/workflows/mailbox-release.yml
+
+  smoke:
+    name: Build and smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pip install cryptography websockets
+      # Built-in TLS with a throwaway certificate, then trusted-proxy mode: two
+      # clients through greeting, auth, register, publish and deliver in each.
+      - run: make -C tests/mailbox-image
+        env:
+          CONTAINER_ENGINE: docker
