@@ -11,9 +11,6 @@ on:
 permissions:
   contents: read
 
-env:
-  IMAGE: ghcr.io/chrisuthe/cs-mailbox
-
 defaults:
   run:
     shell: bash
@@ -74,6 +71,9 @@ jobs:
     concurrency:
       group: mailbox-publish
       cancel-in-progress: false
+    # Job-scoped: the smoke test reads IMAGE as a prebuilt image to test.
+    env:
+      IMAGE: ghcr.io/chrisuthe/cs-mailbox
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # arm64 is built under emulation: the image's only RUN step installs prebuilt
